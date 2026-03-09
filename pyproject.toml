@@ -1,0 +1,44 @@
+[project]
+name = "clawvision"
+version = "0.1.0"
+description = "Visual perception MCP server for AI agents - screen understanding and precise UI interaction"
+requires-python = ">=3.11"
+dependencies = [
+    "mcp[cli]>=1.0.0",
+    "anthropic>=0.40.0",
+    "pyautogui>=0.9.54",
+    "pyobjc-framework-Quartz>=10.0",
+    "pyobjc-framework-ScreenCaptureKit>=10.0",
+    "Pillow>=10.0.0",
+    "numpy>=1.26.0",
+]
+
+[project.optional-dependencies]
+detect = [
+    "ultralytics>=8.2.0",        # YOLOv8 (OmniParser UI detector)
+    "transformers>=4.40.0",       # OWLv2 open-vocabulary detector
+    "torch>=2.2.0",               # PyTorch with MPS support
+    "huggingface_hub>=0.20.0",   # Auto-download model weights
+]
+ocr = [
+    "paddleocr>=2.7.0",
+    "opencv-python>=4.9.0",
+]
+all = [
+    "clawvision[detect,ocr]",
+]
+dev = [
+    "pytest>=8.0",
+    "ruff>=0.4.0",
+]
+
+[project.scripts]
+clawvision = "clawvision.server:main"
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[tool.ruff]
+target-version = "py311"
+line-length = 100
