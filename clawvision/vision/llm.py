@@ -23,9 +23,31 @@ class VisionLLM:
         self.client = anthropic.Anthropic()
         self.model = model
 
+    MAX_IMAGE_BYTES = 4_800_000  # Stay under Anthropic's 5MB limit
+    MAX_IMAGE_PIXELS = 1568  # Max dimension for efficient API usage
+
+    def _prepare_image(self, image: Image.Image) -> Image.Image:
+        """Resize image if needed to stay within API limits."""
+        # Downscale if any dimension exceeds max
+        w, h = image.size
+        if max(w, h) > self.MAX_IMAGE_PIXELS:
+            scale = self.MAX_IMAGE_PIXELS / max(w, h)
+            image = image.resize((int(w * scale), int(h * scale)), Image.LANCZOS)
+        # Convert RGBA to RGB (smaller PNG)
+        if image.mode == "RGBA":
+            bg = Image.new("RGB", image.size, (255, 255, 255))
+            bg.paste(image, mask=image.split()[3])
+            image = bg
+        return image
+
     def _image_to_base64(self, image: Image.Image) -> str:
+        image = self._prepare_image(image)
         buffer = io.BytesIO()
-        image.save(buffer, format="PNG")
+        image.save(buffer, format="PNG", optimize=True)
+        # If still too large, use JPEG
+        if buffer.tell() > self.MAX_IMAGE_BYTES:
+            buffer = io.BytesIO()
+            image.save(buffer, format="JPEG", quality=85)
         return base64.standard_b64encode(buffer.getvalue()).decode("utf-8")
 
     def analyze_page(self, screenshot: Image.Image, question: str | None = None) -> str:
