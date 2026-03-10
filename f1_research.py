@@ -157,9 +157,19 @@ def generate_report():
         if click_note_by_index(note_idx):
             time.sleep(2)
             img, path = capture_xhs(f"note_detail_{note_idx + 1}.png")
+
+            # Apply dynamic layout to extract the exact scrollable content and panel
+            from clawvision.vision.layout import JSONLayoutPrior
+            layout = JSONLayoutPrior("clawvision/vision/layouts/xiaohongshu.json")
+            regions = layout.extract_regions(img)
+            
+            # Use the "scrollable" content region (post text & comments) to avoid background and media noise
+            analyze_img = regions.get("scrollable", regions.get("panel", img))
+            analyze_img.save(path) # Overwrite with precise crop
+            
             screenshots[f"note_detail_{note_idx + 1}"] = path
 
-            detail = llm.analyze_page(img,
+            detail = llm.analyze_page(analyze_img,
                 "Extract full detail of this Xiaohongshu note:\n"
                 "- title\n"
                 "- author\n"
