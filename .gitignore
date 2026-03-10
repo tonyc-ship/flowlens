@@ -7,4 +7,7 @@ dist/
 screenshots/
 benchmark_results/
 f1_report/
+tests/skill_debug/
+tests/skill_debug_output/
+tests/pipeline_comparison/
 .DS_Store
