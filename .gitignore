@@ -7,3 +7,4 @@ dist/
 screenshots/
 benchmark_results/
 f1_report/
+.DS_Store
