@@ -5,3 +5,5 @@ dist/
 *.egg-info/
 .env
 screenshots/
+benchmark_results/
+f1_report/
