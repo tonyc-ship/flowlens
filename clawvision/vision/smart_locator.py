@@ -108,14 +108,28 @@ class SmartLocator:
     def locate_all_cards(self, image: Image.Image, min_area: int = 50000) -> list[LocatedElement]:
         """Find all note cards on the page (large elements).
 
-        Filters YOLO detections by size to find content cards vs small UI elements.
+        Filters YOLO detections by size and position to find content cards
+        vs small UI elements and navigation bars.
         """
         elements = self._yolo.detect(image)
+        img_w, img_h = image.size
+        # Cards must be below the top nav/search area (y > 15% of image height)
+        min_y = int(img_h * 0.15)
+
         cards = []
         for e in elements:
             area = e.width * e.height
-            # Cards are typically large (>50k px^2) and roughly portrait/square
-            if area >= min_area and e.height > 100 and e.width > 100:
+            # Cards should be:
+            #  - Large enough (>min_area px^2)
+            #  - In the content area (top of bbox below 15% of image height)
+            #  - Have card-like aspect ratio (height > width * 0.5)
+            if (
+                area >= min_area
+                and e.bbox[1] > min_y
+                and e.height > e.width * 0.5
+                and e.height > 100
+                and e.width > 100
+            ):
                 cards.append(LocatedElement(
                     description=f"card_{len(cards)+1}",
                     x=e.center[0],
@@ -125,6 +139,25 @@ class SmartLocator:
                     method="yolo",
                 ))
         return cards
+
+    def crop_element(self, image: Image.Image, element: LocatedElement) -> Image.Image:
+        """Crop a region from the image corresponding to a LocatedElement.
+
+        Args:
+            image: The full-page PIL Image.
+            element: A LocatedElement with a bbox (x1, y1, x2, y2).
+
+        Returns:
+            A cropped PIL Image of the element region.
+        """
+        x1, y1, x2, y2 = element.bbox
+        # Clamp to image bounds
+        w, h = image.size
+        x1 = max(0, x1)
+        y1 = max(0, y1)
+        x2 = min(w, x2)
+        y2 = min(h, y2)
+        return image.crop((x1, y1, x2, y2))
 
     def _filter_candidates(
         self, elements: list[DetectedElement], description: str, image: Image.Image

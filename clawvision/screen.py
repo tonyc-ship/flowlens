@@ -192,3 +192,16 @@ class ScreenController:
     def move_to(self, x: int, y: int, duration: float = 0.2) -> None:
         """Move mouse to position."""
         pyautogui.moveTo(x, y, duration=duration)
+
+    def click_relative(self, window: WindowInfo, x_percent: float, y_percent: float) -> None:
+        """Click at a position relative to a window using percentages.
+
+        Args:
+            window: The target window.
+            x_percent: Horizontal position as a percentage (0-100) of the window width.
+            y_percent: Vertical position as a percentage (0-100) of the window height.
+        """
+        self.activate_app(window.owner)
+        abs_x = window.x + int(x_percent / 100 * window.width)
+        abs_y = window.y + int(y_percent / 100 * window.height)
+        self.click(abs_x, abs_y)

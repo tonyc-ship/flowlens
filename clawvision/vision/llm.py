@@ -50,12 +50,16 @@ class VisionLLM:
             image.save(buffer, format="JPEG", quality=85)
         return base64.standard_b64encode(buffer.getvalue()).decode("utf-8")
 
-    def analyze_page(self, screenshot: Image.Image, question: str | None = None) -> str:
+    def analyze_page(
+        self, screenshot: Image.Image, question: str | None = None, *, max_tokens: int = 1024
+    ) -> str:
         """Analyze a screenshot and return a description of the page.
 
         Args:
             screenshot: PIL Image of the screen/window.
             question: Optional specific question to answer about the page.
+            max_tokens: Maximum tokens in the response (default 1024,
+                        use 2048+ for detailed extraction).
         """
         prompt = question or (
             "Describe what you see on this screen. Identify:\n"
@@ -68,7 +72,7 @@ class VisionLLM:
 
         response = self.client.messages.create(
             model=self.model,
-            max_tokens=1024,
+            max_tokens=max_tokens,
             messages=[
                 {
                     "role": "user",
