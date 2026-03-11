@@ -10,4 +10,5 @@ f1_report/
 tests/skill_debug/
 tests/skill_debug_output/
 tests/pipeline_comparison/
+tests/eval_report/
 .DS_Store
