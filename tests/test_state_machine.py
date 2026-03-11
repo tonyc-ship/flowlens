@@ -141,8 +141,11 @@ def test_grounding(images: dict[str, Image.Image]) -> list[dict]:
         ],
     }
 
-    # Try backends in order: uground_mlx first, then claude
+    # Try backends in order: uitars_mlx first, then uground_mlx, then claude
     backends = []
+    uitars_path = os.path.expanduser("~/.clawvision/weights/UI-TARS-1.5-7B-6bit")
+    if os.path.exists(uitars_path):
+        backends.append("uitars_mlx")
     uground_path = os.path.expanduser("~/.clawvision/weights/uground-v1-2b-mlx")
     if os.path.exists(uground_path):
         backends.append("uground_mlx")

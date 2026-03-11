@@ -1,9 +1,10 @@
 """Grounding model wrapper — locates UI elements from natural language queries.
 
 Supports multiple backends:
-- ollama (UI-TARS, ShowUI, etc.)
-- MLX (UGround-V1-2B)
-- Claude Vision API (fallback)
+- uitars_mlx (UI-TARS-1.5-7B via MLX — best local option)
+- uground_mlx (UGround-V1-2B via MLX)
+- ollama (any vision model)
+- claude (Claude Vision API — most accurate, costs API calls)
 
 All backends implement the same interface:
     ground(screenshot, query) -> (x, y) in pixel coordinates, or None
@@ -38,10 +39,14 @@ class GroundingModel:
         """Initialize grounding model.
 
         Args:
-            backend: "ollama", "uground_mlx", "claude", or "auto" (try in order).
+            backend: "uitars_mlx", "uground_mlx", "ollama", "claude",
+                     or "auto" (try in order).
         """
         self.backend = backend
         self._ollama_model: str | None = None
+        self._uitars_model = None
+        self._uitars_processor = None
+        self._uitars_config = None
         self._uground_model = None
         self._uground_processor = None
         self._claude_llm = None
@@ -86,12 +91,14 @@ class GroundingModel:
         """
         backends_to_try = (
             [self.backend] if self.backend != "auto"
-            else ["ollama", "uground_mlx", "claude"]
+            else ["uitars_mlx", "uground_mlx", "claude"]
         )
 
         for backend in backends_to_try:
             try:
-                if backend == "ollama":
+                if backend == "uitars_mlx":
+                    return self._ground_uitars(screenshot, query)
+                elif backend == "ollama":
                     return self._ground_ollama(screenshot, query)
                 elif backend == "uground_mlx":
                     return self._ground_uground(screenshot, query)
@@ -102,6 +109,70 @@ class GroundingModel:
                     raise
                 # Auto mode: try next backend
                 continue
+
+        return None
+
+    def _ground_uitars(
+        self, screenshot: Image.Image, query: str
+    ) -> GroundingResult | None:
+        """Ground via UI-TARS-1.5-7B (MLX). Best local grounding model."""
+        import os
+
+        if self._uitars_model is None:
+            from mlx_vlm import load
+            from mlx_vlm.utils import load_config
+
+            model_path = os.path.expanduser("~/.clawvision/weights/UI-TARS-1.5-7B-6bit")
+            if not os.path.exists(model_path):
+                raise RuntimeError(f"UI-TARS model not found at {model_path}")
+            self._uitars_model, self._uitars_processor = load(model_path)
+            self._uitars_config = load_config(model_path)
+
+        from mlx_vlm import generate
+        from mlx_vlm.prompt_utils import apply_chat_template
+
+        orig_w, orig_h = screenshot.size
+        # Resize to fit Metal buffer limits (max 1024px)
+        max_dim = 1024
+        img_path = self._save_temp_image(screenshot, max_dim=max_dim)
+
+        # Calculate resized dimensions for coordinate mapping
+        scale = min(1.0, max_dim / max(orig_w, orig_h))
+        resized_w = int(orig_w * scale)
+        resized_h = int(orig_h * scale)
+
+        prompt_text = (
+            f"In this screenshot, locate the UI element: \"{query}\"\n"
+            f"Return the click point coordinates as (x, y)."
+        )
+        prompt = apply_chat_template(
+            self._uitars_processor, self._uitars_config,
+            prompt_text, num_images=1
+        )
+
+        output = generate(
+            self._uitars_model, self._uitars_processor,
+            prompt, image=img_path, max_tokens=128, verbose=False
+        )
+        raw = output.text if hasattr(output, "text") else str(output)
+
+        # Clean up temp file
+        try:
+            os.unlink(img_path)
+        except OSError:
+            pass
+
+        # Parse UI-TARS output: <|box_start|>(x,y)<|box_end|> or plain (x,y)
+        coords = re.findall(r"\((\d+(?:\.\d+)?)\s*,\s*(\d+(?:\.\d+)?)\)", raw)
+        if coords:
+            rx, ry = float(coords[0][0]), float(coords[0][1])
+            # Coordinates are relative to the resized image
+            # Scale back to original image dimensions
+            px = int(rx / resized_w * orig_w)
+            py = int(ry / resized_h * orig_h)
+            return GroundingResult(
+                x=px, y=py, confidence=0.8, source="uitars_mlx", raw_output=raw
+            )
 
         return None
 
