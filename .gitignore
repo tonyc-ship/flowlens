@@ -11,4 +11,5 @@ tests/skill_debug/
 tests/skill_debug_output/
 tests/pipeline_comparison/
 tests/eval_report/
+research_output/
 .DS_Store

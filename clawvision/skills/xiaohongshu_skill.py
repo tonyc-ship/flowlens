@@ -145,17 +145,17 @@ class XiaohongshuSkill(SiteSkill):
                 transitions={
                     "next_image": Transition(
                         name="next_image",
-                        description="Click the right arrow to see the next image in the carousel",
+                        description="Press right arrow key to see the next image in the carousel (arrows only visible on hover, so use keyboard)",
                         target_state="note_detail",
-                        grounding_query="the right arrow button (>) on the image to go to the next photo",
-                        action_type="click",
+                        action_type="press_key",
+                        action_params={"key": "right"},
                     ),
                     "prev_image": Transition(
                         name="prev_image",
-                        description="Click the left arrow to see the previous image",
+                        description="Press left arrow key to see the previous image",
                         target_state="note_detail",
-                        grounding_query="the left arrow button (<) on the image to go to the previous photo",
-                        action_type="click",
+                        action_type="press_key",
+                        action_params={"key": "left"},
                     ),
                     "scroll_to_comments": Transition(
                         name="scroll_to_comments",

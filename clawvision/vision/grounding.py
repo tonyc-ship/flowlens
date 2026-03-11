@@ -91,7 +91,7 @@ class GroundingModel:
         """
         backends_to_try = (
             [self.backend] if self.backend != "auto"
-            else ["uitars_mlx", "uground_mlx", "claude"]
+            else ["uitars_mlx", "claude"]
         )
 
         for backend in backends_to_try:
