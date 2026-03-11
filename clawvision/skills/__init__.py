@@ -1,10 +1,16 @@
-"""Site-specific visual understanding skills.
+"""Site-specific Skills — state machine architecture.
 
-Skills use lightweight CV (not ML models) to detect page structure
-and extract semantic regions from screenshots.
+Skills encode site knowledge as page states, transitions, and extraction rules.
+No pixel heuristics — all understanding delegated to LLMs and grounding models.
 """
 
-from .base import SiteSkill
+from .base import ExtractionRule, PageState, SiteSkill, Transition
 from .xiaohongshu_skill import XiaohongshuSkill
 
-__all__ = ["SiteSkill", "XiaohongshuSkill"]
+__all__ = [
+    "SiteSkill",
+    "PageState",
+    "Transition",
+    "ExtractionRule",
+    "XiaohongshuSkill",
+]
