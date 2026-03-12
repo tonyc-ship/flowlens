@@ -149,6 +149,8 @@ class ScreenController:
             for w in windows:
                 if title_contains.lower() in w.title.lower():
                     return w
+            # No matching window found when title filter was specified
+            return None
         # Return the largest Chrome window (likely the main one)
         return max(windows, key=lambda w: w.width * w.height)
 

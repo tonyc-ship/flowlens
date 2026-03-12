@@ -82,7 +82,7 @@ class XHSResearchAgent:
         max_notes_per_keyword: int = 3,
         max_images_per_note: int = 10,
         max_comment_scrolls: int = 2,
-        browse_author_profile: bool = True,
+        browse_author_profile: bool = False,  # Off by default: grounding can't reliably target small avatars on search cards
     ):
         self.screen = ScreenController()
         self.llm = VisionLLM()
@@ -145,10 +145,27 @@ class XHSResearchAgent:
     # ── Core Browser Interactions ───────────────────────────────────
 
     def _find_window(self) -> WindowInfo:
+        """Find or open the XHS Chrome window."""
         win = self.screen.find_chrome_window("小红书")
-        if not win:
-            raise RuntimeError("No Chrome window with XHS found")
-        return win
+        if win:
+            self.screen.activate_app("Google Chrome")
+            return win
+
+        # No XHS tab found — open it automatically
+        self._log_step("open_xhs", "Opening xiaohongshu.com in Chrome")
+        self.screen.open_url("https://www.xiaohongshu.com", "Google Chrome")
+        time.sleep(5)  # Wait for page to fully load
+
+        # Retry finding the window (page title should now contain 小红书)
+        for attempt in range(3):
+            win = self.screen.find_chrome_window("小红书")
+            if win:
+                return win
+            time.sleep(2)
+
+        raise RuntimeError(
+            "Opened xiaohongshu.com but could not find Chrome window with '小红书' in title."
+        )
 
     def _capture(self, window: WindowInfo) -> Image.Image:
         return self.screen.capture_window(window)
@@ -219,41 +236,43 @@ class XHSResearchAgent:
             return []
         time.sleep(0.5)
 
-        # Clear existing text thoroughly and type new keyword
+        # Select all existing text and replace with new keyword
         self.screen.hotkey("command", "a")
-        time.sleep(0.1)
-        self.screen.press_key("backspace")
         time.sleep(0.2)
-        # Click search box again to make sure it's focused
-        self._click_element(window, "the search input box at the top center of the page")
-        time.sleep(0.3)
-        self.screen.hotkey("command", "a")
-        time.sleep(0.1)
+        # For CJK, type_text uses clipboard paste (Cmd+V) which replaces selection
         self.screen.type_text(keyword)
         time.sleep(0.5)
         self.screen.press_key("enter")
         self._log_step("search_submitted", f"Typed '{keyword}' and pressed Enter")
-        time.sleep(3)  # Wait for results to load
 
-        # Capture and extract cards
-        screenshot = self._capture(window)
+        # Wait for results to fully load (XHS can be slow to render cards)
+        time.sleep(5)
+
+        # Capture and check if cards have loaded (retry if still loading)
+        for load_attempt in range(3):
+            screenshot = self._capture(window)
+            state = self._detect_state(screenshot)
+            if state == "search_results":
+                break
+            self._log_step("search_loading", f"Attempt {load_attempt+1}: state={state}, waiting...")
+            time.sleep(3)
+
         self._save_screenshot(screenshot, f"search_{keyword}")
 
-        # Verify we're on search results
-        state = self._detect_state(screenshot)
-        if state != "search_results":
-            self._log_step("search_state_issue", f"Expected search_results, got {state}")
-            # Try waiting more
-            time.sleep(2)
-            screenshot = self._capture(window)
-
+        # Extract cards, with retry if results are still loading (0 cards)
         rules = self.skill.get_extraction_rules("search_results")
-        cards = self._extract_json(screenshot, rules["cards"].prompt)
-        if isinstance(cards, list):
-            self._log_step("search_results", f"Found {len(cards)} cards for '{keyword}'")
-            return cards
+        for extract_attempt in range(3):
+            cards = self._extract_json(screenshot, rules["cards"].prompt)
+            if isinstance(cards, list) and len(cards) > 0:
+                self._log_step("search_results", f"Found {len(cards)} cards for '{keyword}'")
+                return cards
 
-        self._log_step("search_no_cards", "LLM extraction returned no cards")
+            if extract_attempt < 2:
+                self._log_step("search_loading_retry", f"0 cards found, waiting for page to load (attempt {extract_attempt+1})")
+                time.sleep(5)
+                screenshot = self._capture(window)
+
+        self._log_step("search_no_cards", "No cards found after retries (page may still be loading)")
         return []
 
     def open_note(self, window: WindowInfo, card_desc: str) -> bool:
@@ -396,34 +415,97 @@ class XHSResearchAgent:
         time.sleep(1)
         self._log_step("close_note", "pressed Escape")
 
-    def visit_author_profile(self, window: WindowInfo, author_name: str) -> AuthorData | None:
-        """Visit an author's profile page."""
-        self._log_step("visit_author", author_name)
-
-        screenshot = self._capture(window)
-        if not self._click_element(
-            window,
-            f"the author's username or avatar ('{author_name}') at the top of the note",
-            screenshot,
-        ):
-            return None
-
-        time.sleep(3)  # Author profile loads as a new page
-
+    def _ensure_search_results(self, window: WindowInfo):
+        """Ensure we're on search results page. Recovers from broken states."""
         screenshot = self._capture(window)
         state = self._detect_state(screenshot)
+        if state == "search_results":
+            return
 
-        if state != "profile_page":
-            # Might still be transitioning — wait and retry
+        self._log_step("recovery", f"Expected search_results, got '{state}'. Recovering...")
+
+        # Try pressing Escape (might be stuck in modal overlay)
+        if state in ("note_detail", "unknown"):
+            self.screen.press_key("escape")
+            time.sleep(1.5)
+            screenshot = self._capture(window)
+            state = self._detect_state(screenshot)
+            if state == "search_results":
+                return
+
+        # Try browser back multiple times (XHS SPA may need several)
+        for i in range(3):
+            self.screen.hotkey("command", "[")
             time.sleep(2)
             screenshot = self._capture(window)
             state = self._detect_state(screenshot)
+            if state in ("search_results", "homepage"):
+                return
+
+        # Last resort: click the XHS logo to go to homepage, then we can search from there
+        self._log_step("recovery_home", "Clicking XHS logo to return to homepage")
+        if self._click_element(window, "the red XHS logo or '小红书' logo in the top-left corner"):
+            time.sleep(3)
+            screenshot = self._capture(window)
+            state = self._detect_state(screenshot)
+            if state in ("search_results", "homepage"):
+                return
+
+        self._save_screenshot(screenshot, "recovery_failed")
+        self._log_step("recovery_failed", f"Still on '{state}' — will try to search from here")
+
+    def visit_author_profile(self, window: WindowInfo, author_name: str) -> AuthorData | None:
+        """Visit an author's profile from search results page.
+
+        Must be called AFTER close_note() — we should be on search_results.
+        Clicks the author name/avatar on the search card, which navigates to
+        the author's profile page (not through the modal).
+        """
+        self._log_step("visit_author", author_name)
+
+        screenshot = self._capture(window)
+
+        # Click the author name on the search results card
+        queries = [
+            f"the author name or avatar '{author_name}' on a note card in the search results",
+            f"the username '{author_name}' shown below a note card",
+            f"the small avatar or name '{author_name}' in the search results grid",
+        ]
+
+        clicked = False
+        for q in queries:
+            if self._click_element(window, q, screenshot):
+                clicked = True
+                break
+
+        if not clicked:
+            self._log_step("author_click_failed", f"Could not find '{author_name}' on search results page")
+            return None
+
+        time.sleep(4)  # Author profile page load
+
+        # Check state with retries
+        state = "unknown"
+        for attempt in range(3):
+            screenshot = self._capture(window)
+            state = self._detect_state(screenshot)
+            if state == "profile_page":
+                break
+            # Might have opened a note_detail instead of profile — close it
+            if state == "note_detail":
+                self.screen.press_key("escape")
+                time.sleep(1)
+                self._log_step("author_note_opened", "Accidentally opened note instead of profile")
+                return None
+            if attempt < 2:
+                time.sleep(2)
 
         if state != "profile_page":
-            self._log_step("profile_skip", f"Got state {state}, not profile_page")
-            # Try browser back
+            self._log_step("profile_skip", f"Got state '{state}', expected 'profile_page'")
+            self._save_screenshot(screenshot, f"author_fail_{author_name[:10]}")
+            # Go back to search results
             self.screen.hotkey("command", "[")
-            time.sleep(1)
+            time.sleep(2)
             return None
 
         rules = self.skill.get_extraction_rules("profile_page")
@@ -439,7 +521,7 @@ class XHSResearchAgent:
         author.screenshot = self._save_screenshot(screenshot, f"author_{author_name[:10]}")
         self._log_step("author_data", f"{author.name}: {author.followers} followers, {author.notes_count} notes")
 
-        # Go back to previous page
+        # Go back to search results
         self.screen.hotkey("command", "[")
         time.sleep(2)
 
@@ -466,6 +548,7 @@ class XHSResearchAgent:
         self._log_step("keywords", f"{len(keywords)} keywords: {keywords}")
 
         seen_authors = set()
+        seen_titles = set()  # Deduplicate notes across keywords
 
         for keyword in keywords:
             # Search
@@ -479,6 +562,12 @@ class XHSResearchAgent:
 
             for card in picks:
                 title = card.get("title", card.get("position", "unknown"))
+
+                # Skip duplicates across keywords
+                if title in seen_titles:
+                    self._log_step("skip_dup", f"Already examined: {title[:40]}")
+                    continue
+                seen_titles.add(title)
 
                 # Open note
                 if not self.open_note(window, title):
@@ -496,16 +585,21 @@ class XHSResearchAgent:
 
                 report.notes.append(note)
 
+                # Close note FIRST (before author visit to avoid navigation issues)
+                self.close_note(window)
+                time.sleep(0.5)
+
+                # Ensure we're back on search results before continuing
+                self._ensure_search_results(window)
+
                 # Visit author profile (if new and interesting)
                 if self.browse_author_profile and note.author and note.author not in seen_authors:
                     seen_authors.add(note.author)
                     author = self.visit_author_profile(window, note.author)
                     if author:
                         report.authors.append(author)
-
-                # Close note
-                self.close_note(window)
-                time.sleep(0.5)
+                    # Recover to search results after author visit
+                    self._ensure_search_results(window)
 
         # Generate synthesis
         report.synthesis = self._synthesize(report)
