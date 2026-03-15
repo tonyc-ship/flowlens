@@ -1,0 +1,21 @@
+{
+  "manifest_version": 3,
+  "name": "XHS Research Agent",
+  "version": "0.1.0",
+  "description": "Programmatic XHS research via DOM extraction + LLM decisions",
+  "permissions": ["activeTab", "scripting", "storage"],
+  "host_permissions": ["https://www.xiaohongshu.com/*"],
+  "action": {
+    "default_popup": "popup.html"
+  },
+  "background": {
+    "service_worker": "background.js"
+  },
+  "content_scripts": [
+    {
+      "matches": ["https://www.xiaohongshu.com/*"],
+      "js": ["content.js"],
+      "run_at": "document_idle"
+    }
+  ]
+}
