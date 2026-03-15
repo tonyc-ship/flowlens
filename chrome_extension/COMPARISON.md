@@ -1,5 +1,36 @@
 # Chrome Extension (DOM) vs Vision Approach — 对比分析
 
+## 实测结果 (2026-03-15)
+
+用Playwright + 注入Chrome cookie实测DOM方案，同样的关键词("露营装备推荐", "露营好物清单")：
+
+| | Vision方案 (research_agent.py) | DOM方案 (Playwright) |
+|---|---|---|
+| **搜索页卡片提取** | 9-10张/次 (LLM从截图提取) | **26张/次** (DOM直接读) |
+| **笔记详情页** | ✅ 正常打开和提取 | ❌ **"当前笔记暂时无法浏览"** |
+| **评论** | ✅ 提取到6-8条 | ❌ 0条 (页面被封) |
+| **图片** | ✅ 浏览并描述每张 | ❌ 0张 (页面被封) |
+| **耗时** | ~4min | ~87s (但大部分笔记内容为空) |
+| **LLM调用** | ~35次Vision + ~8次grounding | 4次Text |
+
+### 关键发现：XHS对笔记详情页有反自动化检测
+
+搜索结果页可以正常访问，但**打开任何一篇笔记都被拦截**，显示"当前笔记暂时无法浏览 — 请打开小红书App扫码查看"。即使注入了真实的登录cookie也无效。
+
+XHS的反自动化检测可能基于：
+- **WebDriver标记** (`navigator.webdriver = true`)
+- **Canvas/WebGL指纹**：headless浏览器的渲染指纹与真实浏览器不同
+- **行为分析**：直接URL跳转到笔记页（无搜索→点击的自然浏览序列）
+- **TLS指纹**：Chromium headless的TLS握手特征
+
+Vision方案不受影响，因为它操作的是用户真实的Chrome浏览器进程，有完整的浏览器指纹和自然的用户行为序列。
+
+### 那Chrome Extension（非headless）能绕过吗？
+
+理论上可以——Chrome Extension的content script运行在真实的浏览器标签页内，`navigator.webdriver`为false，有真实的Canvas指纹。**但这需要实际测试验证。** Extension方案的反爬风险比headless Playwright低很多，但XHS的检测可能还包括请求频率、行为序列等因素。
+
+---
+
 ## 架构对比
 
 ```
@@ -100,36 +131,51 @@ Vision方案 (research_agent.py)              Extension方案 (content.js + back
 
 ### Extension方案能完全替代Vision方案吗？
 
-**对于XHS数据采集：基本能，且大部分指标更好。** 标题、正文、评论、作者、互动数据、图片URL——全部可以从DOM直接拿，比Vision更快更准更便宜。
+**实测结论：不能。** XHS对笔记详情页有反自动化检测，headless浏览器（即使注入真实cookie）也无法打开笔记内容。搜索列表页可以拿到更多卡片（26 vs 9），但笔记正文、评论、图片全部无法获取。
 
-### Vision方案还有什么不可替代的价值？
+### Vision方案的不可替代价值
 
-1. **图片内容理解** — Extension拿到的是图片URL，不知道图片里画了什么、写了什么。Vision方案能描述"这是一张露营装备清单，列出了帐篷48元、月亮椅50元..."。如果研究需要理解图片内容（而非仅仅收集），Vision不可替代。
+1. **绕过反自动化** — 操作真实浏览器进程，完全不可检测。这不是理论优势，是**实测验证的硬需求**。DOM/Playwright方案直接被XHS拦截。
 
-2. **跨网站通用性** — Extension每换一个网站就要重写选择器。Vision方案理论上只需要新的Skill描述（自然语言），不需要reverse engineer DOM结构。
+2. **图片内容理解** — Extension只能拿到图片URL，不知道图片里画了什么。Vision方案能描述"这是一张露营装备清单，列出了帐篷48元、月亮椅50元..."。
 
-3. **对抗DOM变化** — XHS改版频繁。class名变了Extension就挂，Vision方案看的是像素语义，改版影响小。
+3. **跨网站通用性** — Extension每换一个网站就要重写选择器和反反爬逻辑。Vision方案理论上只需要新的Skill描述。
 
 ### 推荐方案
 
-**混合方案：Extension做数据采集 + Vision做图片理解。**
+考虑到XHS的反自动化现实，纯DOM方案不可行。可选路线：
 
+**方案A：纯Vision（当前方案），优化效率**
 ```
-Extension (fast, cheap)           Vision (slow, expensive, smart)
-├─ 状态检测：URL匹配
-├─ 元素定位：CSS选择器
-├─ 数据提取：DOM查询
-├─ 导航操作：DOM事件
-├─ 图片URL收集                    → 下载图片 → Claude Vision描述
-├─ LLM决策：关键词、选笔记
-└─ LLM综合：研究报告
+Vision方案现状，但减少不必要的LLM调用：
+├─ 状态检测：从每次LLM调用改为基于URL/简单像素特征
+├─ 数据提取：保持Vision LLM（无法替代）
+├─ 图片描述：保持Vision LLM + 加强OCR
+└─ 导航：保持grounding + screen control
 ```
 
-这样：
-- 速度从4分钟降到~30秒
-- 成本从$0.60降到~$0.05 (只有图片理解用Vision)
-- 数据完整性比纯Vision更好 (DOM有全部数据)
-- 保留了图片内容理解能力
+**方案B：Chrome Extension（真实标签页内）+ Vision辅助**
+```
+如果Extension的content script能绕过反自动化检测（待验证）：
+├─ content.js：DOM提取搜索卡片、笔记正文、评论（快+准+免费）
+├─ 导航：DOM事件点击（精确+快速）
+├─ 图片理解：下载图片URL → Claude Vision描述（仅此需要LLM）
+└─ LLM决策：关键词、选笔记、综合报告
+```
+
+**方案C：Vision + 轻量DOM辅助（最稳妥）**
+```
+主体仍然是Vision方案操作真实浏览器，但在可以用DOM的地方用DOM：
+├─ 通过claude-in-chrome MCP在真实标签页内注入JS提取DOM数据
+├─ 搜索卡片：DOM提取（更快更全，26张 vs 9张）
+├─ 笔记正文：DOM提取（结构化、不需要Vision）
+├─ 评论：DOM提取（一次拿全，不需要滚动）
+├─ 导航/点击：仍用Vision grounding（最可靠）
+├─ 图片理解：仍用Vision（不可替代）
+└─ 状态检测：URL匹配 + 简单DOM检查
+```
+
+方案C最值得探索——在真实浏览器环境中（不被反自动化拦截），用DOM做数据提取（快+准），用Vision做导航和图片理解（可靠+智能）。
 
 ## 代码量对比
 
@@ -143,6 +189,15 @@ Extension (fast, cheap)           Vision (slow, expensive, smart)
 
 ## 风险
 
-- **XHS反爬**：Extension的DOM查询模式可能被检测。但XHS目前主要防的是API爬虫，对浏览器内JS不太敏感。
+- **XHS反自动化（已验证）**：Playwright headless无法打开笔记详情。Chrome Extension content script是否能绕过待验证。
 - **DOM结构变化**：XHS用React + 可能的CSS Modules，class名可能在每次部署后变化。需要维护选择器映射。
 - **懒加载**：某些数据（如完整评论列表、更多搜索结果）需要滚动触发加载，DOM查询只能拿到已加载的。
+
+## 实测数据文件
+
+- `tests/eval_report/dom_research/` — Playwright DOM方案输出
+  - `00_homepage.png` — 首页（弹出登录框）
+  - `search_露营装备推荐.png` — 搜索结果（cookie注入后成功加载26张卡片）
+  - `note_*.png` — 笔记页（全部显示"当前笔记暂时无法浏览"）
+  - `report.json` — 完整运行日志
+- `tests/eval_report/final_research/` — Vision方案输出（同主题，4篇笔记全部成功）
