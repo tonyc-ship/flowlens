@@ -1,21 +1,21 @@
 """
-DOM-based XHS research — Playwright implementation.
+DOM-based XHS research — via AppleScript JS injection into real Chrome.
 
-Same research flow as research_agent.py but using DOM extraction
-instead of vision/screenshots. Uses the same Claude model for LLM decisions.
+Equivalent to a Chrome Extension content script: runs JavaScript
+directly in the user's logged-in Chrome tab. No headless browser,
+no cookie issues, no anti-bot detection.
 
-This script demonstrates the DOM approach's speed/cost/accuracy
-for direct comparison with the vision approach.
+Uses the same Claude model for LLM decisions as the vision approach.
 """
 
 import json
 import os
 import re
+import subprocess
 import time
 from pathlib import Path
 
 import anthropic
-from playwright.sync_api import sync_playwright, Page
 
 # Load API key
 for p in [os.path.expanduser("~/.zshrc.pre-oh-my-zsh"), os.path.expanduser("~/.zshrc")]:
@@ -27,7 +27,7 @@ for p in [os.path.expanduser("~/.zshrc.pre-oh-my-zsh"), os.path.expanduser("~/.z
                     os.environ["ANTHROPIC_API_KEY"] = val
                     break
 
-MODEL = "claude-sonnet-4-6"  # same as vision approach
+MODEL = "claude-sonnet-4-6"
 OUTPUT_DIR = Path("tests/eval_report/dom_research")
 OUTPUT_DIR.mkdir(parents=True, exist_ok=True)
 
@@ -41,7 +41,7 @@ def log_step(action: str, detail: str = ""):
     step_count += 1
     t = time.strftime("%H:%M:%S")
     log_entries.append({"step": step_count, "time": t, "action": action, "detail": detail})
-    print(f"  [{step_count:03d}] {action}: {detail[:80]}")
+    print(f"  [{step_count:03d}] {action}: {detail[:100]}")
 
 
 def call_claude(prompt: str, max_tokens: int = 1024) -> str:
@@ -52,7 +52,7 @@ def call_claude(prompt: str, max_tokens: int = 1024) -> str:
     return resp.content[0].text
 
 
-def extract_json(text: str):
+def extract_json_from_text(text: str):
     m = re.search(r"[\[{][\s\S]*[\]}]", text)
     if m:
         try:
@@ -62,118 +62,194 @@ def extract_json(text: str):
     return None
 
 
-# ── DOM Extraction ──────────────────────────────────────────────
+# ── Chrome AppleScript Interface ────────────────────────────────
 
-def extract_search_cards(page: Page) -> list[dict]:
-    """Extract note cards from XHS search results page via DOM."""
-    cards = page.evaluate("""() => {
-        // XHS search results: each card is inside a section or div with note info
-        const cards = document.querySelectorAll('section.note-item, [data-note-id], .feeds-container > div > div');
+def chrome_run_js(js_code: str) -> str:
+    """Execute JavaScript in the active Chrome tab via AppleScript and return result."""
+    # Escape for AppleScript string
+    escaped = js_code.replace("\\", "\\\\").replace('"', '\\"').replace("\n", "\\n")
+    script = f'''
+    tell application "Google Chrome"
+        set theTab to active tab of front window
+        set result to execute theTab javascript "{escaped}"
+        return result
+    end tell
+    '''
+    result = subprocess.run(
+        ["osascript", "-e", script],
+        capture_output=True, text=True, timeout=30,
+    )
+    if result.returncode != 0:
+        raise RuntimeError(f"AppleScript error: {result.stderr.strip()}")
+    return result.stdout.strip()
+
+
+def chrome_navigate(url: str):
+    """Navigate the active Chrome tab to a URL."""
+    script = f'''
+    tell application "Google Chrome"
+        set URL of active tab of front window to "{url}"
+    end tell
+    '''
+    subprocess.run(["osascript", "-e", script], capture_output=True, timeout=10)
+
+
+def chrome_get_url() -> str:
+    """Get the current URL of the active Chrome tab."""
+    script = '''
+    tell application "Google Chrome"
+        return URL of active tab of front window
+    end tell
+    '''
+    result = subprocess.run(["osascript", "-e", script], capture_output=True, text=True, timeout=10)
+    return result.stdout.strip()
+
+
+def chrome_activate():
+    """Bring Chrome to front."""
+    subprocess.run(["osascript", "-e", 'tell application "Google Chrome" to activate'], timeout=5)
+
+
+# ── DOM Extraction (runs in real Chrome tab) ────────────────────
+
+def detect_state() -> str:
+    url = chrome_get_url()
+    if "/search_result" in url or "keyword=" in url:
+        return "search_results"
+    if "/explore/" in url:
+        return "note_detail"
+    if "/user/profile/" in url:
+        return "profile_page"
+    if url.rstrip("/").endswith("xiaohongshu.com") or url.endswith("/explore"):
+        return "homepage"
+    return "unknown"
+
+
+def extract_search_cards() -> list[dict]:
+    js = r"""
+    (function() {
+        // XHS search results: note cards in the feed
+        const cards = document.querySelectorAll('section.note-item, [data-note-id]');
         const results = [];
         for (const card of cards) {
-            const titleEl = card.querySelector('.title, a.title span, .note-link .title');
-            const authorEl = card.querySelector('.author-wrapper .name, .author .name, .nickname');
+            const titleEl = card.querySelector('.title, a.title span');
+            const authorEl = card.querySelector('.author-wrapper .name, .author .name');
             const likesEl = card.querySelector('.like-wrapper .count, .count');
             const linkEl = card.querySelector('a[href*="/explore/"], a[href*="/search_result/"]') || card.closest('a');
-
-            const title = titleEl?.textContent?.trim() || '';
-            const author = authorEl?.textContent?.trim() || '';
-            const likes = likesEl?.textContent?.trim() || '';
-            const link = linkEl?.href || '';
-
-            if (title || link) {
-                results.push({ title, author, likes, link, position: results.length });
-            }
+            const title = (titleEl && titleEl.textContent.trim()) || '';
+            const author = (authorEl && authorEl.textContent.trim()) || '';
+            const likes = (likesEl && likesEl.textContent.trim()) || '';
+            const link = (linkEl && linkEl.href) || '';
+            if (title || link) results.push({title, author, likes, link, position: results.length});
         }
-        return results;
-    }""")
-    return cards
+        return JSON.stringify(results);
+    })()
+    """
+    raw = chrome_run_js(js)
+    try:
+        return json.loads(raw)
+    except (json.JSONDecodeError, TypeError):
+        return []
 
 
-def extract_note_content(page: Page) -> dict:
-    """Extract note detail from the current page/modal via DOM."""
-    note = page.evaluate("""() => {
-        const n = {};
-        // Try multiple selector patterns
-        const selectors = {
-            title: ['.note-content .title', '#detail-title', '.note-text .title', 'h1'],
-            author: ['.author-container .username', '.info .username', '.author-wrapper .username', '.user-name'],
-            authorUrl: ['.author-container a[href*="/user/"]', '.info a[href*="/user/profile/"]'],
-            content: ['.note-content .desc', '#detail-desc', '.note-text .content', '.note-scroller .content'],
-            date: ['.note-content .date', '.bottom-container .date', '.note-text .date'],
-            likes: ['.like-wrapper .count', '.engage-bar .like .count', '[data-type="like"] .count'],
-            favorites: ['.collect-wrapper .count', '.engage-bar .collect .count', '[data-type="collect"] .count'],
-            commentsCount: ['.chat-wrapper .count', '.engage-bar .chat .count', '[data-type="chat"] .count'],
-        };
-
-        function trySelectors(sels) {
-            for (const sel of sels) {
-                const el = document.querySelector(sel);
+def extract_note_content() -> dict:
+    js = r"""
+    (function() {
+        function q(sel) {
+            for (const s of sel.split(',')) {
+                const el = document.querySelector(s.trim());
                 if (el && el.textContent.trim()) return el.textContent.trim();
             }
             return '';
         }
-
-        n.title = trySelectors(selectors.title);
-        n.author = trySelectors(selectors.author);
-        n.content = trySelectors(selectors.content);
-        n.date = trySelectors(selectors.date);
-        n.likes = trySelectors(selectors.likes);
-        n.favorites = trySelectors(selectors.favorites);
-        n.comments_count = trySelectors(selectors.commentsCount);
-
-        const authorLink = document.querySelector(selectors.authorUrl[0]) || document.querySelector(selectors.authorUrl[1]);
-        n.author_url = authorLink?.href || '';
-
-        // Hashtags
-        n.hashtags = [...document.querySelectorAll('.hash-tag a, a[href*="/page/topics/"], .tag')].map(el => el.textContent.trim()).filter(Boolean);
-
-        // Images - get ALL URLs from carousel
+        const n = {};
+        n.title = q('#detail-title, .note-content .title, h1');
+        n.author = q('.author-container .username, .info .username, .author-wrapper .username');
+        n.content = q('#detail-desc, .note-content .desc, .note-text .content, .note-scroller .content');
+        n.date = q('.note-content .date, .bottom-container .date');
+        n.likes = q('.like-wrapper .count, .engage-bar .like .count, [data-type="like"] .count');
+        n.favorites = q('.collect-wrapper .count, .engage-bar .collect .count');
+        n.comments_count = q('.chat-wrapper .count, .engage-bar .chat .count');
+        n.hashtags = [...document.querySelectorAll('.hash-tag a, a[href*="/page/topics/"], .tag')]
+            .map(el => el.textContent.trim()).filter(Boolean);
         const imgs = document.querySelectorAll('.carousel-image img, .slide img, .swiper-slide img, .note-slider img');
-        n.image_urls = [...imgs].map(img => img.src || img.dataset?.src || '').filter(Boolean);
+        n.image_urls = [...imgs].map(i => i.src || i.dataset.src || '').filter(Boolean);
         n.image_count = n.image_urls.length || 1;
+        const authorLink = document.querySelector('.author-container a[href*="/user/"], .info a[href*="/user/profile/"]');
+        n.author_url = (authorLink && authorLink.href) || '';
+        return JSON.stringify(n);
+    })()
+    """
+    raw = chrome_run_js(js)
+    try:
+        return json.loads(raw)
+    except (json.JSONDecodeError, TypeError):
+        return {}
 
-        // Image indicator
-        const indicator = document.querySelector('.indicator, .carousel-indicator, .slide-indicator');
-        if (indicator) {
-            const m = indicator.textContent.match(/(\\d+)\\s*\\/\\s*(\\d+)/);
-            if (m) n.image_count = parseInt(m[2]);
-        }
 
-        return n;
-    }""")
-    return note
-
-
-def extract_comments(page: Page) -> list[dict]:
-    """Extract comments from the current note detail via DOM."""
-    comments = page.evaluate("""() => {
+def extract_comments() -> list[dict]:
+    js = r"""
+    (function() {
         const items = document.querySelectorAll('.comment-item, .parent-comment, .comment-inner');
-        return [...items].map(item => {
+        const results = [...items].map(item => {
             const user = item.querySelector('.name, .user-name, .nickname');
             const text = item.querySelector('.content, .comment-text, .note-text');
-            const likes = item.querySelector('.like .count, .like-wrapper .count');
+            const likes = item.querySelector('.like .count');
             return {
-                username: user?.textContent?.trim() || '',
-                text: text?.textContent?.trim() || '',
-                likes: likes?.textContent?.trim() || '',
+                username: (user && user.textContent.trim()) || '',
+                text: (text && text.textContent.trim()) || '',
+                likes: (likes && likes.textContent.trim()) || '',
             };
         }).filter(c => c.text);
-    }""")
-    return comments
+        return JSON.stringify(results);
+    })()
+    """
+    raw = chrome_run_js(js)
+    try:
+        return json.loads(raw)
+    except (json.JSONDecodeError, TypeError):
+        return []
 
 
-# ── LLM Decision Functions (identical to vision approach) ───────
+def click_note_card(index: int):
+    """Click the nth note card in search results."""
+    js = f"""
+    (function() {{
+        const cards = document.querySelectorAll('section.note-item, [data-note-id]');
+        if (cards[{index}]) {{
+            const link = cards[{index}].querySelector('a') || cards[{index}].closest('a');
+            if (link) {{ link.click(); return 'clicked'; }}
+            cards[{index}].click();
+            return 'clicked_card';
+        }}
+        return 'not_found';
+    }})()
+    """
+    return chrome_run_js(js)
+
+
+def close_note_detail():
+    """Close note detail overlay."""
+    js = r"""
+    (function() {
+        const btn = document.querySelector('.close-circle, .note-detail-mask .close, [aria-label="close"]');
+        if (btn) { btn.click(); return 'closed'; }
+        document.dispatchEvent(new KeyboardEvent('keydown', {key: 'Escape', keyCode: 27, bubbles: true}));
+        return 'escape';
+    })()
+    """
+    return chrome_run_js(js)
+
+
+# ── LLM Decisions (identical to vision approach) ────────────────
 
 def generate_keywords(topic: str) -> list[str]:
     raw = call_claude(
         f"I want to research '{topic}' on Xiaohongshu (小红书). "
-        f"Generate 3-5 Chinese search keywords that would find the most "
-        f"relevant and diverse results. Return only a JSON array of strings.\n"
-        f'Example: ["关键词1", "关键词2", "关键词3"]',
+        f"Generate 3-5 Chinese search keywords. Return only a JSON array of strings.",
         256,
     )
-    return extract_json(raw) or [topic]
+    return extract_json_from_text(raw) or [topic]
 
 
 def pick_notes(cards: list[dict], topic: str, max_picks: int) -> list[dict]:
@@ -181,38 +257,26 @@ def pick_notes(cards: list[dict], topic: str, max_picks: int) -> list[dict]:
         return cards
     raw = call_claude(
         f"I'm researching '{topic}' on Xiaohongshu.\n"
-        f"Here are the visible note cards:\n"
-        f"{json.dumps(cards, ensure_ascii=False, indent=1)}\n\n"
-        f"Pick the {max_picks} most relevant and interesting notes for this research. "
-        f"Prefer notes with high engagement, diverse perspectives, and content-rich titles. "
-        f"Return a JSON array of the selected card objects (copy them exactly).",
+        f"Note cards:\n{json.dumps(cards, ensure_ascii=False, indent=1)}\n\n"
+        f"Pick the {max_picks} most relevant/interesting. Return JSON array of selected cards.",
         2048,
     )
-    picks = extract_json(raw)
+    picks = extract_json_from_text(raw)
     return (picks if isinstance(picks, list) else cards)[:max_picks]
 
 
-def synthesize(topic: str, keywords: list[str], notes: list[dict]) -> str:
-    summaries = [
-        {
-            "title": n.get("title", ""),
-            "author": n.get("author", ""),
-            "likes": n.get("likes", ""),
-            "content_preview": n.get("content", "")[:200],
-            "hashtags": n.get("hashtags", []),
-            "image_count": n.get("image_count", 0),
-            "comments_count": n.get("comments_count", ""),
-            "keyword": n.get("source_keyword", ""),
-        }
-        for n in notes
-    ]
+def synthesize(topic, keywords, notes):
+    summaries = [{
+        "title": n.get("title", ""), "author": n.get("author", ""),
+        "likes": n.get("likes", ""), "content_preview": n.get("content", "")[:200],
+        "hashtags": n.get("hashtags", []), "image_count": n.get("image_count", 0),
+        "comments_count": n.get("comments_count", ""), "keyword": n.get("source_keyword", ""),
+    } for n in notes]
     return call_claude(
-        f"I researched '{topic}' on Xiaohongshu. Here's what I found:\n\n"
-        f"Keywords searched: {json.dumps(keywords, ensure_ascii=False)}\n\n"
-        f"Notes collected:\n{json.dumps(summaries, ensure_ascii=False, indent=1)}\n\n"
-        f"Synthesize the key findings into a research report (2-3 paragraphs in Chinese). "
-        f"Focus on: main trends, popular content themes, notable creators, "
-        f"audience engagement patterns, and actionable insights.",
+        f"I researched '{topic}' on Xiaohongshu:\n"
+        f"Keywords: {json.dumps(keywords, ensure_ascii=False)}\n"
+        f"Notes:\n{json.dumps(summaries, ensure_ascii=False, indent=1)}\n\n"
+        f"Synthesize into 2-3 paragraphs in Chinese. Focus on trends, themes, insights.",
         2048,
     )
 
@@ -224,131 +288,91 @@ def research(topic: str, keywords: list[str] | None = None):
     all_notes = []
     seen_titles = set()
 
-    with sync_playwright() as pw:
-        browser = pw.chromium.launch(headless=True)
-        context = browser.new_context(
-            viewport={"width": 1920, "height": 1080},
-            user_agent="Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
-        )
+    chrome_activate()
+    log_step("start", f"Research topic: {topic}")
 
-        # Inject cookies from user's Chrome (XHS requires login for search results)
-        try:
-            import rookiepy
-            raw_cookies = rookiepy.chrome(domains=[".xiaohongshu.com"])
-            pw_cookies = []
-            for c in raw_cookies:
-                pw_cookies.append({
-                    "name": c["name"],
-                    "value": c["value"],
-                    "domain": c["domain"],
-                    "path": c.get("path", "/"),
-                    "httpOnly": bool(c.get("httpOnly", False)),
-                    "secure": bool(c.get("secure", False)),
-                    "sameSite": "Lax",
-                })
-            context.add_cookies(pw_cookies)
-            log_step("cookies", f"Injected {len(pw_cookies)} XHS cookies from Chrome")
-        except Exception as e:
-            log_step("cookies_failed", f"Could not load cookies: {e}")
+    # Ensure we're on XHS
+    url = chrome_get_url()
+    if "xiaohongshu.com" not in url:
+        chrome_navigate("https://www.xiaohongshu.com")
+        time.sleep(5)
+    log_step("page", f"Current URL: {chrome_get_url()}")
 
-        page = context.new_page()
+    if keywords is None:
+        keywords = generate_keywords(topic)
+    log_step("keywords", f"{len(keywords)} keywords: {keywords}")
 
-        log_step("start", f"Research topic: {topic}")
+    for keyword in keywords:
+        log_step("search", keyword)
 
-        # Navigate to XHS
-        page.goto("https://www.xiaohongshu.com", wait_until="domcontentloaded", timeout=15000)
-        page.wait_for_timeout(3000)
-        log_step("open_xhs", "Opened xiaohongshu.com")
+        # Navigate to search URL
+        search_url = f"https://www.xiaohongshu.com/search_result?keyword={keyword}&source=web_search_result_notes"
+        chrome_navigate(search_url)
+        time.sleep(5)
 
-        # Take a screenshot for reference
-        page.screenshot(path=str(OUTPUT_DIR / "00_homepage.png"))
+        # Extract cards
+        cards = extract_search_cards()
+        if not cards:
+            time.sleep(5)
+            cards = extract_search_cards()
+        log_step("cards", f"{len(cards)} cards extracted from DOM")
 
-        if keywords is None:
-            keywords = generate_keywords(topic)
-        log_step("keywords", f"{len(keywords)} keywords: {keywords}")
+        for c in cards[:5]:
+            print(f"    → {c.get('title', '?')[:40]} | {c.get('author', '?')} | {c.get('likes', '?')}")
 
-        for keyword in keywords:
-            log_step("search", keyword)
+        if not cards:
+            continue
 
-            # Navigate to search URL directly (more reliable than typing)
-            search_url = f"https://www.xiaohongshu.com/search_result?keyword={keyword}&source=web_search_result_notes"
-            page.goto(search_url, wait_until="domcontentloaded", timeout=15000)
-            page.wait_for_timeout(5000)  # Wait for cards to render
+        picks = pick_notes(cards, topic, 2)
+        log_step("picked", f"{len(picks)} notes to examine")
 
-            # Screenshot search results
-            page.screenshot(path=str(OUTPUT_DIR / f"search_{keyword}.png"))
-
-            # Extract cards from DOM
-            cards = extract_search_cards(page)
-            log_step("cards_extracted", f"{len(cards)} cards from DOM")
-
-            if not cards:
-                # Retry once
-                page.wait_for_timeout(5000)
-                cards = extract_search_cards(page)
-                log_step("cards_retry", f"{len(cards)} cards after retry")
-
-            if not cards:
+        for card in picks:
+            title = card.get("title", "")
+            if not title or title in seen_titles:
+                if title:
+                    log_step("skip_dup", f"Already: {title[:40]}")
                 continue
+            seen_titles.add(title)
 
-            # Print what we got
-            for c in cards[:5]:
-                print(f"    → {c.get('title', '?')[:40]} | {c.get('author', '?')} | {c.get('likes', '?')} likes")
+            log_step("open_note", title[:60])
 
-            # LLM picks best notes
-            picks = pick_notes(cards, topic, 2)
-            log_step("picked", f"{len(picks)} notes to examine")
+            # Click the card (by index in search results)
+            idx = card.get("position", 0)
+            click_note_card(idx)
+            time.sleep(3)
 
-            for card in picks:
-                title = card.get("title", f"card_{card.get('position', '?')}")
-                if title in seen_titles:
-                    log_step("skip_dup", f"Already examined: {title[:40]}")
-                    continue
-                seen_titles.add(title)
+            # Extract content
+            note = extract_note_content()
+            note["source_keyword"] = keyword
+            log_step("extracted",
+                     f"title='{note.get('title', '')[:30]}' author='{note.get('author', '')}' "
+                     f"likes={note.get('likes', '?')} imgs={note.get('image_count', '?')}")
 
-                log_step("open_note", title[:60])
+            # Content preview
+            content = note.get("content", "")
+            if content:
+                log_step("content_preview", content[:100])
 
-                # Navigate to note by URL if available
-                link = card.get("link", "")
-                if link:
-                    page.goto(link, wait_until="domcontentloaded", timeout=15000)
-                    page.wait_for_timeout(3000)
-                else:
-                    log_step("no_link", "No link available, skipping")
-                    continue
+            # Comments
+            comments = extract_comments()
+            note["comments"] = comments
+            log_step("comments", f"{len(comments)} comments")
 
-                # Extract content from DOM
-                note = extract_note_content(page)
-                note["source_keyword"] = keyword
+            # Images
+            log_step("images", f"{len(note.get('image_urls', []))} image URLs")
 
-                # Screenshot note
-                page.screenshot(path=str(OUTPUT_DIR / f"note_{title[:20]}.png"))
+            all_notes.append(note)
 
-                if note.get("title"):
-                    log_step("extracted", f"\"{note['title']}\" by {note.get('author', '?')}, "
-                             f"{note.get('likes', '?')} likes, {note.get('image_count', '?')} imgs")
-                else:
-                    log_step("extract_partial", f"Title empty, content length: {len(note.get('content', ''))}")
+            # Close note / go back
+            close_note_detail()
+            time.sleep(1)
+            # If still on note page, navigate back
+            if "/explore/" in chrome_get_url():
+                chrome_navigate(search_url)
+                time.sleep(3)
 
-                # Extract comments from DOM
-                comments = extract_comments(page)
-                note["comments"] = comments
-                log_step("comments", f"{len(comments)} comments from DOM")
-
-                # Image URLs (already in note from extraction)
-                log_step("images", f"{len(note.get('image_urls', []))} image URLs (no vision needed)")
-
-                all_notes.append(note)
-
-                # Go back to search results
-                page.go_back(wait_until="domcontentloaded", timeout=10000)
-                page.wait_for_timeout(2000)
-
-        browser.close()
-
-    # Synthesize
     elapsed_collect = time.time() - t0
-    log_step("synthesize", f"Data collection took {elapsed_collect:.1f}s. Generating report...")
+    log_step("synthesize", f"Data collection: {elapsed_collect:.1f}s. Generating report...")
 
     synthesis = ""
     if all_notes:
@@ -357,39 +381,24 @@ def research(topic: str, keywords: list[str] | None = None):
     elapsed_total = time.time() - t0
     log_step("done", f"Total: {elapsed_total:.1f}s, {len(all_notes)} notes")
 
-    # Save report
     report = {
-        "topic": topic,
-        "keywords": keywords,
-        "notes": all_notes,
+        "topic": topic, "keywords": keywords, "notes": all_notes,
         "synthesis": synthesis,
-        "timing": {
-            "data_collection_seconds": round(elapsed_collect, 1),
-            "total_seconds": round(elapsed_total, 1),
-        },
+        "timing": {"data_collection_s": round(elapsed_collect, 1), "total_s": round(elapsed_total, 1)},
         "log": log_entries,
     }
-
     with open(OUTPUT_DIR / "report.json", "w") as f:
         json.dump(report, f, indent=2, ensure_ascii=False)
 
-    # Print summary
     print(f"\n{'='*60}")
-    print(f"DOM Research Complete")
+    print(f"DOM Research Complete — {elapsed_total:.1f}s total")
     print(f"{'='*60}")
-    print(f"Topic: {topic}")
-    print(f"Keywords: {keywords}")
-    print(f"Notes: {len(all_notes)}")
-    print(f"Data collection: {elapsed_collect:.1f}s")
-    print(f"Total time: {elapsed_total:.1f}s")
-    print(f"LLM calls: {2 + len(keywords)} (keywords + {len(keywords)} picks + synthesis)")
-    print(f"\nNotes collected:")
+    print(f"Notes: {len(all_notes)}, LLM calls: {2 + len(keywords)} text-only")
     for i, n in enumerate(all_notes):
-        print(f"  {i+1}. {n.get('title', '?')[:50]} — {n.get('author', '?')} ({n.get('likes', '?')} likes, {n.get('image_count', '?')} imgs)")
+        print(f"  {i+1}. {n.get('title', '?')[:50]} — {n.get('author', '?')} ({n.get('likes', '?')} likes)")
         print(f"     Content: {n.get('content', '')[:80]}...")
         print(f"     Comments: {len(n.get('comments', []))}, Images: {len(n.get('image_urls', []))}")
-        print(f"     Hashtags: {n.get('hashtags', [])[:5]}")
-    print(f"\nReport saved to: {OUTPUT_DIR}/report.json")
+    print(f"\nReport: {OUTPUT_DIR}/report.json")
 
     return report
 
