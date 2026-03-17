@@ -1,12 +1,6 @@
 # ClawVision
 
-Visual perception MCP server for AI agents. Provides screen-level UI understanding and precise interaction on macOS.
-
-## What is this?
-
-ClawVision gives AI agents (OpenClaw, Claude Code, Cursor, etc.) the ability to **see and interact with real screens** — not DOM, not headless browsers, but actual pixel-level visual understanding + mouse/keyboard control.
-
-The core differentiator over vanilla LLM vision: **local CV models (YOLO, OWLv2) provide fast, precise bounding boxes** (~100ms) without API calls, while LLMs handle high-level reasoning.
+Visual perception + browser automation for AI agents. Chrome Extension handles DOM extraction and browser actions; Python agent handles LLM reasoning, Vision API, and report generation.
 
 First vertical use case: **Xiaohongshu (小红书) research and data collection**.
 
@@ -19,97 +13,109 @@ clawvision/
 ├── .gitignore
 ├── .claude/
 │   └── settings.local.json            # MCP Server registration for Claude Code
+│
+├── chrome_extension/                  # Chrome Extension (MV3)
+│   ├── manifest.json                  # Extension config (permissions, content scripts)
+│   ├── background.js                  # WebSocket client, CDP screenshots, command routing
+│   ├── content.js                     # DOM extraction, card clicks, state detection
+│   ├── popup.html                     # Extension popup UI
+│   └── popup.js                       # Popup logic (connect/disconnect)
+│
 ├── clawvision/
 │   ├── __init__.py
 │   ├── server.py                      # MCP Server entry point (10 tools)
-│   ├── screen.py                      # macOS screen capture + input control
-│   ├── vision/
+│   ├── screen.py                      # macOS screen capture + input control (Quartz)
+│   │
+│   ├── agent/                         # Chrome Extension bridge + research agent
 │   │   ├── __init__.py
-│   │   ├── llm.py                     # Claude Vision API (high-level understanding)
-│   │   ├── ocr.py                     # Text extraction (MVP: Claude API)
-│   │   └── detector.py                # Local CV models (YOLO + OWLv2)
-│   └── workflows/
+│   │   ├── __main__.py                # CLI: python -m clawvision.agent "topic"
+│   │   ├── bridge.py                  # WebSocket server (Python ↔ Extension)
+│   │   └── xhs_agent.py              # XHS research agent (search → extract → report)
+│   │
+│   ├── skills/                        # Site-specific state machines
+│   │   ├── __init__.py
+│   │   ├── base.py                    # Base SiteSkill class
+│   │   └── xiaohongshu_skill.py       # XHS skill (5 states, no pixel code)
+│   │
+│   └── vision/                        # Vision capabilities
 │       ├── __init__.py
-│       └── xiaohongshu.py             # Xiaohongshu-specific automation
+│       ├── grounding.py               # Unified grounding (UI-TARS MLX, Claude, ollama)
+│       ├── llm.py                     # Claude Vision API wrapper
+│       ├── detector.py                # Local CV models (YOLO + OWLv2)
+│       └── ocr.py                     # Text extraction
+│
 ├── tests/
 │   ├── __init__.py
-│   └── test_screen.py                 # Screen capture smoke test
+│   ├── test_extension_agent.py        # 5-level test: connection → search → note → full research
+│   ├── test_screen.py                 # Screen capture smoke test
+│   └── test_state_machine.py          # Skill state machine tests
+│
 └── weights/                           # Auto-downloaded model weights (gitignored)
 ```
 
 ## Architecture
 
 ```
-Agent (OpenClaw / Claude Code / any MCP client)
-    │  MCP protocol (stdio)
-    ▼
-ClawVision Server (server.py) — 10 tools
+Python Agent (xhs_agent.py)
+    │  LLM decisions, Vision API, report generation
     │
-    ├─ Screen Layer (screen.py)
-    │   └─ macOS Quartz API: capture, click, type, scroll
+    │  WebSocket (bridge.py ↔ background.js)
     │
-    ├─ Vision Layer (vision/)
-    │   ├─ llm.py     — Claude Vision API (page analysis, action planning)
-    │   ├─ detector.py — Local CV models, no API calls:
-    │   │   ├─ YOLOUIDetector  — OmniParser YOLOv8, ~100ms on MPS
-    │   │   ├─ OWLv2Detector   — Open-vocabulary, ~1s on MPS
-    │   │   └─ HybridDetector  — Combines both
-    │   └─ ocr.py     — Text extraction
-    │
-    └─ Workflows (workflows/)
-        └─ xiaohongshu.py — Search, detail, scroll-collect
+Chrome Extension (MV3)
+    ├─ background.js — WebSocket client, CDP screenshots, tab management
+    ├─ content.js   — DOM extraction, card clicks, state detection, comments
+    └─ manifest.json — Permissions: tabs, scripting, debugger, alarms
+
+Vision Layer (available for fallback)
+    ├─ grounding.py  — UI-TARS MLX (89% accuracy, ~7s) / Claude Vision
+    ├─ detector.py   — YOLO (~100ms) + OWLv2 (~1s) local detection
+    └─ llm.py        — Claude Vision API for image understanding
+
+MCP Server (server.py) — 10 tools for external agents
+    └─ screen.py — macOS Quartz capture + input control
 ```
 
-## MCP Tools (10 total)
+### Data Flow (XHS Research)
 
-### General Vision
-| Tool | Description | Backend |
-|------|-------------|---------|
-| `capture_screen` | Screenshot full screen or app window | Quartz |
-| `analyze_screen` | AI analysis of screen content | Claude Vision API |
-| `find_and_click` | Find element by description and click | Claude Vision API |
-| `type_text` | Type text (supports CJK) | pyautogui |
-| `extract_text` | OCR text extraction | Claude Vision API |
+```
+1. Agent generates search keywords (Claude Text)
+2. Extension navigates to XHS search URL
+3. Content script extracts cards from DOM
+4. Agent picks best notes (Claude Text)
+5. For each note:
+   a. Content script clicks card → opens overlay
+   b. CDP captures screenshot (chrome.debugger)
+   c. Content script extracts DOM content + comments
+   d. If DOM fails → Vision fallback (screenshot → Claude Vision)
+   e. Agent downloads image URLs → Claude Vision describes them
+6. Agent synthesizes findings → generates HTML report with screenshots
+```
 
-### Local CV Detection (core differentiator)
-| Tool | Description | Backend |
-|------|-------------|---------|
-| `detect_ui_elements` | Detect all UI elements (~100ms) | OmniParser YOLOv8 |
-| `find_elements_by_query` | Find elements by text description (~1s) | OWLv2 |
+## Key Technical Decisions
 
-### Xiaohongshu
-| Tool | Description |
-|------|-------------|
-| `xhs_search` | Search and extract note cards |
-| `xhs_note_detail` | Open and extract note details |
-| `xhs_scroll_collect` | Scroll and capture multiple pages |
-
-## Key Decisions
-
-- **Independent MCP Server** — not tied to any agent platform; works with anything that speaks MCP
-- **Screen-level control** — operates on real pixels, not DOM; bypasses anti-scraping; resilient to UI changes
-- **macOS native** — uses Quartz/CGEvent APIs; requires Screen Recording + Accessibility permissions
-- **Hybrid CV pipeline** — LLM for reasoning, local models for precision; avoids API costs for detection
-- **Auto-download weights** — model weights download from HuggingFace on first use
+- **Chrome Extension over Accessibility** — no screen focus needed, user can keep using computer
+- **CDP screenshots** — `chrome.debugger` + `Page.captureScreenshot` (not `captureVisibleTab` which crashes MV3 service workers)
+- **DOM-first, Vision-fallback** — DOM extraction is fast and reliable; Vision API for when DOM fails or for image understanding
+- **WebSocket bridge** — Python WebSocket server ↔ Extension background.js client; auto-reconnect + keepalive
+- **MV3 keepalive** — chrome.alarms (30s) + content script long-lived port + WebSocket pings (10s)
+- **XHS SPA handling** — click cover image (not `<a>` tag) for React modal overlay; wait for async DOM render
 
 ## Setup
 
 ```bash
-# Core (screen control + Claude Vision API)
+# Install Python dependencies
 pip install -e .
 
-# With local CV detection models (recommended)
+# With local CV detection models (optional, for vision fallback)
 pip install -e ".[detect]"
-
-# Everything including PaddleOCR
-pip install -e ".[all]"
 ```
 
-### macOS Permissions
+### Chrome Extension
 
-Grant in **System Settings → Privacy & Security**:
-- **Screen Recording** — for screenshots
-- **Accessibility** — for mouse/keyboard control
+1. Open `chrome://extensions/`
+2. Enable "Developer mode"
+3. Click "Load unpacked" → select `chrome_extension/` directory
+4. Grant permissions when prompted
 
 ### Environment
 
@@ -119,26 +125,44 @@ export ANTHROPIC_API_KEY="sk-ant-..."
 
 ## Running
 
-```bash
-# As MCP server (stdio transport, used by agents)
-clawvision
+### XHS Research Agent (primary use case)
 
-# Or directly
-python -m clawvision.server
+```bash
+# Run research on a topic
+python -m clawvision.agent "2025春季露营装备趋势"
+
+# With custom keywords
+python -m clawvision.agent "咖啡拉花" --keywords "咖啡拉花教程,拉花技巧入门"
 ```
 
-### Register with Claude Code
+The agent starts a WebSocket server, connects to the Chrome Extension, and runs the research flow autonomously. Reports are saved to `research_output/`.
 
-Already configured in `.claude/settings.local.json`. Restart Claude Code in this project directory to activate.
+### MCP Server (for external agents)
+
+```bash
+clawvision
+# or: python -m clawvision.server
+```
 
 ## Testing
 
 ```bash
-python tests/test_screen.py  # screen capture + window discovery
+# Full research test (requires Chrome + extension + XHS login)
+python tests/test_extension_agent.py -t 4   # camping research
+python tests/test_extension_agent.py -t 5   # coffee latte art
+
+# Individual steps
+python tests/test_extension_agent.py -t 1   # connection + screenshot
+python tests/test_extension_agent.py -t 2   # search + card extraction
+python tests/test_extension_agent.py -t 3   # note content extraction
+
+# Screen capture smoke test
+python tests/test_screen.py
 ```
 
 ## Model Weights
 
 Weights are auto-downloaded on first use to `~/.clawvision/weights/`:
-- **OmniParser YOLOv8**: `microsoft/OmniParser-v2.0` (~50MB)
-- **OWLv2**: `google/owlv2-base-patch16-ensemble` (auto via HuggingFace transformers)
+- **UI-TARS-1.5-7B-6bit (MLX)**: Best local grounding, 89% accuracy, ~7-8s/query
+- **OmniParser YOLOv8**: `microsoft/OmniParser-v2.0` (~50MB, ~100ms)
+- **OWLv2**: `google/owlv2-base-patch16-ensemble` (auto via HuggingFace)
