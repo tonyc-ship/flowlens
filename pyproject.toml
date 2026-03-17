@@ -11,6 +11,7 @@ dependencies = [
     "pyobjc-framework-ScreenCaptureKit>=10.0",
     "Pillow>=10.0.0",
     "numpy>=1.26.0",
+    "websockets>=13.0",
 ]
 
 [project.optional-dependencies]

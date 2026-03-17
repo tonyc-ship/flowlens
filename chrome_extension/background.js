@@ -1,251 +1,309 @@
 /**
- * XHS Research Agent — Background Service Worker
+ * XHS Research Agent — Background Service Worker (v2)
  *
- * Orchestrates the research flow:
- *   1. Generate keywords (LLM)
- *   2. For each keyword: search → extract cards → pick best notes (LLM)
- *   3. For each note: open → extract content + comments + images from DOM
- *   4. Synthesize findings (LLM)
- *   5. Generate report
+ * WebSocket client connecting to the external Python agent.
+ * Routes commands between the agent and content scripts.
  *
- * LLM calls use the same Claude model as the vision approach (claude-sonnet-4-6).
- * The ONLY LLM usage is for decisions + synthesis, NOT for reading page content.
+ * Handles directly:
+ *   - navigate: chrome.tabs.update
+ *   - capture_screenshot: chrome.tabs.captureVisibleTab
+ *   - get_tab_info: tab URL and state
+ *
+ * Forwards to content script:
+ *   - All DOM extraction and action commands
  */
 
-// ── Config ─────────────────────────────────────────────────────
+const DEFAULT_PORT = 8765;
+let ws = null;
+let activeTabId = null;
+let contentReady = new Map(); // tabId -> true
+let reconnectTimer = null;
+let wsPort = DEFAULT_PORT;
 
-const CONFIG = {
-  model: 'claude-sonnet-4-6', // same as vision approach
-  maxNotesPerKeyword: 3,
-  maxCommentScrolls: 2,
-  apiKeyStorageKey: 'anthropic_api_key',
-};
+// ── WebSocket Connection ───────────────────────────────────────
 
-// ── LLM Client ─────────────────────────────────────────────────
-
-async function getApiKey() {
-  const { anthropic_api_key } = await chrome.storage.local.get(CONFIG.apiKeyStorageKey);
-  return anthropic_api_key;
-}
-
-async function callClaude(prompt, maxTokens = 1024) {
-  const apiKey = await getApiKey();
-  if (!apiKey) throw new Error('No API key set. Configure in extension popup.');
-
-  const resp = await fetch('https://api.anthropic.com/v1/messages', {
-    method: 'POST',
-    headers: {
-      'Content-Type': 'application/json',
-      'x-api-key': apiKey,
-      'anthropic-version': '2023-06-01',
-      'anthropic-dangerous-direct-browser-access': 'true',
-    },
-    body: JSON.stringify({
-      model: CONFIG.model,
-      max_tokens: maxTokens,
-      messages: [{ role: 'user', content: prompt }],
-    }),
-  });
-
-  if (!resp.ok) {
-    const err = await resp.text();
-    throw new Error(`Claude API error: ${resp.status} ${err}`);
+function connect(port) {
+  wsPort = port || wsPort;
+  if (ws && ws.readyState === WebSocket.OPEN) {
+    console.log('[BG] Already connected');
+    return;
   }
 
-  const data = await resp.json();
-  return data.content[0].text;
-}
+  console.log(`[BG] Connecting to ws://localhost:${wsPort}...`);
+  ws = new WebSocket(`ws://localhost:${wsPort}`);
 
-function extractJson(text) {
-  const m = text.match(/[\[{][\s\S]*[\]}]/);
-  if (m) {
-    try { return JSON.parse(m[0]); } catch {}
-  }
-  return null;
-}
-
-// ── Tab Communication ──────────────────────────────────────────
-
-async function sendToTab(tabId, msg) {
-  return chrome.tabs.sendMessage(tabId, msg);
-}
-
-function wait(ms) {
-  return new Promise(r => setTimeout(r, ms));
-}
-
-// ── LLM Decision Functions (same logic as vision approach) ─────
-
-async function generateKeywords(topic) {
-  const raw = await callClaude(
-    `I want to research '${topic}' on Xiaohongshu (小红书). ` +
-    `Generate 3-5 Chinese search keywords that would find the most ` +
-    `relevant and diverse results. Return only a JSON array of strings.\n` +
-    `Example: ["关键词1", "关键词2", "关键词3"]`,
-    256
-  );
-  return extractJson(raw) || [topic];
-}
-
-async function pickNotes(cards, topic, maxPicks) {
-  if (cards.length <= maxPicks) return cards;
-
-  const raw = await callClaude(
-    `I'm researching '${topic}' on Xiaohongshu.\n` +
-    `Here are the visible note cards:\n` +
-    `${JSON.stringify(cards, null, 1)}\n\n` +
-    `Pick the ${maxPicks} most relevant and interesting notes for this research. ` +
-    `Prefer notes with high engagement, diverse perspectives, and content-rich titles. ` +
-    `Return a JSON array of the selected card objects (copy them exactly).`,
-    2048
-  );
-  const picks = extractJson(raw);
-  return (Array.isArray(picks) ? picks : cards).slice(0, maxPicks);
-}
-
-async function synthesize(topic, keywords, notes) {
-  const notesSummary = notes.map(n => ({
-    title: n.title,
-    author: n.author,
-    likes: n.likes,
-    content_preview: (n.content || '').slice(0, 200),
-    hashtags: n.hashtags,
-    image_count: n.image_count,
-    comments_count: n.comments_count,
-    keyword: n.source_keyword,
-  }));
-
-  return callClaude(
-    `I researched '${topic}' on Xiaohongshu. Here's what I found:\n\n` +
-    `Keywords searched: ${JSON.stringify(keywords)}\n\n` +
-    `Notes collected:\n${JSON.stringify(notesSummary, null, 1)}\n\n` +
-    `Synthesize the key findings into a research report (2-3 paragraphs in Chinese). ` +
-    `Focus on: main trends, popular content themes, notable creators, ` +
-    `audience engagement patterns, and actionable insights.`,
-    2048
-  );
-}
-
-// ── Research Flow ──────────────────────────────────────────────
-
-async function research(tabId, topic, providedKeywords = null) {
-  const log = [];
-  const step = (action, detail) => {
-    const entry = { time: new Date().toLocaleTimeString(), action, detail };
-    log.push(entry);
-    console.log(`[${entry.time}] ${action}: ${detail}`);
+  ws.onopen = () => {
+    console.log('[BG] Connected to agent');
+    clearTimeout(reconnectTimer);
+    // Send initial state (guard against race condition in MV3)
+    chrome.tabs.query({ active: true, currentWindow: true }, (tabs) => {
+      if (tabs[0]) {
+        activeTabId = tabs[0].id;
+        if (ws && ws.readyState === WebSocket.OPEN) {
+          ws.send(JSON.stringify({
+            type: 'event',
+            event: 'connected',
+            data: { tabId: activeTabId, url: tabs[0].url }
+          }));
+        }
+      }
+    });
   };
 
-  step('start', `Research topic: ${topic}`);
-
-  // 1. Generate keywords
-  const keywords = providedKeywords || await generateKeywords(topic);
-  step('keywords', `${keywords.length} keywords: ${JSON.stringify(keywords)}`);
-
-  const allNotes = [];
-  const seenTitles = new Set();
-
-  for (const keyword of keywords) {
-    // 2. Search
-    step('search', keyword);
-    const searchResult = await sendToTab(tabId, { action: 'search', keyword });
-
-    if (searchResult.error) {
-      step('search_error', searchResult.error);
-      continue;
+  ws.onmessage = async (event) => {
+    let msg;
+    try {
+      msg = JSON.parse(event.data);
+    } catch {
+      console.error('[BG] Invalid message:', event.data);
+      return;
     }
 
-    // Wait for page to settle, re-extract
-    await wait(2000);
-    const { cards } = await sendToTab(tabId, { action: 'extract_search_cards' });
+    if (msg.type !== 'command') return;
 
-    if (!cards || cards.length === 0) {
-      step('no_cards', 'No cards found');
-      continue;
+    let response;
+    try {
+      const result = await handleCommand(msg);
+      response = { id: msg.id, type: 'response', data: result };
+    } catch (err) {
+      response = { id: msg.id, type: 'response', error: err.message };
     }
-    step('cards_found', `${cards.length} cards`);
 
-    // 3. LLM picks best notes
-    const picks = await pickNotes(cards, topic, CONFIG.maxNotesPerKeyword);
-    step('picked', `${picks.length} notes to examine`);
-
-    for (const card of picks) {
-      const title = card.title || `card_${card.position}`;
-      if (seenTitles.has(title)) {
-        step('skip_dup', `Already examined: ${title.slice(0, 40)}`);
-        continue;
-      }
-      seenTitles.add(title);
-
-      // 4. Open note
-      const cardIndex = card.position ?? cards.indexOf(card);
-      step('open_note', title.slice(0, 60));
-
-      // Try clicking by index, or navigate by URL if available
-      if (card.link) {
-        await sendToTab(tabId, { action: 'navigate', url: card.link });
+    try {
+      if (ws && ws.readyState === WebSocket.OPEN) {
+        ws.send(JSON.stringify(response));
       } else {
-        await sendToTab(tabId, { action: 'click_card', index: cardIndex });
+        console.error('[BG] WebSocket not open, cannot send response');
       }
-      await wait(2000);
-
-      // 5. Extract note content from DOM
-      const { note } = await sendToTab(tabId, { action: 'extract_note_content' });
-      if (!note || !note.title) {
-        step('extract_failed', 'Could not extract note content');
-        await sendToTab(tabId, { action: 'close_note' });
-        continue;
-      }
-      note.source_keyword = keyword;
-      step('extracted', `"${note.title}" by ${note.author}, ${note.likes} likes, ${note.image_count} imgs`);
-
-      // 6. Extract comments
-      const { comments } = await sendToTab(tabId, { action: 'extract_comments' });
-      note.comments = comments || [];
-      step('comments', `${note.comments.length} comments`);
-
-      // 7. Get all image URLs (no need to "browse" — DOM has them all)
-      const { urls } = await sendToTab(tabId, { action: 'get_image_urls' });
-      note.image_urls = urls || [];
-      step('images', `${note.image_urls.length} image URLs collected`);
-
-      allNotes.push(note);
-
-      // Close note / go back
-      await sendToTab(tabId, { action: 'close_note' });
-      await wait(1000);
+    } catch (sendErr) {
+      console.error('[BG] Failed to send response:', sendErr);
     }
-  }
+  };
 
-  // 8. Synthesize
-  step('synthesize', `Generating report from ${allNotes.length} notes`);
-  const synthesis = await synthesize(topic, keywords, allNotes);
+  ws.onclose = () => {
+    console.log('[BG] Disconnected from agent');
+    ws = null;
+    // Auto-reconnect after 3s
+    reconnectTimer = setTimeout(() => connect(wsPort), 3000);
+  };
 
-  const report = { topic, keywords, notes: allNotes, synthesis, log };
-  step('done', `Research complete: ${allNotes.length} notes`);
-
-  return report;
+  ws.onerror = (err) => {
+    console.error('[BG] WebSocket error');
+  };
 }
 
-// ── Message handler from popup ─────────────────────────────────
+function disconnect() {
+  clearTimeout(reconnectTimer);
+  if (ws) {
+    ws.close();
+    ws = null;
+  }
+}
 
-chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
-  if (msg.action === 'start_research') {
-    (async () => {
+// ── Screenshot (CDP via chrome.debugger, fallback to captureVisibleTab) ──
+
+async function captureScreenshot(params = {}) {
+  const quality = params.quality || 70;
+  const format = params.format || 'jpeg';
+
+  // Method 1: CDP via chrome.debugger (most reliable in MV3)
+  if (activeTabId) {
+    try {
+      const target = { tabId: activeTabId };
+      await chrome.debugger.attach(target, '1.3');
       try {
-        const [tab] = await chrome.tabs.query({ active: true, currentWindow: true });
-        const report = await research(tab.id, msg.topic, msg.keywords);
-        sendResponse({ report });
-      } catch (err) {
-        sendResponse({ error: err.message });
+        const result = await chrome.debugger.sendCommand(
+          target,
+          'Page.captureScreenshot',
+          { format, quality, optimizeForSpeed: true }
+        );
+        await chrome.debugger.detach(target);
+        if (result && result.data) {
+          const mimeType = format === 'png' ? 'image/png' : 'image/jpeg';
+          return { screenshot: `data:${mimeType};base64,${result.data}` };
+        }
+      } catch (cmdErr) {
+        try { await chrome.debugger.detach(target); } catch {}
+        console.error('[BG] CDP screenshot failed:', cmdErr.message);
       }
-    })();
-    return true;
+    } catch (attachErr) {
+      console.error('[BG] debugger.attach failed:', attachErr.message);
+    }
   }
 
-  if (msg.action === 'set_api_key') {
-    chrome.storage.local.set({ [CONFIG.apiKeyStorageKey]: msg.key });
+  // Method 2: captureVisibleTab fallback
+  try {
+    const dataUrl = await chrome.tabs.captureVisibleTab(
+      chrome.windows.WINDOW_ID_CURRENT,
+      { format, quality }
+    );
+    return { screenshot: dataUrl };
+  } catch (err) {
+    console.error('[BG] captureVisibleTab fallback failed:', err.message);
+    return { screenshot: '', error: `Screenshot failed: ${err.message}` };
+  }
+}
+
+// ── Command Handling ───────────────────────────────────────────
+
+async function handleCommand(msg) {
+  const { action, params = {} } = msg;
+
+  switch (action) {
+    // ── Background-handled commands ──
+
+    case 'navigate': {
+      if (!activeTabId) throw new Error('No active tab');
+      await chrome.tabs.update(activeTabId, { url: params.url });
+      // Wait for page load + content script injection
+      await waitForContentScript(activeTabId, params.wait || 5000);
+      return { ok: true, url: params.url };
+    }
+
+    case 'capture_screenshot': {
+      return await captureScreenshot(params);
+    }
+
+    case 'get_tab_info': {
+      const tab = await chrome.tabs.get(activeTabId);
+      return { url: tab.url, title: tab.title, tabId: activeTabId };
+    }
+
+    case 'set_active_tab': {
+      activeTabId = params.tabId;
+      return { ok: true, tabId: activeTabId };
+    }
+
+    case 'create_tab': {
+      const tab = await chrome.tabs.create({ url: params.url, active: true });
+      activeTabId = tab.id;
+      await waitForContentScript(activeTabId, params.wait || 5000);
+      return { ok: true, tabId: tab.id };
+    }
+
+    // ── Forwarded to content script ──
+
+    default:
+      return await sendToContentScript(activeTabId, msg);
+  }
+}
+
+async function sendToContentScript(tabId, msg, retries = 3) {
+  for (let attempt = 0; attempt < retries; attempt++) {
+    try {
+      const response = await chrome.tabs.sendMessage(tabId, {
+        type: 'command',
+        action: msg.action,
+        params: msg.params || {},
+      });
+      return response;
+    } catch (err) {
+      if (attempt < retries - 1) {
+        console.log(`[BG] Content script not ready, retry ${attempt + 1}...`);
+        await new Promise(r => setTimeout(r, 1500));
+        // Try re-injecting content script
+        try {
+          await chrome.scripting.executeScript({
+            target: { tabId },
+            files: ['content.js'],
+          });
+        } catch {}
+        await new Promise(r => setTimeout(r, 500));
+      } else {
+        throw new Error(`Content script unreachable after ${retries} attempts: ${err.message}`);
+      }
+    }
+  }
+}
+
+async function waitForContentScript(tabId, timeout = 5000) {
+  const deadline = Date.now() + timeout;
+  while (Date.now() < deadline) {
+    try {
+      const resp = await chrome.tabs.sendMessage(tabId, {
+        type: 'command', action: 'ping', params: {}
+      });
+      if (resp?.ok) return;
+    } catch {}
+    await new Promise(r => setTimeout(r, 500));
+  }
+  // Final attempt: inject content script manually
+  try {
+    await chrome.scripting.executeScript({
+      target: { tabId },
+      files: ['content.js'],
+    });
+    await new Promise(r => setTimeout(r, 500));
+  } catch {}
+}
+
+// ── Keepalive & Tab Tracking ───────────────────────────────────
+
+// Long-lived port from content script keeps service worker alive
+const keepalivePorts = new Set();
+chrome.runtime.onConnect.addListener((port) => {
+  if (port.name === 'keepalive') {
+    keepalivePorts.add(port);
+    port.onDisconnect.addListener(() => keepalivePorts.delete(port));
+    port.onMessage.addListener((msg) => {
+      // Ping received — service worker stays alive
+    });
+    console.log(`[BG] Keepalive port connected (${keepalivePorts.size} active)`);
+
+    // Auto-connect WebSocket when content script connects (if not already connected)
+    if (!ws || ws.readyState !== WebSocket.OPEN) {
+      connect(wsPort);
+    }
+  }
+});
+
+chrome.tabs.onActivated.addListener(({ tabId }) => {
+  activeTabId = tabId;
+});
+
+chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
+  // Content script ready signal
+  if (msg.type === 'content_ready' && sender.tab) {
+    contentReady.set(sender.tab.id, true);
+    console.log(`[BG] Content script ready on tab ${sender.tab.id}: ${msg.url}`);
+    return;
+  }
+
+  // Popup messages
+  if (msg.action === 'connect') {
+    connect(msg.port || DEFAULT_PORT);
     sendResponse({ ok: true });
     return;
   }
+
+  if (msg.action === 'disconnect') {
+    disconnect();
+    sendResponse({ ok: true });
+    return;
+  }
+
+  if (msg.action === 'get_status') {
+    sendResponse({
+      connected: ws?.readyState === WebSocket.OPEN,
+      port: wsPort,
+      activeTabId,
+    });
+    return;
+  }
 });
+
+// Auto-connect on startup and use alarms to keep service worker alive
+connect(DEFAULT_PORT);
+
+// Alarms keep the service worker from dying
+chrome.alarms.create('keepalive', { periodInMinutes: 0.5 });
+chrome.alarms.onAlarm.addListener((alarm) => {
+  if (alarm.name === 'keepalive') {
+    // Reconnect if needed
+    if (!ws || ws.readyState !== WebSocket.OPEN) {
+      connect(wsPort);
+    }
+  }
+});
+
+console.log('[BG] Background service worker started');

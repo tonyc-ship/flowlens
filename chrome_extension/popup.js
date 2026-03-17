@@ -1,47 +1,42 @@
 const $ = id => document.getElementById(id);
 
-$('saveKey').addEventListener('click', () => {
-  chrome.runtime.sendMessage({ action: 'set_api_key', key: $('apiKey').value });
-  $('apiKey').value = '';
-  $('saveKey').textContent = '已保存 ✓';
-  setTimeout(() => $('saveKey').textContent = '保存', 1500);
+function updateUI(status) {
+  const bar = $('statusBar');
+  const connectBtn = $('connectBtn');
+  const disconnectBtn = $('disconnectBtn');
+
+  if (status.connected) {
+    bar.className = 'status connected';
+    bar.textContent = `Agent: connected (port ${status.port})`;
+    connectBtn.style.display = 'none';
+    disconnectBtn.style.display = '';
+  } else {
+    bar.className = 'status disconnected';
+    bar.textContent = 'Agent: disconnected';
+    connectBtn.style.display = '';
+    disconnectBtn.style.display = 'none';
+  }
+}
+
+// Get initial status
+chrome.runtime.sendMessage({ action: 'get_status' }, updateUI);
+
+$('connectBtn').addEventListener('click', () => {
+  const port = parseInt($('port').value) || 8765;
+  chrome.runtime.sendMessage({ action: 'connect', port }, () => {
+    setTimeout(() => {
+      chrome.runtime.sendMessage({ action: 'get_status' }, updateUI);
+    }, 1000);
+  });
 });
 
-$('start').addEventListener('click', async () => {
-  const topic = $('topic').value.trim();
-  if (!topic) return alert('请输入研究主题');
-
-  const kw = $('keywords').value.trim();
-  const keywords = kw ? kw.split(/[,，]/).map(s => s.trim()).filter(Boolean) : null;
-
-  $('start').disabled = true;
-  $('start').textContent = '研究中...';
-  $('status').style.display = 'block';
-  $('status').textContent = '启动研究流程...\n';
-
-  chrome.runtime.sendMessage(
-    { action: 'start_research', topic, keywords },
-    (resp) => {
-      $('start').disabled = false;
-      $('start').textContent = '开始研究';
-
-      if (resp?.error) {
-        $('status').textContent += `\n❌ Error: ${resp.error}`;
-        return;
-      }
-
-      const r = resp.report;
-      $('status').textContent += `\n✅ 完成！收集了 ${r.notes.length} 篇笔记\n`;
-      $('status').textContent += `\n关键词: ${r.keywords.join(', ')}`;
-      r.notes.forEach((n, i) => {
-        $('status').textContent += `\n${i+1}. ${n.title} — ${n.author} (${n.likes} likes)`;
-      });
-
-      // Log
-      $('status').textContent += '\n\n--- 执行日志 ---';
-      r.log.forEach(e => {
-        $('status').textContent += `\n[${e.time}] ${e.action}: ${e.detail}`;
-      });
-    }
-  );
+$('disconnectBtn').addEventListener('click', () => {
+  chrome.runtime.sendMessage({ action: 'disconnect' }, () => {
+    chrome.runtime.sendMessage({ action: 'get_status' }, updateUI);
+  });
 });
+
+// Poll status every 2s while popup is open
+setInterval(() => {
+  chrome.runtime.sendMessage({ action: 'get_status' }, updateUI);
+}, 2000);
