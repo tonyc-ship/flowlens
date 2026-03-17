@@ -9,6 +9,7 @@ dependencies = [
     "pyautogui>=0.9.54",
     "pyobjc-framework-Quartz>=10.0",
     "pyobjc-framework-ScreenCaptureKit>=10.0",
+    "pyobjc-framework-Vision>=10.0",
     "Pillow>=10.0.0",
     "numpy>=1.26.0",
     "websockets>=13.0",

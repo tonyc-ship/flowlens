@@ -1,17 +1,17 @@
-"""XHS Research Agent — Chrome Extension + External Agent architecture.
+"""XHS Research Agent — topic research on Xiaohongshu.
 
-Uses Chrome Extension for DOM extraction and browser actions.
-Uses Claude API for LLM decisions and Vision analysis.
+Uses XHSBrowser for DOM extraction and browser actions.
+Uses MediaProcessor for LLM decisions and Vision analysis.
 
 Flow:
   1. Generate search keywords (Claude Text)
-  2. Navigate to XHS search via Extension
-  3. Extract cards from DOM via Extension
+  2. Navigate to XHS search via XHSBrowser
+  3. Extract cards from DOM
   4. Pick best notes (Claude Text)
-  5. Open each note, extract DOM content via Extension
+  5. Open each note, extract DOM content
   6. If DOM extraction incomplete → fallback to Vision (screenshot → Claude Vision)
-  7. Extract comments from DOM via Extension
-  8. Capture screenshot for image understanding (Claude Vision)
+  7. Extract comments from DOM
+  8. Download images → Vision API for descriptions
   9. Synthesize findings (Claude Text)
 """
 
@@ -23,28 +23,12 @@ import json
 import os
 import re
 import time
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from pathlib import Path
 
-import anthropic
-
-from .bridge import ExtensionBridge
-
-# Load API key from zshrc if not in env
-if not os.environ.get("ANTHROPIC_API_KEY"):
-    for p in [
-        os.path.expanduser("~/.zshrc.pre-oh-my-zsh"),
-        os.path.expanduser("~/.zshrc"),
-    ]:
-        if os.path.exists(p):
-            with open(p) as f:
-                for line in f:
-                    if "ANTHROPIC_API_KEY" in line and "export" in line:
-                        val = line.strip().split("=", 1)[1].strip().strip('"').strip("'")
-                        os.environ["ANTHROPIC_API_KEY"] = val
-                        break
-
-MODEL = "claude-sonnet-4-6"
+from ..bridge import ExtensionBridge
+from ..media import MediaProcessor
+from .browser import XHSBrowser
 
 
 @dataclass
@@ -58,28 +42,36 @@ class ResearchConfig:
     screenshot_dir: str = "screenshots"
 
 
-class XHSAgent:
-    """Autonomous XHS research agent using Chrome Extension bridge."""
+class XHSResearchAgent:
+    """Autonomous XHS research agent using XHSBrowser + MediaProcessor."""
 
     def __init__(
         self,
         output_dir: str = "research_output",
         port: int = 8765,
         config: ResearchConfig | None = None,
+        browser: XHSBrowser | None = None,
+        media: MediaProcessor | None = None,
     ):
-        self.bridge = ExtensionBridge(port=port)
-        self.client = anthropic.Anthropic()
         self.config = config or ResearchConfig()
         self.output_dir = Path(output_dir)
         self.output_dir.mkdir(parents=True, exist_ok=True)
         (self.output_dir / self.config.screenshot_dir).mkdir(exist_ok=True)
 
+        # Accept injected browser/media or create defaults
+        if browser:
+            self.browser = browser
+        else:
+            bridge = ExtensionBridge(port=port)
+            self.browser = XHSBrowser(bridge)
+            bridge.on_log(self._log_step)
+
+        self.media = media or MediaProcessor()
+
         self._step = 0
         self._log: list[dict] = []
         self._t0 = 0
-
-        # Wire bridge logging
-        self.bridge.on_log(self._log_step)
+        self._screenshots: list[str] = []
 
     def _log_step(self, action: str, detail: str = ""):
         self._step += 1
@@ -94,71 +86,24 @@ class XHSAgent:
         self._log.append(entry)
         print(f"  [{self._step:03d} {elapsed:5.1f}s] {action}: {detail[:100]}")
 
-    # ── LLM Calls ───────────────────────────────────────────────
-
-    def _call_text(self, prompt: str, max_tokens: int = 1024) -> str:
-        """Call Claude with text-only prompt."""
-        resp = self.client.messages.create(
-            model=MODEL,
-            max_tokens=max_tokens,
-            messages=[{"role": "user", "content": prompt}],
-        )
-        return resp.content[0].text
-
-    def _call_vision(self, image_b64: str, prompt: str, max_tokens: int = 2048) -> str:
-        """Call Claude Vision with screenshot + text prompt."""
-        # Strip data URL prefix if present
-        if "," in image_b64:
-            image_b64 = image_b64.split(",", 1)[1]
-
-        resp = self.client.messages.create(
-            model=MODEL,
-            max_tokens=max_tokens,
-            messages=[{
-                "role": "user",
-                "content": [
-                    {
-                        "type": "image",
-                        "source": {
-                            "type": "base64",
-                            "media_type": "image/png",
-                            "data": image_b64,
-                        },
-                    },
-                    {"type": "text", "text": prompt},
-                ],
-            }],
-        )
-        return resp.content[0].text
-
-    def _extract_json(self, text: str):
-        """Extract JSON from LLM response text."""
-        m = re.search(r"[\[{][\s\S]*[\]}]", text)
-        if m:
-            try:
-                return json.loads(m.group())
-            except json.JSONDecodeError:
-                pass
-        return None
-
     # ── LLM Decision Functions ──────────────────────────────────
 
     def generate_keywords(self, topic: str) -> list[str]:
-        raw = self._call_text(
+        raw = self.media.call_text(
             f"I want to research '{topic}' on Xiaohongshu (小红书). "
             f"Generate {self.config.max_keywords} Chinese search keywords "
             f"that would find the most relevant and diverse results. "
             f"Return only a JSON array of strings.",
             256,
         )
-        result = self._extract_json(raw)
+        result = self.media.extract_json(raw)
         return result if isinstance(result, list) else [topic]
 
     def pick_notes(self, cards: list[dict], topic: str, max_picks: int) -> list[dict]:
         if len(cards) <= max_picks:
             return cards
 
-        raw = self._call_text(
+        raw = self.media.call_text(
             f"I'm researching '{topic}' on Xiaohongshu.\n"
             f"Here are the note cards from search results:\n"
             f"{json.dumps(cards, ensure_ascii=False, indent=1)}\n\n"
@@ -168,7 +113,7 @@ class XHSAgent:
             f"Return a JSON array of the selected card objects (copy exactly).",
             2048,
         )
-        picks = self._extract_json(raw)
+        picks = self.media.extract_json(raw)
         return (picks if isinstance(picks, list) else cards)[:max_picks]
 
     def synthesize(self, topic: str, keywords: list[str], notes: list[dict]) -> str:
@@ -187,7 +132,7 @@ class XHSAgent:
                 "keyword": n.get("source_keyword", ""),
             })
 
-        return self._call_text(
+        return self.media.call_text(
             f"I researched '{topic}' on Xiaohongshu (小红书).\n\n"
             f"Keywords searched: {json.dumps(keywords, ensure_ascii=False)}\n\n"
             f"Notes collected:\n{json.dumps(summaries, ensure_ascii=False, indent=1)}\n\n"
@@ -200,8 +145,7 @@ class XHSAgent:
         )
 
     def describe_images(self, screenshot_b64: str, note_title: str) -> list[str]:
-        """Use Vision to describe images visible in the note screenshot."""
-        raw = self._call_vision(
+        raw = self.media.call_vision(
             screenshot_b64,
             f"This is a screenshot of a Xiaohongshu note titled '{note_title}'. "
             f"Describe the visual content you can see in the main image area (left side). "
@@ -209,111 +153,61 @@ class XHSAgent:
             f"colors, and overall aesthetic. Be specific and concise. "
             f"If there are multiple images visible, describe each. "
             f"Return a JSON array of description strings, one per image.",
-            1024,
+            media_type="image/png",
+            max_tokens=1024,
         )
-        result = self._extract_json(raw)
+        result = self.media.extract_json(raw)
         if isinstance(result, list):
             return [str(d) for d in result]
         return [raw[:200]]
 
     def vision_extract_note(self, screenshot_b64: str) -> dict:
-        """Fallback: extract note content from screenshot using Vision."""
-        raw = self._call_vision(
+        raw = self.media.call_vision(
             screenshot_b64,
             "Extract the note content from this Xiaohongshu screenshot. "
             "Return a JSON object with these fields:\n"
             '{"title": "...", "author": "...", "content": "...", '
             '"likes": "...", "favorites": "...", "comments_count": "...", '
             '"hashtags": ["...", "..."], "date": "...", "image_count": N}',
-            1024,
+            media_type="image/png",
+            max_tokens=1024,
         )
-        result = self._extract_json(raw)
+        result = self.media.extract_json(raw)
         return result if isinstance(result, dict) else {}
 
     async def _describe_image_urls(
         self, urls: list[str], note_title: str, max_images: int = 3
     ) -> list[str]:
-        """Download image URLs and describe them with Vision API."""
-        import urllib.request
-
         descriptions = []
         for i, url in enumerate(urls[:max_images]):
             try:
-                # Download image
-                req = urllib.request.Request(url, headers={
-                    "User-Agent": "Mozilla/5.0",
-                    "Referer": "https://www.xiaohongshu.com/",
-                })
-                with urllib.request.urlopen(req, timeout=10) as resp:
-                    img_data = resp.read()
-                img_b64 = base64.b64encode(img_data).decode()
-
-                # Determine media type from response or URL
-                media_type = resp.headers.get("Content-Type", "image/jpeg")
-                if not media_type.startswith("image/"):
-                    media_type = "image/jpeg"
-                # Claude Vision supports jpeg, png, gif, webp
-                if "webp" in media_type:
-                    media_type = "image/webp"
-
-                # Send to Vision API
-                resp = self.client.messages.create(
-                    model=MODEL,
+                img_bytes = self.media.download_image(url, referer=XHSBrowser.XHS_REFERER)
+                if not img_bytes:
+                    continue
+                desc = self.media.describe_image(
+                    img_bytes,
+                    f"Describe this image from a Xiaohongshu note titled '{note_title}'. "
+                    f"Be concise (1-2 sentences). Focus on key visual content, "
+                    f"any text/labels, products, and overall aesthetic.",
                     max_tokens=512,
-                    messages=[{
-                        "role": "user",
-                        "content": [
-                            {
-                                "type": "image",
-                                "source": {
-                                    "type": "base64",
-                                    "media_type": media_type,
-                                    "data": img_b64,
-                                },
-                            },
-                            {
-                                "type": "text",
-                                "text": (
-                                    f"Describe this image from a Xiaohongshu note titled '{note_title}'. "
-                                    f"Be concise (1-2 sentences). Focus on key visual content, "
-                                    f"any text/labels, products, and overall aesthetic."
-                                ),
-                            },
-                        ],
-                    }],
                 )
-                desc = resp.content[0].text
                 descriptions.append(desc)
                 self._log_step("image_vision", f"[{i+1}] {desc[:80]}")
             except Exception as e:
                 self._log_step("image_error", f"[{i+1}] Failed: {e}")
                 descriptions.append(f"(failed to load: {str(e)[:50]})")
-
         return descriptions
 
     # ── Screenshot Helper ────────────────────────────────────────
 
     async def _take_screenshot(self, label: str) -> str:
-        """Take a screenshot and save it. Returns relative path or empty string."""
         try:
-            data_url = await self.bridge.capture_screenshot()
-            if not data_url or not data_url.startswith("data:"):
-                self._log_step("screenshot_fail", f"{label}: no data returned")
-                return ""
-
-            # Decode and save
-            b64_data = data_url.split(",", 1)[1] if "," in data_url else data_url
-            img_bytes = base64.b64decode(b64_data)
-
-            # Determine extension from data URL
-            ext = "jpg" if "jpeg" in data_url else "png"
-            filename = f"{label}.{ext}"
-            filepath = self.output_dir / self.config.screenshot_dir / filename
-            filepath.parent.mkdir(parents=True, exist_ok=True)
-            filepath.write_bytes(img_bytes)
-
-            self._log_step("screenshot", f"{label}: {len(img_bytes)//1024}KB → {filepath.name}")
-            return str(filepath)
+            path = await self.browser.bridge.save_screenshot(
+                self.output_dir / self.config.screenshot_dir / f"{label}.png"
+            )
+            if path:
+                self._log_step("screenshot", f"{label}: saved")
+            return path
         except Exception as e:
             self._log_step("screenshot_error", f"{label}: {e}")
             return ""
@@ -327,24 +221,25 @@ class XHSAgent:
         self._t0 = time.time()
         self._step = 0
         self._log = []
+        self._screenshots = []
 
         self._log_step("start", f"Research topic: {topic}")
 
         # Start bridge and wait for extension
-        await self.bridge.start()
-        self._log_step("bridge_ready", f"WebSocket server on port {self.bridge.port}")
+        await self.browser.bridge.start()
+        self._log_step("bridge_ready", f"WebSocket server on port {self.browser.bridge.port}")
 
         print(
             "\n  >>> Waiting for Chrome Extension to connect. <<<\n"
             "  >>> Open extension popup and click 'Connect'. <<<\n"
         )
-        await self.bridge.wait_for_connection(timeout=120)
+        await self.browser.bridge.wait_for_connection(timeout=120)
 
         # Check we're on XHS
-        tab_info = await self.bridge.get_tab_info()
+        tab_info = await self.browser.get_tab_info()
         if "xiaohongshu.com" not in tab_info.get("url", ""):
             self._log_step("navigate", "Going to xiaohongshu.com")
-            await self.bridge.navigate("https://www.xiaohongshu.com")
+            await self.browser.navigate("https://www.xiaohongshu.com")
             await asyncio.sleep(3)
 
         # Generate keywords
@@ -354,18 +249,11 @@ class XHSAgent:
 
         all_notes = []
         seen_titles = set()
-        self._screenshots = []  # Collect screenshots for report
 
         for ki, keyword in enumerate(keywords):
             self._log_step("search", f"[{ki+1}/{len(keywords)}] {keyword}")
 
-            # Navigate to search URL
-            search_url = (
-                f"https://www.xiaohongshu.com/search_result"
-                f"?keyword={keyword}&source=web_search_result_notes"
-            )
-            await self.bridge.navigate(search_url, wait_ms=5000)
-            await asyncio.sleep(3)
+            await self.browser.navigate_to_search(keyword)
 
             # Screenshot search results
             search_screenshot = await self._take_screenshot(f"search_{ki+1}_{keyword}")
@@ -373,10 +261,10 @@ class XHSAgent:
                 self._screenshots.append(search_screenshot)
 
             # Extract cards (retry once if empty)
-            cards = await self.bridge.extract_search_cards()
+            cards = await self.browser.extract_search_cards()
             if not cards:
                 await asyncio.sleep(3)
-                cards = await self.bridge.extract_search_cards()
+                cards = await self.browser.extract_search_cards()
 
             self._log_step("cards", f"{len(cards)} cards from DOM")
             for c in cards[:5]:
@@ -389,6 +277,8 @@ class XHSAgent:
             # Pick best notes
             picks = self.pick_notes(cards, topic, self.config.max_notes_per_keyword)
             self._log_step("picked", f"{len(picks)} notes to examine")
+
+            search_url = (await self.browser.get_tab_info()).get("url", "")
 
             for card in picks:
                 title = card.get("title", "")
@@ -413,10 +303,6 @@ class XHSAgent:
         elapsed_total = time.time() - self._t0
         self._log_step("done", f"Total: {elapsed_total:.1f}s, {len(all_notes)} notes")
 
-        # Collect all screenshot paths for report
-        screenshot_paths = [s for s in getattr(self, '_screenshots', []) if s]
-
-        # Build report
         report = {
             "topic": topic,
             "keywords": keywords,
@@ -426,14 +312,12 @@ class XHSAgent:
                 "data_collection_s": round(elapsed_collect, 1),
                 "total_s": round(elapsed_total, 1),
             },
-            "screenshots": screenshot_paths,
+            "screenshots": [s for s in self._screenshots if s],
             "log": self._log,
         }
 
-        # Save
         self._save_report(report)
-        await self.bridge.stop()
-
+        await self.browser.bridge.stop()
         return report
 
     async def _process_note(
@@ -443,41 +327,38 @@ class XHSAgent:
         title = card.get("title", f"card_{card.get('position', '?')}")
         self._log_step("open_note", title[:60])
 
-        # Open note — click card (stays on same page as overlay, better for DOM)
         idx = card.get("position", 0)
         link = card.get("link", "")
 
-        # Try clicking the card first (opens as overlay on search page)
-        await self.bridge.click_card(idx)
+        # Click card to open as overlay on search page
+        await self.browser.click_card(idx)
         await asyncio.sleep(3)
 
-        # Verify we're on note detail
-        state = await self.bridge.detect_state()
+        # Verify note detail opened
+        state = await self.browser.detect_state()
         if state.get("state") != "note_detail":
-            # Fallback: navigate directly
             if link and "/explore/" in link:
                 self._log_step("navigate_fallback", f"Click didn't open overlay, navigating to {link[:50]}")
-                await self.bridge.navigate(link, wait_ms=5000)
+                await self.browser.navigate(link, wait_ms=5000)
                 await asyncio.sleep(3)
-                state = await self.bridge.detect_state()
+                state = await self.browser.detect_state()
 
         if state.get("state") not in ("note_detail",):
             self._log_step("state_mismatch", f"Expected note_detail, got {state.get('state')}")
-            await self.bridge.navigate(search_url, wait_ms=5000)
+            await self.browser.navigate(search_url, wait_ms=5000)
             await asyncio.sleep(2)
             return None
 
-        # Extract note content from DOM (content.js waits for async render)
-        note = await self.bridge.extract_note_content()
+        # Extract note content from DOM
+        note = await self.browser.extract_note_content()
         note["source_keyword"] = keyword
 
-        # Screenshot the note detail
+        # Screenshot
         note_label = re.sub(r'[^\w]', '_', title[:20]).strip('_') or f"note_{idx}"
         note_screenshot = await self._take_screenshot(f"note_{note_label}")
         if note_screenshot:
             note["screenshot"] = note_screenshot
 
-        # Check if DOM extraction got content
         has_content = bool(note.get("title") or note.get("content"))
         self._log_step(
             "dom_extract",
@@ -485,7 +366,7 @@ class XHSAgent:
             f"content_len={len(note.get('content', ''))} type={note.get('type', '?')}"
         )
 
-        # Vision fallback: if DOM extraction failed, use screenshot + Vision API
+        # Vision fallback if DOM extraction failed
         if not has_content and note_screenshot and self.config.use_vision_fallback:
             self._log_step("vision_fallback", "DOM empty, trying Vision extraction from screenshot")
             try:
@@ -493,18 +374,14 @@ class XHSAgent:
                     img_b64 = base64.b64encode(f.read()).decode()
                 vision_data = self.vision_extract_note(img_b64)
                 if vision_data:
-                    # Merge vision data (don't overwrite existing DOM data)
                     for k, v in vision_data.items():
                         if not note.get(k) and v:
                             note[k] = v
-                    has_content = bool(note.get("title") or note.get("content"))
                     self._log_step("vision_extract", f"Got: title='{note.get('title', '')[:30]}'")
             except Exception as e:
                 self._log_step("vision_error", str(e))
-        elif not has_content:
-            self._log_step("dom_extract_empty", "DOM extraction got no content (video note?)")
 
-        # Image understanding via Vision API (download image URLs)
+        # Image understanding via Vision API
         image_urls = note.get("image_urls", [])
         if image_urls and self.config.use_vision_for_images:
             descs = await self._describe_image_urls(image_urls, note.get("title", title))
@@ -512,11 +389,10 @@ class XHSAgent:
             self._log_step("image_desc", f"{len(descs)} image(s) described via URL")
 
         # Extract comments (with scroll for more)
-        all_comments = await self.bridge.extract_comments()
+        all_comments = await self.browser.extract_comments()
         for _ in range(self.config.max_comment_scrolls):
-            await self.bridge.scroll_note(400)
-            more = await self.bridge.extract_comments()
-            # Merge new comments
+            await self.browser.scroll_note(400)
+            more = await self.browser.extract_comments()
             existing_keys = {f"{c.get('username', '')}:{c.get('text', '')[:30]}" for c in all_comments}
             for c in more:
                 key = f"{c.get('username', '')}:{c.get('text', '')[:30]}"
@@ -528,14 +404,13 @@ class XHSAgent:
         self._log_step("comments", f"{len(all_comments)} comments (deduped)")
 
         # Close note and return to search
-        await self.bridge.close_note()
+        await self.browser.close_note()
         await asyncio.sleep(1)
 
-        # Verify we're back on search results
-        state = await self.bridge.detect_state()
+        state = await self.browser.detect_state()
         if state.get("state") != "search_results":
             self._log_step("recovery", f"State after close: {state.get('state')}, navigating back")
-            await self.bridge.navigate(search_url, wait_ms=5000)
+            await self.browser.navigate(search_url, wait_ms=5000)
             await asyncio.sleep(2)
 
         return note
@@ -543,14 +418,11 @@ class XHSAgent:
     # ── Report ──────────────────────────────────────────────────
 
     def _save_report(self, report: dict):
-        """Save report as JSON and HTML."""
-        # JSON
         json_path = self.output_dir / "report.json"
         with open(json_path, "w") as f:
             json.dump(report, f, indent=2, ensure_ascii=False)
         self._log_step("saved", f"JSON: {json_path}")
 
-        # HTML
         html = self._generate_html(report)
         html_path = self.output_dir / "report.html"
         with open(html_path, "w") as f:
@@ -582,14 +454,12 @@ class XHSAgent:
             f"Time: {data.get('timing', {}).get('total_s', '?')}s</p>",
         ]
 
-        # Timing
         timing = data.get("timing", {})
         parts.append(
             f"<div class='timing'>Data collection: {timing.get('data_collection_s', '?')}s | "
             f"Total: {timing.get('total_s', '?')}s</div>"
         )
 
-        # Search screenshots
         screenshots = data.get("screenshots", [])
         if screenshots:
             parts.append("<h2>Search Results Screenshots</h2>")
@@ -597,10 +467,8 @@ class XHSAgent:
                 rel_path = os.path.relpath(sp, str(self.output_dir))
                 parts.append(f'<img class="screenshot" src="{rel_path}" alt="search screenshot">')
 
-        # Synthesis
         parts.append(f"<h2>Research Summary</h2><div class='synthesis'>{_esc(data.get('synthesis', ''))}</div>")
 
-        # Notes
         parts.append(f"<h2>Notes ({len(data['notes'])})</h2>")
         for i, note in enumerate(data["notes"]):
             parts.append(f"<div class='note'><h3>{i+1}. {_esc(note.get('title', 'Untitled'))}</h3>")
@@ -622,19 +490,16 @@ class XHSAgent:
             if content:
                 parts.append(f"<p>{_esc(content[:600])}</p>")
 
-            # Image descriptions
             if note.get("image_descriptions"):
                 parts.append("<h4>Image Content (Vision)</h4><ol>")
                 for desc in note["image_descriptions"]:
                     parts.append(f"<li>{_esc(desc[:300])}</li>")
                 parts.append("</ol>")
 
-            # Screenshot
             if note.get("screenshot"):
                 rel_path = os.path.relpath(note["screenshot"], str(self.output_dir))
                 parts.append(f'<img class="screenshot" src="{rel_path}">')
 
-            # Comments
             if note.get("comments"):
                 parts.append(f"<h4>Comments ({len(note['comments'])})</h4>")
                 for c in note["comments"][:8]:
@@ -646,7 +511,6 @@ class XHSAgent:
 
             parts.append("</div>")
 
-        # Log
         parts.append("<h2>Execution Log</h2><div class='log'>")
         for entry in data.get("log", []):
             parts.append(
@@ -665,7 +529,7 @@ async def run_research(
     port: int = 8765,
 ):
     """Convenience function to run a research session."""
-    agent = XHSAgent(output_dir=output_dir, port=port)
+    agent = XHSResearchAgent(output_dir=output_dir, port=port)
     report = await agent.research(topic=topic, keywords=keywords)
 
     print(f"\n{'='*60}")

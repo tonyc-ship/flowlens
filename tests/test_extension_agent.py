@@ -19,7 +19,7 @@ from pathlib import Path
 # Add project root to path
 sys.path.insert(0, str(Path(__file__).parent.parent))
 
-from clawvision.agent.xhs_agent import XHSAgent, ResearchConfig, run_research
+from clawvision.agent.xhs import XHSResearchAgent as XHSAgent, ResearchConfig, run_research
 
 
 async def test_basic_connection():

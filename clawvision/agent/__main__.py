@@ -1,41 +1,56 @@
-"""Run the XHS Research Agent from command line.
+"""Run XHS agents from command line.
 
 Usage:
-    python -m clawvision.agent                              # interactive
+    # Topic research
+    python -m clawvision.agent "露营装备"
     python -m clawvision.agent "露营装备" --keywords "露营装备推荐,露营好物"
+
+    # User analysis
+    python -m clawvision.agent --user "https://www.xiaohongshu.com/user/profile/xxx"
+    python -m clawvision.agent --user <user_id>
 """
 
 import argparse
 import asyncio
 
-from .xhs_agent import run_research
+from .xhs import run_research, run_user_analysis
 
 
 def main():
     parser = argparse.ArgumentParser(description="XHS Research Agent")
     parser.add_argument("topic", nargs="?", default=None, help="Research topic")
     parser.add_argument("--keywords", "-k", default=None, help="Comma-separated keywords")
-    parser.add_argument("--output", "-o", default="research_output", help="Output directory")
+    parser.add_argument("--user", "-u", default=None, help="User profile URL or ID for user analysis")
+    parser.add_argument("--output", "-o", default=None, help="Output directory")
     parser.add_argument("--port", "-p", type=int, default=8765, help="WebSocket port")
     args = parser.parse_args()
 
-    topic = args.topic
-    if not topic:
-        topic = input("Research topic: ").strip()
+    if args.user:
+        output = args.output or "user_analysis"
+        asyncio.run(run_user_analysis(
+            user_url=args.user,
+            output_dir=output,
+            port=args.port,
+        ))
+    else:
+        topic = args.topic
         if not topic:
-            print("No topic provided.")
-            return
+            topic = input("Research topic: ").strip()
+            if not topic:
+                print("No topic provided. Use --user for user analysis.")
+                return
 
-    keywords = None
-    if args.keywords:
-        keywords = [k.strip() for k in args.keywords.split(",") if k.strip()]
+        keywords = None
+        if args.keywords:
+            keywords = [k.strip() for k in args.keywords.split(",") if k.strip()]
 
-    asyncio.run(run_research(
-        topic=topic,
-        keywords=keywords,
-        output_dir=args.output,
-        port=args.port,
-    ))
+        output = args.output or "research_output"
+        asyncio.run(run_research(
+            topic=topic,
+            keywords=keywords,
+            output_dir=output,
+            port=args.port,
+        ))
 
 
 if __name__ == "__main__":

@@ -273,6 +273,116 @@ function extractComments() {
   return comments;
 }
 
+// ── Profile Page Extraction ───────────────────────────────────
+
+function extractProfileInfo() {
+  const profile = {};
+
+  // Username
+  profile.name = firstText([
+    '.user-nickname', '.user-name', '.info .nickname',
+    'h1.user-name', '.name-detail .name',
+  ]);
+
+  // XHS ID — from .user-content or pattern match
+  const idContainer = document.querySelector('.user-content, .user-redId, .xhs-id');
+  if (idContainer) {
+    const m = idContainer.textContent.match(/小红书号[：:]\s*(\S+)/);
+    if (m) profile.xhs_id = m[1];
+  }
+  if (!profile.xhs_id) {
+    // Broader search
+    const allText = document.querySelector('.user-info, .basic-info');
+    if (allText) {
+      const m = allText.textContent.match(/小红书号[：:]\s*(\S+)/);
+      if (m) profile.xhs_id = m[1];
+    }
+  }
+
+  // Bio
+  profile.bio = firstText([
+    '.user-desc', '.bio', '.desc-text', '.info .desc',
+  ]);
+
+  // Avatar
+  const avatarEl = document.querySelector(
+    '.user-avatar img, .avatar-wrapper img, .info-part img, .avatar img'
+  );
+  profile.avatar_url = avatarEl ? (avatarEl.src || '') : '';
+
+  // Stats: use .data-info structure (count + shows pairs)
+  const statContainers = $$('.data-info > div, .user-interactions > div, .data-count > div');
+  for (const container of statContainers) {
+    const countEl = container.querySelector('.count');
+    const labelEl = container.querySelector('.shows, .label');
+    if (!countEl || !labelEl) continue;
+    const value = text(countEl);
+    const label = text(labelEl);
+    if (label.includes('关注')) profile.following = value;
+    else if (label.includes('粉丝')) profile.followers = value;
+    else if (label.includes('赞') || label.includes('收藏')) profile.total_likes = value;
+  }
+
+  // Fallback: get all .count elements within .data-info
+  if (!profile.followers) {
+    const counts = $$('.data-info .count, .user-interactions .count');
+    if (counts.length >= 3) {
+      profile.following = text(counts[0]);
+      profile.followers = text(counts[1]);
+      profile.total_likes = text(counts[2]);
+    }
+  }
+
+  // Verification
+  const verifyEl = document.querySelector('.verify-icon, .badge-icon, .verified');
+  profile.verified = !!verifyEl;
+  profile.verify_text = firstText(['.verify-name', '.badge-name', '.verified-text']);
+
+  // IP location
+  profile.location = firstText(['.ip-container', '.user-IP', '.ip-text']);
+
+  // Tags / labels
+  profile.tags = $$('.user-tag, .tag-item, .info-tag').map(el => text(el)).filter(Boolean);
+
+  return profile;
+}
+
+function extractProfileNotes() {
+  // Profile page note grid
+  let cards = $$('section.note-item');
+  if (!cards.length) cards = $$('[data-note-id]');
+  if (!cards.length) cards = $$('.feeds-page .note-item, .feeds-container .note-item');
+
+  return cards.map((card, i) => {
+    const titleEl = card.querySelector('.title, .note-title, a.title span');
+    const likesEl = card.querySelector('.like-wrapper .count, .count');
+    const imgEl = card.querySelector('.cover img, .note-cover img, img');
+    const linkEl = card.querySelector('a[href*="/explore/"], a[href*="/discovery/"]')
+                   || card.closest('a')
+                   || card.querySelector('a');
+
+    const link = linkEl ? linkEl.href : '';
+    const noteId = card.dataset?.noteId
+      || link.match(/\/explore\/([a-f0-9]{24})/)?.[1]
+      || '';
+
+    // Detect video indicator
+    const hasVideo = !!card.querySelector(
+      '.play-icon, .video-icon, svg[class*="video"], .duration'
+    );
+
+    return {
+      position: i,
+      title: text(titleEl),
+      likes: text(likesEl),
+      cover_url: imgEl ? (imgEl.src || imgEl.dataset?.src || '') : '',
+      link,
+      note_id: noteId,
+      type: hasVideo ? 'video' : 'image',
+    };
+  }).filter(c => c.link || c.title);
+}
+
 // ── Actions ────────────────────────────────────────────────────
 
 async function clickNoteCard(index) {
@@ -314,6 +424,35 @@ async function clickNoteByLink(url) {
   window.location.href = url;
   await wait(3000);
   return { ok: true, method: 'navigate' };
+}
+
+async function clickNoteById(noteId) {
+  // Find card containing this note ID in its link and click its cover image
+  // This opens the XHS modal overlay without triggering anti-bot
+  const cards = $$('section.note-item, [data-note-id]');
+  for (const card of cards) {
+    const link = card.querySelector('a[href]');
+    if (link && link.href.includes(noteId)) {
+      // Scroll card into view first
+      card.scrollIntoView({ behavior: 'smooth', block: 'center' });
+      await wait(500);
+      // Click cover image (not <a> tag) to trigger React modal
+      const clickTarget = card.querySelector('.cover, .cover-ld, img, .note-cover') || card;
+      clickTarget.click();
+      await wait(2000);
+
+      // Check if modal opened
+      const overlay = document.querySelector('.note-detail-mask, .note-overlay, .note-detail-modal');
+      if (overlay && overlay.offsetHeight > 0) {
+        return { ok: true, method: 'overlay' };
+      }
+      // Retry: click card itself
+      card.click();
+      await wait(2000);
+      return { ok: true, method: 'card_click' };
+    }
+  }
+  return { ok: false, error: `No card found with note_id: ${noteId}` };
 }
 
 async function closeNoteDetail() {
@@ -435,6 +574,10 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
           result = await clickNoteByLink(msg.params?.url ?? '');
           break;
 
+        case 'click_note_by_id':
+          result = await clickNoteById(msg.params?.note_id ?? '');
+          break;
+
         case 'close_note':
           result = await closeNoteDetail();
           break;
@@ -446,6 +589,24 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
         case 'scroll_page':
           result = await scrollPage(msg.params?.pixels ?? 600);
           break;
+
+        case 'extract_profile_info':
+          result = { profile: extractProfileInfo() };
+          break;
+
+        case 'extract_profile_notes':
+          result = { notes: extractProfileNotes() };
+          break;
+
+        case 'run_js': {
+          try {
+            const fn = new Function(msg.params?.code || '');
+            result = { value: fn() };
+          } catch (e) {
+            result = { error: e.message };
+          }
+          break;
+        }
 
         case 'capture_visible_dom': {
           // Fallback: capture visible area via scrolling canvas

@@ -1,7 +1,8 @@
-"""WebSocket bridge between Python agent and Chrome Extension.
+"""Generic WebSocket bridge between Python agent and Chrome Extension.
 
-The Python agent runs a WebSocket server. The Chrome Extension's
-background.js connects as a client. Commands flow:
+Platform-independent browser automation layer. Handles WebSocket transport,
+navigation, screenshots (CDP), mouse clicks (CDP), and JS execution.
+Site-specific DOM extraction is handled by platform modules (e.g. xhs/).
 
     Agent (Python) → WebSocket → Extension background.js
         → content.js (DOM ops) or chrome.tabs API (navigation/screenshots)
@@ -62,6 +63,15 @@ class ExtensionBridge:
                 "Make sure the extension is loaded and click 'Connect' in the popup."
             )
         self._log("extension_connected", "Chrome Extension connected")
+
+        # Warmup: wait for extension to set activeTabId (async in onopen callback)
+        await asyncio.sleep(1)
+        for _ in range(3):
+            try:
+                await self.get_tab_info()
+                break
+            except Exception:
+                await asyncio.sleep(1)
 
     async def _handle_connection(self, ws):
         """Handle incoming WebSocket connection from extension."""
@@ -170,7 +180,7 @@ class ExtensionBridge:
 
         raise RuntimeError(f"Command '{action}' failed after {_retries} attempts: {last_error}")
 
-    # ── Convenience Methods ─────────────────────────────────────
+    # ── Generic Browser Operations ─────────────────────────────
 
     async def navigate(self, url: str, wait_ms: int = 5000) -> dict:
         """Navigate the active tab to a URL."""
@@ -186,7 +196,6 @@ class ExtensionBridge:
         data_url = await self.capture_screenshot()
         if not data_url:
             return ""
-        # Remove data:image/png;base64, prefix
         b64_data = data_url.split(",", 1)[1] if "," in data_url else data_url
         img_bytes = base64.b64decode(b64_data)
         path = Path(path)
@@ -198,40 +207,17 @@ class ExtensionBridge:
         """Get current tab URL and title."""
         return await self.send_command("get_tab_info")
 
-    async def detect_state(self) -> dict:
-        """Detect current page state via content script."""
-        return await self.send_command("detect_state")
+    async def run_js(self, code: str) -> dict:
+        """Execute JavaScript in the page's MAIN world context."""
+        return await self.send_command("run_js", {"code": code})
 
-    async def extract_search_cards(self) -> list[dict]:
-        """Extract search result cards from DOM."""
-        result = await self.send_command("extract_search_cards")
-        return result.get("cards", [])
+    async def click_at(self, x: int, y: int) -> dict:
+        """CDP-based real mouse click at viewport coordinates."""
+        return await self.send_command("click_at", {"x": x, "y": y})
 
-    async def extract_note_content(self) -> dict:
-        """Extract note content from DOM."""
-        result = await self.send_command("extract_note_content")
-        return result.get("note", {})
-
-    async def extract_comments(self) -> list[dict]:
-        """Extract comments from DOM (deduplicated)."""
-        result = await self.send_command("extract_comments")
-        return result.get("comments", [])
-
-    async def click_card(self, index: int) -> dict:
-        """Click a search result card by index."""
-        return await self.send_command("click_card", {"index": index})
-
-    async def click_note_link(self, url: str) -> dict:
-        """Click a note by its link URL."""
-        return await self.send_command("click_note_link", {"url": url})
-
-    async def close_note(self) -> dict:
-        """Close the note detail overlay."""
-        return await self.send_command("close_note")
-
-    async def scroll_note(self, pixels: int = 400) -> dict:
-        """Scroll within the note detail panel."""
-        return await self.send_command("scroll_note", {"pixels": pixels})
+    async def mouse_move(self, x: int, y: int) -> dict:
+        """CDP-based mouse move to viewport coordinates."""
+        return await self.send_command("mouse_move", {"x": x, "y": y})
 
     async def scroll_page(self, pixels: int = 600) -> dict:
         """Scroll the page."""

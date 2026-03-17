@@ -181,6 +181,69 @@ async function handleCommand(msg) {
       return { ok: true, tabId: tab.id };
     }
 
+    case 'run_js': {
+      // Execute JS directly in the page context via chrome.scripting
+      // Note: uses world: 'MAIN' to bypass extension CSP
+      if (!activeTabId) throw new Error('No active tab');
+      const [result] = await chrome.scripting.executeScript({
+        target: { tabId: activeTabId },
+        world: 'MAIN',
+        func: (code) => {
+          try {
+            return { value: new Function(code)() };
+          } catch (e) {
+            return { error: e.message };
+          }
+        },
+        args: [params.code || ''],
+      });
+      return result.result || {};
+    }
+
+    case 'click_at': {
+      // CDP-based real mouse click — indistinguishable from human clicks.
+      // Uses chrome.debugger to dispatch Input.dispatchMouseEvent.
+      // params: { x, y } — viewport coordinates to click at
+      if (!activeTabId) throw new Error('No active tab');
+      const x = params.x || 0;
+      const y = params.y || 0;
+      const target = { tabId: activeTabId };
+      await chrome.debugger.attach(target, '1.3');
+      try {
+        // mousePressed + mouseReleased = a complete click
+        await chrome.debugger.sendCommand(target, 'Input.dispatchMouseEvent', {
+          type: 'mousePressed', x, y, button: 'left', clickCount: 1,
+        });
+        // Small human-like delay between press and release
+        await new Promise(r => setTimeout(r, 50 + Math.random() * 80));
+        await chrome.debugger.sendCommand(target, 'Input.dispatchMouseEvent', {
+          type: 'mouseReleased', x, y, button: 'left', clickCount: 1,
+        });
+        await chrome.debugger.detach(target);
+        return { ok: true, x, y };
+      } catch (err) {
+        try { await chrome.debugger.detach(target); } catch {}
+        throw err;
+      }
+    }
+
+    case 'mouse_move': {
+      // CDP-based mouse move for more realistic interaction
+      if (!activeTabId) throw new Error('No active tab');
+      const target = { tabId: activeTabId };
+      await chrome.debugger.attach(target, '1.3');
+      try {
+        await chrome.debugger.sendCommand(target, 'Input.dispatchMouseEvent', {
+          type: 'mouseMoved', x: params.x || 0, y: params.y || 0,
+        });
+        await chrome.debugger.detach(target);
+        return { ok: true };
+      } catch (err) {
+        try { await chrome.debugger.detach(target); } catch {}
+        throw err;
+      }
+    }
+
     // ── Forwarded to content script ──
 
     default:
