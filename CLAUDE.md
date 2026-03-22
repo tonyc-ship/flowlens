@@ -26,29 +26,33 @@ clawvision/
 │   ├── server.py                      # MCP Server entry point (10 tools)
 │   ├── screen.py                      # macOS screen capture + input control (Quartz)
 │   │
-│   ├── agent/                         # Chrome Extension bridge + research agent
-│   │   ├── __init__.py
+│   ├── agent/                         # 3-layer agent architecture
+│   │   ├── __init__.py                # Top-level exports
 │   │   ├── __main__.py                # CLI: python -m clawvision.agent "topic"
-│   │   ├── bridge.py                  # WebSocket server (Python ↔ Extension)
-│   │   └── xhs_agent.py              # XHS research agent (search → extract → report)
-│   │
-│   ├── skills/                        # Site-specific state machines
-│   │   ├── __init__.py
-│   │   ├── base.py                    # Base SiteSkill class
-│   │   └── xiaohongshu_skill.py       # XHS skill (5 states, no pixel code)
+│   │   ├── bridge.py                  # Generic WebSocket + CDP (platform-independent)
+│   │   ├── media.py                   # Generic LLM/OCR/Whisper/Vision (platform-independent)
+│   │   │
+│   │   └── xhs/                       # Xiaohongshu platform module
+│   │       ├── __init__.py
+│   │       ├── entities.py            # Structured entity models (Note, Author, etc.)
+│   │       ├── browser.py             # XHS DOM extraction + CDP anti-bot clicks
+│   │       ├── research.py            # Topic research agent
+│   │       └── user_analysis.py       # User/creator analysis agent
 │   │
 │   └── vision/                        # Vision capabilities
 │       ├── __init__.py
 │       ├── grounding.py               # Unified grounding (UI-TARS MLX, Claude, ollama)
 │       ├── llm.py                     # Claude Vision API wrapper
+│       ├── apple_ocr.py               # macOS native OCR (Vision.framework)
+│       ├── transcriber.py             # whisper.cpp video transcription
 │       ├── detector.py                # Local CV models (YOLO + OWLv2)
 │       └── ocr.py                     # Text extraction
 │
 ├── tests/
 │   ├── __init__.py
-│   ├── test_extension_agent.py        # 5-level test: connection → search → note → full research
-│   ├── test_screen.py                 # Screen capture smoke test
-│   └── test_state_machine.py          # Skill state machine tests
+│   ├── test_extension_agent.py        # Research agent tests (5 levels)
+│   ├── test_user_analyzer.py          # User analysis tests
+│   └── test_screen.py                 # Screen capture smoke test
 │
 └── weights/                           # Auto-downloaded model weights (gitignored)
 ```
@@ -56,49 +60,66 @@ clawvision/
 ## Architecture
 
 ```
-Python Agent (xhs_agent.py)
-    │  LLM decisions, Vision API, report generation
-    │
-    │  WebSocket (bridge.py ↔ background.js)
-    │
-Chrome Extension (MV3)
-    ├─ background.js — WebSocket client, CDP screenshots, tab management
-    ├─ content.js   — DOM extraction, card clicks, state detection, comments
-    └─ manifest.json — Permissions: tabs, scripting, debugger, alarms
-
-Vision Layer (available for fallback)
-    ├─ grounding.py  — UI-TARS MLX (89% accuracy, ~7s) / Claude Vision
-    ├─ detector.py   — YOLO (~100ms) + OWLv2 (~1s) local detection
-    └─ llm.py        — Claude Vision API for image understanding
-
-MCP Server (server.py) — 10 tools for external agents
-    └─ screen.py — macOS Quartz capture + input control
+┌─────────────────────────────────────────────────────────────┐
+│  Task Agents (xhs/research.py, xhs/user_analysis.py)       │
+│  LLM decisions, flow orchestration, report generation       │
+├─────────────────────────────────────────────────────────────┤
+│  Platform Browser (xhs/browser.py)                          │
+│  XHS-specific DOM extraction, CDP anti-bot clicks,          │
+│  SPA navigation patterns                                    │
+├─────────────────────────────────────────────────────────────┤
+│  Entity Models (xhs/entities.py)                            │
+│  NoteEntity, AuthorEntity, NoteCard, SearchResult           │
+│  Completeness tracking, structured extraction targets       │
+├──────────────────────┬──────────────────────────────────────┤
+│  Generic Bridge      │  Generic Media                       │
+│  (bridge.py)         │  (media.py)                          │
+│  WebSocket, CDP,     │  Claude API, Apple OCR,              │
+│  navigation, JS exec │  Whisper, image download             │
+├──────────────────────┴──────────────────────────────────────┤
+│  Chrome Extension (MV3)                                     │
+│  background.js — WebSocket client, CDP, tab management      │
+│  content.js   — DOM extraction, card clicks, state detect   │
+└─────────────────────────────────────────────────────────────┘
 ```
+
+### Entity Model
+
+The agent uses structured entities to ensure thorough extraction:
+
+- **NoteEntity** — the primary content unit (title, content, images[], video, comments[], engagement, author info). Each note has a `completeness_score` tracking how thoroughly it's been extracted.
+- **AuthorEntity** — creator profile (bio, stats, all note cards, detailed top notes, content strategy analysis).
+- **NoteCard** — lightweight preview from search/profile grids (for ranking before opening).
+- **SearchResult** — search page state (query, filter, cards).
 
 ### Data Flow (XHS Research)
 
 ```
 1. Agent generates search keywords (Claude Text)
-2. Extension navigates to XHS search URL
-3. Content script extracts cards from DOM
+2. XHSBrowser navigates to XHS search URL
+3. Content script extracts NoteCards from DOM
 4. Agent picks best notes (Claude Text)
-5. For each note:
-   a. Content script clicks card → opens overlay
-   b. CDP captures screenshot (chrome.debugger)
-   c. Content script extracts DOM content + comments
-   d. If DOM fails → Vision fallback (screenshot → Claude Vision)
-   e. Agent downloads image URLs → Claude Vision describes them
-6. Agent synthesizes findings → generates HTML report with screenshots
+5. For each note → populate NoteEntity:
+   a. Click card via CDP (anti-bot) → opens overlay
+   b. DOM extraction: title, content, author, engagement
+   c. Screenshot via CDP (chrome.debugger)
+   d. Download each image → Apple OCR + Vision API
+   e. If video → Whisper transcription + Vision on poster
+   f. Scroll + extract comments (deduped)
+   g. Check completeness_score before moving on
+6. Agent synthesizes findings → generates HTML report
 ```
 
 ## Key Technical Decisions
 
 - **Chrome Extension over Accessibility** — no screen focus needed, user can keep using computer
 - **CDP screenshots** — `chrome.debugger` + `Page.captureScreenshot` (not `captureVisibleTab` which crashes MV3 service workers)
+- **CDP real mouse clicks** — `Input.dispatchMouseEvent` for anti-bot avoidance (indistinguishable from human clicks)
 - **DOM-first, Vision-fallback** — DOM extraction is fast and reliable; Vision API for when DOM fails or for image understanding
 - **WebSocket bridge** — Python WebSocket server ↔ Extension background.js client; auto-reconnect + keepalive
 - **MV3 keepalive** — chrome.alarms (30s) + content script long-lived port + WebSocket pings (10s)
 - **XHS SPA handling** — click cover image (not `<a>` tag) for React modal overlay; wait for async DOM render
+- **Entity-driven extraction** — structured models ensure thorough data collection, not just shallow scraping
 
 ## Setup
 
@@ -133,9 +154,12 @@ python -m clawvision.agent "2025春季露营装备趋势"
 
 # With custom keywords
 python -m clawvision.agent "咖啡拉花" --keywords "咖啡拉花教程,拉花技巧入门"
+
+# User analysis
+python -m clawvision.agent --user "https://www.xiaohongshu.com/user/profile/xxx"
 ```
 
-The agent starts a WebSocket server, connects to the Chrome Extension, and runs the research flow autonomously. Reports are saved to `research_output/`.
+The agent starts a WebSocket server, connects to the Chrome Extension, and runs the research flow autonomously. Reports are saved to `research_output/` or `user_analysis/`.
 
 ### MCP Server (for external agents)
 
@@ -155,6 +179,9 @@ python tests/test_extension_agent.py -t 5   # coffee latte art
 python tests/test_extension_agent.py -t 1   # connection + screenshot
 python tests/test_extension_agent.py -t 2   # search + card extraction
 python tests/test_extension_agent.py -t 3   # note content extraction
+
+# User analysis
+python tests/test_user_analyzer.py
 
 # Screen capture smoke test
 python tests/test_screen.py
