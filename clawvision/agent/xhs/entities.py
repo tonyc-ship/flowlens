@@ -69,6 +69,21 @@ class Comment:
     time: str = ""
     sub_comments: list[Comment] = field(default_factory=list)
 
+    @classmethod
+    def from_dom_dict(cls, d: dict) -> Comment:
+        """Convert raw DOM comment dict to Comment."""
+        return cls(
+            username=d.get("username", ""),
+            text=d.get("text", ""),
+            likes=d.get("likes", ""),
+            is_author_reply=d.get("is_author_reply", False),
+            time=d.get("time", ""),
+            sub_comments=[
+                Comment.from_dom_dict(sc)
+                for sc in d.get("sub_comments", [])
+            ],
+        )
+
 
 # ── Core Entities ───────────────────────────────────────────────
 
@@ -123,6 +138,9 @@ class NoteEntity:
     # Source context (how this note was found)
     source_keyword: str = ""       # search keyword that led here
     source_context: str = ""       # "search", "profile", "recommendation"
+
+    # Card-level engagement (from search results card, before opening note)
+    card_likes: str = ""
 
     @property
     def has_content(self) -> bool:
@@ -189,6 +207,107 @@ class NoteEntity:
             ]
         return d
 
+    @classmethod
+    def from_dom_dict(cls, d: dict) -> NoteEntity:
+        """Convert raw DOM extract_note_content() dict to NoteEntity.
+
+        Only populates fields available from DOM extraction. Media processing
+        (OCR, Vision, transcription) is done separately by the agent.
+        """
+        # Determine note type
+        raw_type = d.get("type", "").lower()
+        if raw_type == "video":
+            note_type = NoteType.VIDEO
+        elif raw_type in ("normal", "image"):
+            note_type = NoteType.IMAGE
+        else:
+            note_type = NoteType.UNKNOWN
+
+        # Build ImageInfo objects from image_urls
+        image_urls = d.get("image_urls", [])
+        images = [
+            ImageInfo(
+                url=url,
+                index=i,
+                is_cover=(i == 0),
+            )
+            for i, url in enumerate(image_urls)
+        ]
+
+        # Build VideoInfo if this is a video note
+        video = None
+        if note_type == NoteType.VIDEO:
+            video_url = d.get("video_url", "")
+            poster_url = image_urls[0] if image_urls else ""
+            video = VideoInfo(url=video_url, poster_url=poster_url)
+
+        # Build Comment objects
+        comments = [
+            Comment.from_dom_dict(c)
+            for c in d.get("comments", [])
+        ]
+
+        return cls(
+            note_id=d.get("note_id", ""),
+            url=d.get("url", ""),
+            note_type=note_type,
+            author_name=d.get("author", ""),
+            author_id=d.get("author_id", ""),
+            author_avatar_url=d.get("author_avatar_url", ""),
+            title=d.get("title", ""),
+            content=d.get("content", ""),
+            hashtags=d.get("hashtags", []),
+            date=d.get("date", ""),
+            images=images,
+            image_count=d.get("image_count", len(image_urls)),
+            video=video,
+            likes=d.get("likes", ""),
+            favorites=d.get("favorites", ""),
+            comments_count=d.get("comments_count", ""),
+            shares=d.get("shares", ""),
+            comments=comments,
+        )
+
+    def to_report_dict(self) -> dict:
+        """Convert to dict for JSON report and HTML generation.
+
+        Produces the same dict shape the existing HTML templates expect,
+        so HTML generators don't need major changes.
+        """
+        d = {
+            "note_id": self.note_id,
+            "title": self.title,
+            "author": self.author_name,
+            "content": self.content,
+            "type": self.note_type.value,
+            "hashtags": self.hashtags,
+            "date": self.date,
+            "likes": self.likes,
+            "favorites": self.favorites,
+            "comments_count": self.comments_count,
+            "shares": self.shares,
+            "image_count": self.image_count,
+            "source_keyword": self.source_keyword,
+            "screenshot": self.screenshot_path,
+            # comments as list of dicts (existing format)
+            "comments": [{"username": c.username, "text": c.text, "likes": c.likes} for c in self.comments],
+            # image descriptions from ImageInfo objects
+            "image_descriptions": [img.vision_description for img in self.images if img.vision_description],
+            # cover description
+            "cover_description": self.cover_description,
+            # OCR results in existing format
+            "ocr_results": [{"image_index": img.index, "text": img.ocr_text} for img in self.images if img.ocr_text],
+        }
+        # Video-specific
+        if self.video:
+            d["video_url"] = self.video.url
+            d["transcript"] = self.video.transcript
+            d["transcript_summary"] = self.video.transcript_summary
+        # card_likes for user_analysis compatibility
+        if self.card_likes:
+            d["card_likes"] = self.card_likes
+        return d
+
 
 @dataclass
 class NoteCard:
@@ -204,6 +323,29 @@ class NoteCard:
     cover_url: str = ""
     link: str = ""
     position: int = 0             # position in grid
+
+    @classmethod
+    def from_dom_dict(cls, d: dict) -> NoteCard:
+        """Convert raw DOM extraction dict to NoteCard."""
+        # Map 'type' string to NoteType enum
+        raw_type = d.get("type", "").lower()
+        if raw_type == "video":
+            note_type = NoteType.VIDEO
+        elif raw_type in ("normal", "image"):
+            note_type = NoteType.IMAGE
+        else:
+            note_type = NoteType.UNKNOWN
+
+        return cls(
+            note_id=d.get("note_id", ""),
+            title=d.get("title", ""),
+            author_name=d.get("author_name", d.get("author", "")),
+            likes=d.get("likes", ""),
+            note_type=note_type,
+            cover_url=d.get("cover_url", ""),
+            link=d.get("link", ""),
+            position=d.get("position", 0),
+        )
 
 
 @dataclass
@@ -258,6 +400,38 @@ class AuthorEntity:
     def completeness_score(self) -> float:
         checks = self.completeness
         return sum(checks.values()) / len(checks)
+
+    @classmethod
+    def from_dom_dict(cls, d: dict) -> AuthorEntity:
+        """Convert raw DOM extract_profile_info() dict to AuthorEntity."""
+        return cls(
+            name=d.get("name", ""),
+            xhs_id=d.get("xhs_id", ""),
+            bio=d.get("bio", ""),
+            avatar_url=d.get("avatar_url", ""),
+            verified=d.get("verified", False),
+            verify_text=d.get("verify_text", ""),
+            followers=d.get("followers", ""),
+            following=d.get("following", ""),
+            total_likes=d.get("total_likes", ""),
+            tags=d.get("tags", []),
+        )
+
+    def to_report_dict(self) -> dict:
+        """Convert to dict for JSON report and HTML generation."""
+        return {
+            "name": self.name,
+            "xhs_id": self.xhs_id,
+            "bio": self.bio,
+            "avatar_url": self.avatar_url,
+            "verified": self.verified,
+            "verify_text": self.verify_text,
+            "followers": self.followers,
+            "following": self.following,
+            "total_likes": self.total_likes,
+            "tags": self.tags,
+            "screenshot": self.screenshot_path,
+        }
 
 
 @dataclass

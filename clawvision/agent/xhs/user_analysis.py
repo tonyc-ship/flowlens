@@ -2,15 +2,16 @@
 
 Uses XHSBrowser for DOM extraction and CDP click-based note opening.
 Uses MediaProcessor for LLM calls, Apple OCR, Whisper transcription, and Vision API.
+Uses entity models (AuthorEntity, NoteEntity, NoteCard) for structured extraction.
 
-Navigates to user profile, collects all posts, opens top notes via CDP click
-(avoids anti-bot detection), extracts media, and generates an HTML report.
+Navigates to user profile, collects all posts as NoteCards, opens top notes
+via CDP click (avoids anti-bot), populates NoteEntity for each, checks
+completeness, and generates an HTML report.
 """
 
 from __future__ import annotations
 
 import asyncio
-import base64
 import json
 import os
 import re
@@ -21,6 +22,9 @@ from pathlib import Path
 from ..bridge import ExtensionBridge
 from ..media import MediaProcessor
 from .browser import XHSBrowser
+from .entities import (
+    AuthorEntity, Comment, ImageInfo, NoteCard, NoteEntity, NoteType, VideoInfo,
+)
 
 
 @dataclass
@@ -38,7 +42,7 @@ class UserAnalysisConfig:
 
 
 class XHSUserAnalyzer:
-    """Deep analysis of a single XHS user/creator."""
+    """Deep analysis of a single XHS user/creator using entity-driven extraction."""
 
     def __init__(
         self,
@@ -96,14 +100,13 @@ class XHSUserAnalyzer:
     # ── Main Flow ───────────────────────────────────────────────
 
     async def analyze(self, user_url: str) -> dict:
-        """Run full user analysis. user_url can be a profile URL or user ID."""
+        """Run full user analysis. Returns report dict with AuthorEntity data."""
         self._t0 = time.time()
         self._step = 0
         self._log = []
 
         self._log_step("start", f"Analyzing user: {user_url}")
 
-        # Start bridge
         await self.browser.bridge.start()
         self._log_step("bridge_ready", f"WebSocket on port {self.browser.bridge.port}")
         print("\n  >>> Waiting for Chrome Extension to connect. <<<\n")
@@ -116,44 +119,45 @@ class XHSUserAnalyzer:
         # Screenshot profile
         profile_screenshot = await self._take_screenshot("profile_header")
 
-        # Extract profile info
-        profile = await self.browser.extract_profile_info()
-        self._log_step("profile", f"{profile.get('name', '?')} | followers={profile.get('followers', '?')}")
-
+        # Extract profile info → AuthorEntity
+        raw_profile = await self.browser.extract_profile_info()
+        author = AuthorEntity.from_dom_dict(raw_profile)
+        author.profile_url = profile_url
         if profile_screenshot:
-            profile["screenshot"] = profile_screenshot
+            author.screenshot_path = profile_screenshot
+        self._log_step("profile", f"{author.name} | followers={author.followers}")
 
-        # Collect all post cards by scrolling
-        all_cards = await self._collect_all_notes()
-        self._log_step("cards_total", f"{len(all_cards)} posts collected")
+        # Collect all post cards by scrolling → NoteCards
+        author.note_cards = await self._collect_all_notes()
+        self._log_step("cards_total", f"{len(author.note_cards)} posts collected")
 
         # Sort by engagement for priority processing
-        def parse_likes(s):
+        def parse_likes(s: str) -> float:
             s = str(s).replace('万', '0000').replace('w', '0000').replace(',', '')
             try:
                 return float(s)
             except (ValueError, TypeError):
                 return 0
-        all_cards.sort(key=lambda c: parse_likes(c.get("likes", 0)), reverse=True)
+        author.note_cards.sort(key=lambda c: parse_likes(c.likes), reverse=True)
 
-        # Process top notes in detail
-        detailed_notes = []
+        # Process top notes in detail → NoteEntities
         anti_bot_strikes = 0
-        max_detail = min(self.config.max_notes_to_detail, len(all_cards))
-        for i, card in enumerate(all_cards[:max_detail]):
-            self._log_step("process_note", f"[{i+1}/{max_detail}] {card.get('title', '?')[:40]}")
-            note = await self._process_note(card, profile_url)
-            if note:
-                if note.get("_anti_bot"):
-                    anti_bot_strikes += 1
-                    self._log_step("anti_bot", f"Strike {anti_bot_strikes} — backing off 15s")
-                    await asyncio.sleep(15)
-                    if anti_bot_strikes >= 3:
-                        self._log_step("anti_bot_stop", "3 strikes — stopping note collection")
-                        break
-                else:
-                    anti_bot_strikes = 0
-                    detailed_notes.append(note)
+        max_detail = min(self.config.max_notes_to_detail, len(author.note_cards))
+        for i, card in enumerate(author.note_cards[:max_detail]):
+            self._log_step("process_note", f"[{i+1}/{max_detail}] {card.title[:40]}")
+            result = await self._process_note(card, profile_url)
+            if result is None:
+                continue
+            if result == "anti_bot":
+                anti_bot_strikes += 1
+                self._log_step("anti_bot", f"Strike {anti_bot_strikes} — backing off 15s")
+                await asyncio.sleep(15)
+                if anti_bot_strikes >= 3:
+                    self._log_step("anti_bot_stop", "3 strikes — stopping note collection")
+                    break
+            else:
+                anti_bot_strikes = 0
+                author.detailed_notes.append(result)
             if i < max_detail - 1:
                 await asyncio.sleep(2)
 
@@ -161,17 +165,28 @@ class XHSUserAnalyzer:
         elapsed_collect = time.time() - self._t0
         self._log_step("synthesize", f"Collection done in {elapsed_collect:.1f}s")
 
-        analysis = self._analyze_content_strategy(profile, all_cards, detailed_notes)
+        author.content_analysis = self._analyze_content_strategy(author)
 
         elapsed_total = time.time() - self._t0
         self._log_step("done", f"Total: {elapsed_total:.1f}s")
 
+        # Log author completeness
+        comp = author.completeness
+        score = author.completeness_score
+        missing = [k for k, v in comp.items() if not v]
+        self._log_step("author_completeness", f"{score:.0%} — missing: {missing}" if missing else f"{score:.0%} — complete")
+
+        # Build report (using entity conversion for HTML-compatible dicts)
         report = {
-            "profile": profile,
+            "profile": author.to_report_dict(),
             "profile_url": profile_url,
-            "all_cards": all_cards,
-            "detailed_notes": detailed_notes,
-            "analysis": analysis,
+            "all_cards": [
+                {"note_id": c.note_id, "title": c.title, "author": c.author_name,
+                 "likes": c.likes, "type": c.note_type.value, "link": c.link}
+                for c in author.note_cards
+            ],
+            "detailed_notes": [n.to_report_dict() for n in author.detailed_notes],
+            "analysis": author.content_analysis,
             "timing": {
                 "data_collection_s": round(elapsed_collect, 1),
                 "total_s": round(elapsed_total, 1),
@@ -185,18 +200,19 @@ class XHSUserAnalyzer:
 
     # ── Collect All Post Cards ──────────────────────────────────
 
-    async def _collect_all_notes(self) -> list[dict]:
-        all_cards = []
-        seen_ids = set()
+    async def _collect_all_notes(self) -> list[NoteCard]:
+        all_cards: list[NoteCard] = []
+        seen_ids: set[str] = set()
 
         for round_idx in range(self.config.max_scroll_rounds):
-            cards = await self.browser.extract_profile_notes()
+            raw_cards = await self.browser.extract_profile_notes()
             new_count = 0
-            for c in cards:
-                nid = c.get("note_id") or c.get("link", "")
+            for raw in raw_cards:
+                card = NoteCard.from_dom_dict(raw)
+                nid = card.note_id or card.link
                 if nid and nid not in seen_ids:
                     seen_ids.add(nid)
-                    all_cards.append(c)
+                    all_cards.append(card)
                     new_count += 1
 
             if new_count == 0 and round_idx > 0:
@@ -211,49 +227,54 @@ class XHSUserAnalyzer:
 
     # ── Process Single Note ─────────────────────────────────────
 
-    async def _process_note(self, card: dict, profile_url: str) -> dict | None:
-        """Open a note from profile via CDP click, extract content + media, return to profile."""
-        note_id = card.get("note_id", "")
-        link = card.get("link", "")
-        title = card.get("title", f"note_{note_id[:8]}")
+    async def _process_note(
+        self, card: NoteCard, profile_url: str
+    ) -> NoteEntity | str | None:
+        """Open a note from profile, extract into NoteEntity, return to profile.
+
+        Returns:
+          NoteEntity — success
+          "anti_bot" — blocked by anti-bot
+          None — skip (no id/link)
+        """
+        note_id = card.note_id
         opened_as_overlay = False
 
-        if not note_id and not link:
+        if not note_id and not card.link:
             return None
 
-        # Strategy 1: CDP real mouse click on card cover (anti-bot avoidant)
+        # Strategy 1: CDP real mouse click on card cover
         try:
             opened_as_overlay = await self.browser.open_note_on_profile(note_id)
             if not opened_as_overlay:
                 raise RuntimeError("Overlay did not open")
         except Exception as e:
             self._log_step("click_failed", f"Card click failed: {e}")
-            # Fallback: direct navigation (may trigger anti-bot)
-            note_url = f"https://www.xiaohongshu.com/explore/{note_id}" if note_id else link
+            note_url = f"https://www.xiaohongshu.com/explore/{note_id}" if note_id else card.link
             await self.browser.navigate(note_url, wait_ms=5000)
             await asyncio.sleep(3)
 
-            # Anti-bot detection
             if await self.browser.is_anti_bot_page():
                 self._log_step("anti_bot_detected", "Page blocked by anti-bot")
                 await self.browser.navigate(profile_url, wait_ms=5000)
                 await asyncio.sleep(2)
-                return {"_anti_bot": True, "note_id": note_id}
+                return "anti_bot"
 
         # Screenshot
-        safe_label = re.sub(r'[^\w]', '_', title[:20]).strip('_') or note_id[:8]
+        safe_label = re.sub(r'[^\w]', '_', card.title[:20]).strip('_') or note_id[:8]
         note_screenshot = await self._take_screenshot(f"note_{safe_label}")
 
-        # Extract content
-        note = await self.browser.extract_note_content()
-        note["note_id"] = note_id
-        note["card_likes"] = card.get("likes", "")
+        # Extract content → NoteEntity
+        raw_note = await self.browser.extract_note_content()
+        note = NoteEntity.from_dom_dict(raw_note)
+        note.note_id = note_id
+        note.card_likes = card.likes
+        note.source_context = "profile"
         if note_screenshot:
-            note["screenshot"] = note_screenshot
+            note.screenshot_path = note_screenshot
 
         # Detect empty content (may indicate anti-bot or loading failure)
-        has_content = bool(note.get("title") or note.get("content"))
-        if not has_content:
+        if not note.has_content:
             try:
                 state = await self.browser.detect_state()
                 if state.get("state") in ("error", "unknown"):
@@ -264,36 +285,44 @@ class XHSUserAnalyzer:
                     else:
                         await self.browser.navigate(profile_url, wait_ms=5000)
                         await asyncio.sleep(2)
-                    return {"_anti_bot": True, "note_id": note_id}
+                    return "anti_bot"
             except Exception:
                 pass
 
         self._log_step(
             "extract",
-            f"type={note.get('type', '?')} title='{note.get('title', '')[:30]}' "
-            f"content_len={len(note.get('content', ''))}"
+            f"type={note.note_type.value} title='{note.title[:30]}' "
+            f"content_len={len(note.content)}"
         )
 
-        # Process media
-        if note.get("type") == "video":
+        # Process media: populate ImageInfo / VideoInfo objects
+        if note.note_type == NoteType.VIDEO:
             await self._process_video(note)
         else:
             await self._process_images(note)
 
-        # Comments
-        all_comments = await self.browser.extract_comments()
+        # Comments → Comment entities
+        raw_comments = await self.browser.extract_comments()
         for _ in range(self.config.max_comment_scrolls):
             await self.browser.scroll_note(400)
             more = await self.browser.extract_comments()
-            existing_keys = {f"{c.get('username', '')}:{c.get('text', '')[:30]}" for c in all_comments}
+            existing_keys = {f"{c.get('username', '')}:{c.get('text', '')[:30]}" for c in raw_comments}
             for c in more:
                 key = f"{c.get('username', '')}:{c.get('text', '')[:30]}"
                 if key not in existing_keys:
-                    all_comments.append(c)
+                    raw_comments.append(c)
                     existing_keys.add(key)
 
-        note["comments"] = all_comments[:self.config.max_comments_per_note]
-        self._log_step("comments", f"{len(note['comments'])} comments")
+        note.comments = [
+            Comment.from_dom_dict(c) for c in raw_comments[:self.config.max_comments_per_note]
+        ]
+        self._log_step("comments", f"{len(note.comments)} comments")
+
+        # Log completeness
+        comp = note.completeness
+        score = note.completeness_score
+        missing = [k for k, v in comp.items() if not v]
+        self._log_step("completeness", f"{score:.0%} — missing: {missing}" if missing else f"{score:.0%} — complete")
 
         # Return to profile
         if opened_as_overlay:
@@ -305,146 +334,128 @@ class XHSUserAnalyzer:
 
         return note
 
-    # ── Image Processing (Apple OCR + Vision) ───────────────────
+    # ── Image Processing → ImageInfo enrichment ─────────────────
 
-    async def _process_images(self, note: dict):
-        image_urls = note.get("image_urls", [])
-        if not image_urls:
-            return
-
-        ocr_results = []
-        cover_description = ""
-
-        for i, url in enumerate(image_urls[:self.config.max_images_per_note]):
+    async def _process_images(self, note: NoteEntity):
+        """Download images, run Apple OCR + Vision, populate ImageInfo objects."""
+        for img in note.images[:self.config.max_images_per_note]:
+            if not img.url:
+                continue
             try:
-                img_bytes = self.media.download_image(url, referer=XHSBrowser.XHS_REFERER)
+                img_bytes = self.media.download_image(img.url, referer=XHSBrowser.XHS_REFERER)
                 if not img_bytes:
                     continue
 
                 # Apple OCR on every image (free + fast)
                 ocr_text = self.media.ocr_image(img_bytes)
                 if ocr_text.strip():
-                    ocr_results.append({"image_index": i, "text": ocr_text})
-                    self._log_step("ocr", f"[{i+1}] {len(ocr_text)} chars extracted")
+                    img.ocr_text = ocr_text
+                    self._log_step("ocr", f"[{img.index+1}] {len(ocr_text)} chars extracted")
 
                 # Vision API for cover image only
-                if i == 0 and self.config.use_vision_for_covers:
+                if img.is_cover and self.config.use_vision_for_covers:
                     try:
-                        cover_description = self.media.describe_image(
+                        desc = self.media.describe_image(
                             img_bytes,
                             f"Describe this cover image from a Xiaohongshu note titled "
-                            f"'{note.get('title', '')}'. Be concise (2-3 sentences). "
+                            f"'{note.title}'. Be concise (2-3 sentences). "
                             f"Focus on visual content, products, text overlays, and aesthetic.",
                             max_tokens=512,
                         )
-                        self._log_step("vision_cover", cover_description[:80])
+                        img.vision_description = desc
+                        note.cover_description = desc
+                        self._log_step("vision_cover", desc[:80])
                     except Exception as e:
                         self._log_step("vision_error", str(e)[:200])
 
             except Exception as e:
-                self._log_step("image_error", f"[{i+1}] {e}")
+                self._log_step("image_error", f"[{img.index+1}] {e}")
 
-        note["ocr_results"] = ocr_results
-        if cover_description:
-            note["cover_description"] = cover_description
+    # ── Video Processing → VideoInfo enrichment ─────────────────
 
-    # ── Video Processing (Whisper + Vision) ─────────────────────
+    async def _process_video(self, note: NoteEntity):
+        """Process video: Vision on poster, OCR, Whisper transcription → VideoInfo."""
+        if note.video is None:
+            note.video = VideoInfo()
 
-    async def _process_video(self, note: dict):
-        video_url = note.get("video_url", "")
-        poster_urls = note.get("image_urls", [])
+        video = note.video
+        poster_url = video.poster_url or (note.images[0].url if note.images else "")
 
         # Vision API on video poster/thumbnail
-        if poster_urls and self.config.use_vision_for_covers:
+        if poster_url and self.config.use_vision_for_covers:
             try:
-                img_bytes = self.media.download_image(poster_urls[0], referer=XHSBrowser.XHS_REFERER)
+                img_bytes = self.media.download_image(poster_url, referer=XHSBrowser.XHS_REFERER)
                 if img_bytes:
-                    note["cover_description"] = self.media.describe_image(
+                    desc = self.media.describe_image(
                         img_bytes,
                         f"Describe this video thumbnail from a Xiaohongshu note titled "
-                        f"'{note.get('title', '')}'. What does the video appear to be about?",
+                        f"'{note.title}'. What does the video appear to be about?",
                         max_tokens=512,
                     )
-                    self._log_step("vision_poster", note["cover_description"][:80])
+                    video.poster_description = desc
+                    note.cover_description = desc
+                    self._log_step("vision_poster", desc[:80])
             except Exception as e:
                 self._log_step("vision_error", str(e)[:80])
 
         # OCR on poster
-        if poster_urls:
+        if poster_url:
             try:
-                img_bytes = self.media.download_image(poster_urls[0], referer=XHSBrowser.XHS_REFERER)
+                img_bytes = self.media.download_image(poster_url, referer=XHSBrowser.XHS_REFERER)
                 if img_bytes:
                     ocr_text = self.media.ocr_image(img_bytes)
                     if ocr_text.strip():
-                        note["ocr_results"] = [{"image_index": 0, "text": ocr_text}]
+                        video.poster_ocr = ocr_text
                         self._log_step("ocr_poster", f"{len(ocr_text)} chars")
             except Exception:
                 pass
 
         # Whisper transcription
-        if video_url:
+        if video.url:
             try:
                 self._log_step("transcribe_start", "Downloading + transcribing video...")
-                transcript = await self.media.transcribe_video(video_url, "zh")
+                transcript = await self.media.transcribe_video(video.url, "zh")
                 if transcript.strip():
-                    note["transcript"] = transcript
+                    video.transcript = transcript
                     self._log_step("transcript", f"{len(transcript)} chars transcribed")
 
                     summary = self.media.call_text(
-                        f"以下是一个小红书视频笔记的语音转录文本，标题是'{note.get('title', '')}'。\n\n"
+                        f"以下是一个小红书视频笔记的语音转录文本，标题是'{note.title}'。\n\n"
                         f"转录文本：\n{transcript[:3000]}\n\n"
                         f"请用中文简洁概括这个视频的主要内容（2-3句话）。",
                         512,
                     )
-                    note["transcript_summary"] = summary
+                    video.transcript_summary = summary
                     self._log_step("transcript_summary", summary[:80])
             except Exception as e:
                 self._log_step("transcribe_error", str(e)[:100])
 
     # ── LLM Analysis ────────────────────────────────────────────
 
-    def _analyze_content_strategy(
-        self, profile: dict, all_cards: list[dict], detailed_notes: list[dict]
-    ) -> str:
+    def _analyze_content_strategy(self, author: AuthorEntity) -> str:
+        """Use Claude to analyze the creator's content strategy."""
+        # All posts overview
         post_summaries = []
-        for c in all_cards:
-            post_summaries.append(f"- {c.get('title', '?')[:50]} | likes={c.get('likes', '?')} | type={c.get('type', '?')}")
+        for c in author.note_cards:
+            post_summaries.append(f"- {c.title[:50]} | likes={c.likes} | type={c.note_type.value}")
 
-        note_details = []
-        for n in detailed_notes:
-            detail = {
-                "title": n.get("title", ""),
-                "type": n.get("type", ""),
-                "likes": n.get("likes", ""),
-                "favorites": n.get("favorites", ""),
-                "comments_count": n.get("comments_count", ""),
-                "content_preview": n.get("content", "")[:300],
-                "hashtags": n.get("hashtags", []),
-                "cover_description": n.get("cover_description", ""),
-                "transcript_summary": n.get("transcript_summary", ""),
-                "ocr_text_preview": "",
-                "top_comments": [c.get("text", "")[:80] for c in n.get("comments", [])[:3]],
-            }
-            if n.get("ocr_results"):
-                detail["ocr_text_preview"] = " | ".join(
-                    r["text"][:100] for r in n["ocr_results"][:3]
-                )
-            note_details.append(detail)
+        # Detailed note summaries via entity method
+        note_summaries = [n.to_summary() for n in author.detailed_notes]
 
         prompt = (
             f"请对以下小红书用户进行深度分析，用中文输出一份详细的研究报告。\n\n"
             f"## 用户信息\n"
-            f"昵称: {profile.get('name', '?')}\n"
-            f"简介: {profile.get('bio', '?')}\n"
-            f"粉丝: {profile.get('followers', '?')}\n"
-            f"关注: {profile.get('following', '?')}\n"
-            f"获赞与收藏: {profile.get('total_likes', '?')}\n"
-            f"认证: {profile.get('verify_text', '无')}\n"
-            f"标签: {', '.join(profile.get('tags', []))}\n\n"
-            f"## 全部帖子概览 ({len(all_cards)} 篇)\n"
+            f"昵称: {author.name}\n"
+            f"简介: {author.bio}\n"
+            f"粉丝: {author.followers}\n"
+            f"关注: {author.following}\n"
+            f"获赞与收藏: {author.total_likes}\n"
+            f"认证: {author.verify_text or '无'}\n"
+            f"标签: {', '.join(author.tags)}\n\n"
+            f"## 全部帖子概览 ({len(author.note_cards)} 篇)\n"
             + "\n".join(post_summaries[:50]) + "\n\n"
-            f"## 详细分析的帖子 ({len(note_details)} 篇)\n"
-            f"{json.dumps(note_details, ensure_ascii=False, indent=1)}\n\n"
+            f"## 详细分析的帖子 ({len(note_summaries)} 篇)\n"
+            f"{json.dumps(note_summaries, ensure_ascii=False, indent=1)}\n\n"
             f"请从以下角度进行分析：\n"
             f"1. **赛道定位**：这个账号属于什么垂直领域？细分赛道是什么？\n"
             f"2. **内容策略**：发布频率、内容形式（图文vs视频比例）、标题风格、标签策略\n"

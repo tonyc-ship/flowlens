@@ -2,17 +2,20 @@
 
 Uses XHSBrowser for DOM extraction and browser actions.
 Uses MediaProcessor for LLM decisions and Vision analysis.
+Uses entity models (NoteEntity, NoteCard) for structured, thorough extraction.
 
 Flow:
   1. Generate search keywords (Claude Text)
   2. Navigate to XHS search via XHSBrowser
-  3. Extract cards from DOM
+  3. Extract NoteCards from DOM
   4. Pick best notes (Claude Text)
-  5. Open each note, extract DOM content
-  6. If DOM extraction incomplete → fallback to Vision (screenshot → Claude Vision)
-  7. Extract comments from DOM
-  8. Download images → Vision API for descriptions
-  9. Synthesize findings (Claude Text)
+  5. Open each note → populate NoteEntity:
+     a. DOM extraction (title, content, engagement, author)
+     b. Vision fallback if DOM failed
+     c. Download images → OCR + Vision descriptions
+     d. Scroll + extract comments
+     e. Check completeness before moving on
+  6. Synthesize findings using note.to_summary()
 """
 
 from __future__ import annotations
@@ -29,6 +32,7 @@ from pathlib import Path
 from ..bridge import ExtensionBridge
 from ..media import MediaProcessor
 from .browser import XHSBrowser
+from .entities import Comment, ImageInfo, NoteCard, NoteEntity, NoteType
 
 
 @dataclass
@@ -37,13 +41,14 @@ class ResearchConfig:
     max_notes_per_keyword: int = 2
     max_comment_scrolls: int = 2
     max_keywords: int = 3
+    max_images_per_note: int = 3
     use_vision_fallback: bool = True
     use_vision_for_images: bool = True
     screenshot_dir: str = "screenshots"
 
 
 class XHSResearchAgent:
-    """Autonomous XHS research agent using XHSBrowser + MediaProcessor."""
+    """Autonomous XHS research agent using entity-driven extraction."""
 
     def __init__(
         self,
@@ -58,7 +63,6 @@ class XHSResearchAgent:
         self.output_dir.mkdir(parents=True, exist_ok=True)
         (self.output_dir / self.config.screenshot_dir).mkdir(exist_ok=True)
 
-        # Accept injected browser/media or create defaults
         if browser:
             self.browser = browser
         else:
@@ -99,38 +103,38 @@ class XHSResearchAgent:
         result = self.media.extract_json(raw)
         return result if isinstance(result, list) else [topic]
 
-    def pick_notes(self, cards: list[dict], topic: str, max_picks: int) -> list[dict]:
+    def pick_notes(self, cards: list[NoteCard], topic: str, max_picks: int) -> list[NoteCard]:
         if len(cards) <= max_picks:
             return cards
 
+        # Convert to dicts for LLM context
+        card_dicts = [
+            {"title": c.title, "author": c.author_name, "likes": c.likes,
+             "type": c.note_type.value, "position": c.position}
+            for c in cards
+        ]
         raw = self.media.call_text(
             f"I'm researching '{topic}' on Xiaohongshu.\n"
             f"Here are the note cards from search results:\n"
-            f"{json.dumps(cards, ensure_ascii=False, indent=1)}\n\n"
+            f"{json.dumps(card_dicts, ensure_ascii=False, indent=1)}\n\n"
             f"Pick the {max_picks} most relevant and interesting notes. "
             f"Prefer notes with: high engagement, diverse perspectives, "
             f"content-rich titles, and relevance to the research topic. "
-            f"Return a JSON array of the selected card objects (copy exactly).",
-            2048,
+            f"Return a JSON array of position numbers (integers) for the selected notes.",
+            512,
         )
         picks = self.media.extract_json(raw)
-        return (picks if isinstance(picks, list) else cards)[:max_picks]
+        if isinstance(picks, list):
+            picked_positions = set(picks)
+            selected = [c for c in cards if c.position in picked_positions]
+            if selected:
+                return selected[:max_picks]
+        return cards[:max_picks]
 
-    def synthesize(self, topic: str, keywords: list[str], notes: list[dict]) -> str:
-        summaries = []
-        for n in notes:
-            summaries.append({
-                "title": n.get("title", ""),
-                "author": n.get("author", ""),
-                "likes": n.get("likes", ""),
-                "content_preview": n.get("content", "")[:300],
-                "hashtags": n.get("hashtags", []),
-                "image_count": n.get("image_count", 0),
-                "image_descriptions": n.get("image_descriptions", []),
-                "comments_count": n.get("comments_count", ""),
-                "top_comments": [c.get("text", "")[:100] for c in n.get("comments", [])[:3]],
-                "keyword": n.get("source_keyword", ""),
-            })
+    def synthesize(self, topic: str, keywords: list[str], notes: list[NoteEntity]) -> str:
+        summaries = [n.to_summary() for n in notes]
+        for s, n in zip(summaries, notes):
+            s["keyword"] = n.source_keyword
 
         return self.media.call_text(
             f"I researched '{topic}' on Xiaohongshu (小红书).\n\n"
@@ -144,22 +148,7 @@ class XHSResearchAgent:
             2048,
         )
 
-    def describe_images(self, screenshot_b64: str, note_title: str) -> list[str]:
-        raw = self.media.call_vision(
-            screenshot_b64,
-            f"This is a screenshot of a Xiaohongshu note titled '{note_title}'. "
-            f"Describe the visual content you can see in the main image area (left side). "
-            f"Focus on: what the image shows, any text/labels visible, product details, "
-            f"colors, and overall aesthetic. Be specific and concise. "
-            f"If there are multiple images visible, describe each. "
-            f"Return a JSON array of description strings, one per image.",
-            media_type="image/png",
-            max_tokens=1024,
-        )
-        result = self.media.extract_json(raw)
-        if isinstance(result, list):
-            return [str(d) for d in result]
-        return [raw[:200]]
+    # ── Vision Helpers ───────────────────────────────────────────
 
     def vision_extract_note(self, screenshot_b64: str) -> dict:
         raw = self.media.call_vision(
@@ -175,28 +164,26 @@ class XHSResearchAgent:
         result = self.media.extract_json(raw)
         return result if isinstance(result, dict) else {}
 
-    async def _describe_image_urls(
-        self, urls: list[str], note_title: str, max_images: int = 3
-    ) -> list[str]:
-        descriptions = []
-        for i, url in enumerate(urls[:max_images]):
+    async def _enrich_images(self, note: NoteEntity) -> None:
+        """Download and describe images with Vision API, populating ImageInfo."""
+        for img in note.images[:self.config.max_images_per_note]:
+            if not img.url:
+                continue
             try:
-                img_bytes = self.media.download_image(url, referer=XHSBrowser.XHS_REFERER)
+                img_bytes = self.media.download_image(img.url, referer=XHSBrowser.XHS_REFERER)
                 if not img_bytes:
                     continue
                 desc = self.media.describe_image(
                     img_bytes,
-                    f"Describe this image from a Xiaohongshu note titled '{note_title}'. "
+                    f"Describe this image from a Xiaohongshu note titled '{note.title}'. "
                     f"Be concise (1-2 sentences). Focus on key visual content, "
                     f"any text/labels, products, and overall aesthetic.",
                     max_tokens=512,
                 )
-                descriptions.append(desc)
-                self._log_step("image_vision", f"[{i+1}] {desc[:80]}")
+                img.vision_description = desc
+                self._log_step("image_vision", f"[{img.index+1}] {desc[:80]}")
             except Exception as e:
-                self._log_step("image_error", f"[{i+1}] Failed: {e}")
-                descriptions.append(f"(failed to load: {str(e)[:50]})")
-        return descriptions
+                self._log_step("image_error", f"[{img.index+1}] Failed: {e}")
 
     # ── Screenshot Helper ────────────────────────────────────────
 
@@ -225,7 +212,6 @@ class XHSResearchAgent:
 
         self._log_step("start", f"Research topic: {topic}")
 
-        # Start bridge and wait for extension
         await self.browser.bridge.start()
         self._log_step("bridge_ready", f"WebSocket server on port {self.browser.bridge.port}")
 
@@ -235,58 +221,54 @@ class XHSResearchAgent:
         )
         await self.browser.bridge.wait_for_connection(timeout=120)
 
-        # Check we're on XHS
         tab_info = await self.browser.get_tab_info()
         if "xiaohongshu.com" not in tab_info.get("url", ""):
             self._log_step("navigate", "Going to xiaohongshu.com")
             await self.browser.navigate("https://www.xiaohongshu.com")
             await asyncio.sleep(3)
 
-        # Generate keywords
         if keywords is None:
             keywords = self.generate_keywords(topic)
         self._log_step("keywords", f"{len(keywords)} keywords: {keywords}")
 
-        all_notes = []
-        seen_titles = set()
+        all_notes: list[NoteEntity] = []
+        seen_titles: set[str] = set()
 
         for ki, keyword in enumerate(keywords):
             self._log_step("search", f"[{ki+1}/{len(keywords)}] {keyword}")
 
             await self.browser.navigate_to_search(keyword)
 
-            # Screenshot search results
             search_screenshot = await self._take_screenshot(f"search_{ki+1}_{keyword}")
             if search_screenshot:
                 self._screenshots.append(search_screenshot)
 
-            # Extract cards (retry once if empty)
-            cards = await self.browser.extract_search_cards()
-            if not cards:
+            # Extract cards as NoteCard entities
+            raw_cards = await self.browser.extract_search_cards()
+            if not raw_cards:
                 await asyncio.sleep(3)
-                cards = await self.browser.extract_search_cards()
+                raw_cards = await self.browser.extract_search_cards()
 
+            cards = [NoteCard.from_dom_dict(c) for c in raw_cards]
             self._log_step("cards", f"{len(cards)} cards from DOM")
             for c in cards[:5]:
-                print(f"      {c.get('title', '?')[:40]} | {c.get('author', '?')} | {c.get('likes', '?')}")
+                print(f"      {c.title[:40]} | {c.author_name} | {c.likes}")
 
             if not cards:
                 self._log_step("no_cards", f"No cards found for '{keyword}'")
                 continue
 
-            # Pick best notes
             picks = self.pick_notes(cards, topic, self.config.max_notes_per_keyword)
             self._log_step("picked", f"{len(picks)} notes to examine")
 
             search_url = (await self.browser.get_tab_info()).get("url", "")
 
             for card in picks:
-                title = card.get("title", "")
-                if not title or title in seen_titles:
-                    if title:
-                        self._log_step("skip_dup", f"Already: {title[:40]}")
+                if not card.title or card.title in seen_titles:
+                    if card.title:
+                        self._log_step("skip_dup", f"Already: {card.title[:40]}")
                     continue
-                seen_titles.add(title)
+                seen_titles.add(card.title)
 
                 note = await self._process_note(card, keyword, search_url)
                 if note:
@@ -306,7 +288,7 @@ class XHSResearchAgent:
         report = {
             "topic": topic,
             "keywords": keywords,
-            "notes": all_notes,
+            "notes": [n.to_report_dict() for n in all_notes],
             "synthesis": synthesis,
             "timing": {
                 "data_collection_s": round(elapsed_collect, 1),
@@ -321,87 +303,95 @@ class XHSResearchAgent:
         return report
 
     async def _process_note(
-        self, card: dict, keyword: str, search_url: str
-    ) -> dict | None:
-        """Open, extract, and close a single note."""
-        title = card.get("title", f"card_{card.get('position', '?')}")
-        self._log_step("open_note", title[:60])
+        self, card: NoteCard, keyword: str, search_url: str
+    ) -> NoteEntity | None:
+        """Open, extract into NoteEntity, and close a single note."""
+        self._log_step("open_note", card.title[:60])
 
-        idx = card.get("position", 0)
-        link = card.get("link", "")
-
-        # Click card to open as overlay on search page
-        await self.browser.click_card(idx)
+        # Click card to open as overlay
+        await self.browser.click_card(card.position)
         await asyncio.sleep(3)
 
-        # Verify note detail opened
         state = await self.browser.detect_state()
         if state.get("state") != "note_detail":
-            if link and "/explore/" in link:
-                self._log_step("navigate_fallback", f"Click didn't open overlay, navigating to {link[:50]}")
-                await self.browser.navigate(link, wait_ms=5000)
+            if card.link and "/explore/" in card.link:
+                self._log_step("navigate_fallback", f"Click didn't open overlay, navigating")
+                await self.browser.navigate(card.link, wait_ms=5000)
                 await asyncio.sleep(3)
                 state = await self.browser.detect_state()
 
-        if state.get("state") not in ("note_detail",):
+        if state.get("state") != "note_detail":
             self._log_step("state_mismatch", f"Expected note_detail, got {state.get('state')}")
             await self.browser.navigate(search_url, wait_ms=5000)
             await asyncio.sleep(2)
             return None
 
-        # Extract note content from DOM
-        note = await self.browser.extract_note_content()
-        note["source_keyword"] = keyword
+        # Extract note content from DOM → NoteEntity
+        raw_note = await self.browser.extract_note_content()
+        note = NoteEntity.from_dom_dict(raw_note)
+        note.source_keyword = keyword
+        note.source_context = "search"
 
         # Screenshot
-        note_label = re.sub(r'[^\w]', '_', title[:20]).strip('_') or f"note_{idx}"
+        note_label = re.sub(r'[^\w]', '_', card.title[:20]).strip('_') or f"note_{card.position}"
         note_screenshot = await self._take_screenshot(f"note_{note_label}")
         if note_screenshot:
-            note["screenshot"] = note_screenshot
+            note.screenshot_path = note_screenshot
 
-        has_content = bool(note.get("title") or note.get("content"))
         self._log_step(
             "dom_extract",
-            f"title='{note.get('title', '')[:30]}' author='{note.get('author', '')}' "
-            f"content_len={len(note.get('content', ''))} type={note.get('type', '?')}"
+            f"title='{note.title[:30]}' author='{note.author_name}' "
+            f"content_len={len(note.content)} type={note.note_type.value}"
         )
 
         # Vision fallback if DOM extraction failed
-        if not has_content and note_screenshot and self.config.use_vision_fallback:
+        if not note.has_content and note.screenshot_path and self.config.use_vision_fallback:
             self._log_step("vision_fallback", "DOM empty, trying Vision extraction from screenshot")
             try:
-                with open(note_screenshot, "rb") as f:
+                with open(note.screenshot_path, "rb") as f:
                     img_b64 = base64.b64encode(f.read()).decode()
                 vision_data = self.vision_extract_note(img_b64)
                 if vision_data:
-                    for k, v in vision_data.items():
-                        if not note.get(k) and v:
-                            note[k] = v
-                    self._log_step("vision_extract", f"Got: title='{note.get('title', '')[:30]}'")
+                    if not note.title and vision_data.get("title"):
+                        note.title = vision_data["title"]
+                    if not note.content and vision_data.get("content"):
+                        note.content = vision_data["content"]
+                    if not note.author_name and vision_data.get("author"):
+                        note.author_name = vision_data["author"]
+                    if not note.likes and vision_data.get("likes"):
+                        note.likes = vision_data["likes"]
+                    if not note.hashtags and vision_data.get("hashtags"):
+                        note.hashtags = vision_data["hashtags"]
+                    self._log_step("vision_extract", f"Got: title='{note.title[:30]}'")
             except Exception as e:
                 self._log_step("vision_error", str(e))
 
-        # Image understanding via Vision API
-        image_urls = note.get("image_urls", [])
-        if image_urls and self.config.use_vision_for_images:
-            descs = await self._describe_image_urls(image_urls, note.get("title", title))
-            note["image_descriptions"] = descs
-            self._log_step("image_desc", f"{len(descs)} image(s) described via URL")
+        # Enrich images with Vision API descriptions
+        if note.images and self.config.use_vision_for_images:
+            await self._enrich_images(note)
+            described = sum(1 for img in note.images if img.vision_description)
+            self._log_step("image_desc", f"{described} image(s) described")
 
         # Extract comments (with scroll for more)
-        all_comments = await self.browser.extract_comments()
+        raw_comments = await self.browser.extract_comments()
         for _ in range(self.config.max_comment_scrolls):
             await self.browser.scroll_note(400)
             more = await self.browser.extract_comments()
-            existing_keys = {f"{c.get('username', '')}:{c.get('text', '')[:30]}" for c in all_comments}
+            existing_keys = {f"{c.get('username', '')}:{c.get('text', '')[:30]}" for c in raw_comments}
             for c in more:
                 key = f"{c.get('username', '')}:{c.get('text', '')[:30]}"
                 if key not in existing_keys:
-                    all_comments.append(c)
+                    raw_comments.append(c)
                     existing_keys.add(key)
 
-        note["comments"] = all_comments
-        self._log_step("comments", f"{len(all_comments)} comments (deduped)")
+        note.comments = [Comment.from_dom_dict(c) for c in raw_comments]
+        self._log_step("comments", f"{len(note.comments)} comments (deduped)")
+
+        # Log completeness
+        comp = note.completeness
+        score = note.completeness_score
+        missing = [k for k, v in comp.items() if not v]
+        self._log_step("completeness", f"{score:.0%} — missing: {missing}" if missing else f"{score:.0%} — complete")
 
         # Close note and return to search
         await self.browser.close_note()

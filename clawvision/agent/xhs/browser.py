@@ -7,6 +7,46 @@ open notes, extract content, handle overlays, detect anti-bot, etc.
 
 To support a new platform, create a similar browser module (e.g. douyin/browser.py)
 that wraps ExtensionBridge with that platform's DOM commands.
+
+XHS Page States
+---------------
+1. **homepage** — Grid of recommended note cards, left sidebar
+   (首页/发现/发布/通知/我), search bar at top center, XHS red logo top-left.
+2. **search_results** — Search query in search bar, filter tabs
+   (全部/图文/视频/用户), waterfall grid of matching note cards.
+3. **note_detail** — Two forms:
+   - Modal overlay: dark semi-transparent bg, white modal. Left panel = image
+     carousel, right panel = author info + text content + hashtags + comments.
+     Engagement bar at bottom (heart, star, comment, share). Carousel has
+     left/right arrows (visible on hover, use keyboard arrows).
+   - Full-page: note takes whole page, image left, content + recommendations
+     right.
+4. **profile_page** — User avatar, display name, XHS ID, bio,
+   follower/following/likes counts. Below is grid of published notes.
+   SPA: scrolling loads more cards.
+
+State Transitions
+-----------------
+- homepage -> search_results  (click search box + type query)
+- homepage -> note_detail     (click card)
+- search_results -> note_detail    (click card -> opens as modal overlay)
+- search_results -> search_results (scroll for more, change filter tab, refine query)
+- note_detail -> search_results    (press Escape or click X to close modal)
+- note_detail -> profile_page      (click author name/avatar)
+- note_detail -> note_detail       (arrow keys for carousel, scroll for comments)
+- profile_page -> note_detail      (click note card -> opens as modal overlay)
+- profile_page -> search_results   (browser back)
+
+DOM Extraction Patterns
+-----------------------
+- Cards: each card has title text, author name, like count, cover image,
+  link with note_id.
+- Note content: title (bold/large), author name + avatar, full text body,
+  hashtags (#), date, image carousel indicator (e.g. "2/5"), engagement counts.
+- Comments: username, text, like count, author replies, timestamps. XHS renders
+  comments twice in DOM — dedup by username + text[:30].
+- Profile: display name, XHS ID, bio text, follower/following/likes counts,
+  note grid.
 """
 
 from __future__ import annotations
