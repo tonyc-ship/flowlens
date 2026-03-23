@@ -1,10 +1,12 @@
-"""macOS screen capture and input control.
+"""Archived macOS screen capture and input control.
 
 Requires two system permissions:
 - Screen Recording (for screenshots)
 - Accessibility (for mouse/keyboard control)
 
-Grant via: System Settings → Privacy & Security
+Grant via: System Settings → Privacy & Security.
+
+This module is archived and not part of the active XHS runtime path.
 """
 
 from __future__ import annotations

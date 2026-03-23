@@ -15,11 +15,14 @@ import io
 import anthropic
 from PIL import Image
 
+from ..runtime import load_runtime_env
+
 
 class VisionLLM:
     """High-level visual understanding via Claude Vision API."""
 
     def __init__(self, model: str = "claude-sonnet-4-6"):
+        load_runtime_env()
         self.client = anthropic.Anthropic()
         self.model = model
 

@@ -1,45 +1,44 @@
-"""Test the Chrome Extension + External Agent architecture.
+"""Manual XHS research integration script.
 
 Prerequisites:
-1. Load chrome_extension/ as unpacked extension in Chrome
-2. Navigate to xiaohongshu.com and log in
-3. Run this test script
-4. Click 'Connect' in the extension popup
+1. Load `chrome_extension/` as an unpacked extension in Chrome.
+2. Log in to Xiaohongshu in that Chrome profile.
+3. Run this script and click `Connect` in the extension popup.
 
 Usage:
-    python tests/test_extension_agent.py
-    python tests/test_extension_agent.py --topic "咖啡拉花" --keywords "咖啡拉花教程,拉花技巧"
+    python tests/manual_xhs_research.py
+    python tests/manual_xhs_research.py --topic "咖啡拉花" --keywords "咖啡拉花教程,拉花技巧"
 """
+
+from __future__ import annotations
 
 import argparse
 import asyncio
 import sys
 from pathlib import Path
 
-# Add project root to path
 sys.path.insert(0, str(Path(__file__).parent.parent))
 
-from clawvision.agent.xhs import XHSResearchAgent as XHSAgent, ResearchConfig, run_research
+from clawvision.agent.bridge import ExtensionBridge
+from clawvision.agent.xhs import XHSBrowser, run_research
 
 
 async def test_basic_connection():
     """Test 1: Basic connection and state detection."""
     print("\n=== Test 1: Basic Connection ===")
-    from clawvision.agent.bridge import ExtensionBridge
 
     bridge = ExtensionBridge(port=8765)
+    browser = XHSBrowser(bridge)
     await bridge.start()
     print("  WebSocket server started. Click 'Connect' in extension popup...")
     await bridge.wait_for_connection(timeout=60)
 
-    # Test basic commands
     tab = await bridge.get_tab_info()
     print(f"  Tab: {tab.get('url', '?')}")
 
-    state = await bridge.detect_state()
+    state = await browser.detect_state()
     print(f"  State: {state}")
 
-    # Test screenshot
     screenshot = await bridge.save_screenshot("/tmp/test_screenshot.png")
     print(f"  Screenshot saved: {screenshot}")
 
@@ -50,31 +49,25 @@ async def test_basic_connection():
 async def test_search_extraction():
     """Test 2: Search and card extraction."""
     print("\n=== Test 2: Search + Card Extraction ===")
-    from clawvision.agent.bridge import ExtensionBridge
 
     bridge = ExtensionBridge(port=8765)
+    browser = XHSBrowser(bridge)
     await bridge.start()
     print("  Waiting for extension...")
     await bridge.wait_for_connection(timeout=60)
 
-    # Navigate to search
     keyword = "露营装备推荐"
-    url = f"https://www.xiaohongshu.com/search_result?keyword={keyword}&source=web_search_result_notes"
     print(f"  Navigating to search: {keyword}")
-    await bridge.navigate(url, wait_ms=5000)
-    await asyncio.sleep(3)
+    await browser.navigate_to_search(keyword)
 
-    # Extract cards
-    cards = await bridge.extract_search_cards()
+    cards = await browser.extract_search_cards()
     print(f"  Found {len(cards)} cards")
     for c in cards[:5]:
         print(f"    - {c.get('title', '?')[:40]} | {c.get('author', '?')} | likes={c.get('likes', '?')}")
 
     assert len(cards) > 0, "Expected at least 1 card"
 
-    # Save screenshot
     await bridge.save_screenshot("/tmp/test_search.png")
-
     await bridge.stop()
     print(f"  PASSED ({len(cards)} cards)")
 
@@ -82,42 +75,32 @@ async def test_search_extraction():
 async def test_note_extraction():
     """Test 3: Open note and extract content."""
     print("\n=== Test 3: Note Content Extraction ===")
-    from clawvision.agent.bridge import ExtensionBridge
 
     bridge = ExtensionBridge(port=8765)
+    browser = XHSBrowser(bridge)
     await bridge.start()
     print("  Waiting for extension...")
     await bridge.wait_for_connection(timeout=60)
 
-    # Search first
     keyword = "露营装备推荐"
-    url = f"https://www.xiaohongshu.com/search_result?keyword={keyword}&source=web_search_result_notes"
-    await bridge.navigate(url, wait_ms=5000)
-    await asyncio.sleep(3)
+    await browser.navigate_to_search(keyword)
 
-    cards = await bridge.extract_search_cards()
+    cards = await browser.extract_search_cards()
     if not cards:
         print("  SKIP: No cards found")
         await bridge.stop()
         return
 
-    # Click first card
     first_card = cards[0]
     print(f"  Opening: {first_card.get('title', '?')[:40]}")
 
-    link = first_card.get("link", "")
-    if link and "/explore/" in link:
-        await bridge.navigate(link, wait_ms=3000)
-    else:
-        await bridge.click_card(0)
+    await browser.click_card(0)
     await asyncio.sleep(2)
 
-    # Detect state
-    state = await bridge.detect_state()
+    state = await browser.detect_state()
     print(f"  State: {state}")
 
-    # Extract note content
-    note = await bridge.extract_note_content()
+    note = await browser.extract_note_content()
     print(f"  Title: {note.get('title', '?')[:50]}")
     print(f"  Author: {note.get('author', '?')}")
     print(f"  Content: {note.get('content', '?')[:80]}...")
@@ -126,25 +109,24 @@ async def test_note_extraction():
     print(f"  Images: {note.get('image_count', '?')}")
     print(f"  Hashtags: {note.get('hashtags', [])}")
 
-    # Extract comments
-    comments = await bridge.extract_comments()
+    comments = await browser.extract_comments()
     print(f"  Comments: {len(comments)}")
     for c in comments[:3]:
         print(f"    - {c.get('username', '?')}: {c.get('text', '?')[:50]}...")
 
-    # Save screenshot
     await bridge.save_screenshot("/tmp/test_note.png")
-
-    # Close note
-    await bridge.close_note()
+    await browser.close_note()
     await asyncio.sleep(1)
 
     await bridge.stop()
-    print(f"  PASSED (title={bool(note.get('title'))}, content={bool(note.get('content'))}, comments={len(comments)})")
+    print(
+        "  PASSED "
+        f"(title={bool(note.get('title'))}, content={bool(note.get('content'))}, comments={len(comments)})"
+    )
 
 
 async def test_full_research():
-    """Test 4: Full research flow (same topic as previous DOM test)."""
+    """Test 4: Full research flow."""
     print("\n=== Test 4: Full Research Flow ===")
     report = await run_research(
         topic="2025春季露营装备趋势",
@@ -154,11 +136,11 @@ async def test_full_research():
     )
     print(f"\n  Notes: {len(report['notes'])}")
     print(f"  Time: {report['timing']['total_s']}s")
-    print(f"  PASSED" if len(report["notes"]) > 0 else "  FAILED: 0 notes")
+    print("  PASSED" if len(report["notes"]) > 0 else "  FAILED: 0 notes")
 
 
 async def test_new_topic():
-    """Test 5: New research topic for broader testing."""
+    """Test 5: New topic research."""
     print("\n=== Test 5: New Topic Research ===")
     report = await run_research(
         topic="咖啡拉花入门教程",
@@ -168,7 +150,7 @@ async def test_new_topic():
     )
     print(f"\n  Notes: {len(report['notes'])}")
     print(f"  Time: {report['timing']['total_s']}s")
-    print(f"  PASSED" if len(report["notes"]) > 0 else "  FAILED: 0 notes")
+    print("  PASSED" if len(report["notes"]) > 0 else "  FAILED: 0 notes")
 
 
 async def main():
@@ -184,6 +166,7 @@ async def main():
             topic=args.topic,
             keywords=keywords,
             output_dir="tests/eval_report/extension_agent_custom",
+            port=8765,
         )
         return
 

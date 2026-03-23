@@ -21,6 +21,7 @@ import asyncio
 import hashlib
 import time
 from dataclasses import dataclass, field
+from pathlib import Path
 
 from ..media import MediaProcessor
 from .browser import XHSBrowser
@@ -35,6 +36,11 @@ class ProcessorConfig:
     use_vision: bool = True
     use_whisper: bool = True
     vision_concurrency: int = 3
+    max_transcription_seconds: int = 90
+    transcription_timeout_s: int = 300
+    max_video_frame_seconds: int = 60
+    max_video_frame_samples: int = 4
+    cache_video_locally: bool = False
     vision_prompt_template: str = (
         "Describe this image from a Xiaohongshu note titled '{title}'. "
         "Be concise (1-2 sentences). Focus on key visual content, "
@@ -44,10 +50,20 @@ class ProcessorConfig:
         "Describe this video thumbnail from a Xiaohongshu note titled "
         "'{title}'. What does the video appear to be about?"
     )
+    video_frame_prompt_template: str = (
+        "这是小红书视频《{title}》的一帧画面（第{index}帧）。"
+        "请用中文简洁描述这一帧里的人物、动作、场景、物品，以及它对理解视频内容有什么帮助。"
+    )
     transcript_summary_prompt: str = (
         "以下是一个小红书视频笔记的语音转录文本，标题是'{title}'。\n\n"
         "转录文本：\n{transcript}\n\n"
         "请用中文简洁概括这个视频的主要内容（2-3句话）。"
+    )
+    video_visual_summary_prompt: str = (
+        "以下是一个小红书视频《{title}》的封面描述和若干关键帧描述。\n\n"
+        "封面描述：{poster}\n\n"
+        "关键帧描述：\n{frames}\n\n"
+        "请用中文总结这个视频画面里发生了什么，重点概括场景、动作流程、产品/物体、氛围。输出2-4句话。"
     )
 
 
@@ -117,6 +133,8 @@ class NoteProcessor:
             await self._process_video(note)
         else:
             await self._process_images(note)
+
+        note.refresh_derived_fields()
 
         dt = time.time() - t0
         self.timing.record("process_note_media", dt)
@@ -366,6 +384,36 @@ class NoteProcessor:
 
         video = note.video
         poster_url = video.poster_url or (note.images[0].url if note.images else "")
+        downloadable_url = video.best_download_url()
+        video.resolved_url = downloadable_url or video.best_source_url()
+        video.stream_type = self._infer_video_stream_type(video.resolved_url)
+        processing_source = downloadable_url
+        if not downloadable_url:
+            video.download_error = "no_downloadable_video_url"
+            if video.resolved_url.startswith("blob:"):
+                self._log("video_source", "Only blob: video URL found; cannot transcribe directly")
+            else:
+                self._log("video_source", "No downloadable video URL found in DOM/performance traces")
+        else:
+            video.download_error = ""
+            self._log("video_source", f"{video.stream_type or 'remote'} source resolved")
+            if self.config.cache_video_locally and video.stream_type in {"mp4", "mov", "m4v"}:
+                t0 = time.time()
+                suffix = f".{video.stream_type}" if video.stream_type else ".mp4"
+                local_path = await asyncio.to_thread(
+                    self.media.download_file,
+                    downloadable_url,
+                    XHSBrowser.XHS_REFERER,
+                    suffix,
+                )
+                dt = time.time() - t0
+                self.timing.record("video_download", dt)
+                if local_path:
+                    video.download_path = local_path
+                    processing_source = local_path
+                    self._log("video_download", Path(local_path).name, dt)
+                else:
+                    self._log("video_download_error", "failed to cache mp4 locally", dt)
 
         # Download poster once
         poster_bytes = None
@@ -406,16 +454,23 @@ class NoteProcessor:
                 self._log("ocr_poster", f"{len(ocr_text)} chars", dt)
 
         async def transcribe():
-            if not video.url or not self.config.use_whisper:
+            if not processing_source or not self.config.use_whisper:
                 return
             t0 = time.time()
             self._log("transcribe_start", "Downloading + transcribing video...")
             try:
-                transcript = await self.media.transcribe_video(video.url, "zh")
+                transcript = await self.media.transcribe_video(
+                    processing_source,
+                    "zh",
+                    referer=XHSBrowser.XHS_REFERER if str(processing_source).startswith("http") else "",
+                    max_audio_seconds=self.config.max_transcription_seconds,
+                    timeout_s=self.config.transcription_timeout_s,
+                )
                 dt = time.time() - t0
                 self.timing.record("whisper_transcribe", dt)
                 if transcript.strip():
                     video.transcript = transcript
+                    video.download_error = ""
                     self._log("transcript", f"{len(transcript)} chars", dt)
 
                     t0_s = time.time()
@@ -430,10 +485,100 @@ class NoteProcessor:
                     self.timing.record("llm_transcript_summary", dt_s)
                     video.transcript_summary = summary
                     self._log("transcript_summary", summary[:80], dt_s)
+                else:
+                    video.download_error = "empty_transcript"
             except Exception as e:
+                video.download_error = str(e)
                 self._log("transcribe_error", str(e)[:100])
 
-        await asyncio.gather(poster_vision(), poster_ocr(), transcribe())
+        async def frame_understanding():
+            if not processing_source or not self.config.use_vision:
+                return
+            t0 = time.time()
+            frame_paths = await self.media.extract_video_frames(
+                processing_source,
+                referer=XHSBrowser.XHS_REFERER if str(processing_source).startswith("http") else "",
+                max_seconds=self.config.max_video_frame_seconds,
+                num_frames=self.config.max_video_frame_samples,
+                timeout_s=self.config.transcription_timeout_s,
+            )
+            dt = time.time() - t0
+            self.timing.record("video_frame_extract", dt)
+            if not frame_paths:
+                self._log("video_frame_extract", "no frames extracted", dt)
+                return
+
+            video.frame_paths = frame_paths
+            self._log("video_frame_extract", f"{len(frame_paths)} frames", dt)
+
+            semaphore = asyncio.Semaphore(self.config.vision_concurrency)
+            frame_results: list[str] = [""] * len(frame_paths)
+
+            async def describe_frame(index: int, frame_path: str):
+                async with semaphore:
+                    try:
+                        img_bytes = await asyncio.to_thread(Path(frame_path).read_bytes)
+                        prompt = self.config.video_frame_prompt_template.format(
+                            title=note.title,
+                            index=index + 1,
+                        )
+                        t0_f = time.time()
+                        desc = await asyncio.to_thread(
+                            self.media.describe_image,
+                            img_bytes,
+                            prompt,
+                            384,
+                        )
+                        dt_f = time.time() - t0_f
+                        self.timing.record("vision_video_frame", dt_f)
+                        if desc:
+                            frame_results[index] = desc
+                            self._log("video_frame_vision", f"[{index+1}] {desc[:80]}", dt_f)
+                    except Exception as e:
+                        self._log("video_frame_error", f"[{index+1}] {e}")
+
+            await asyncio.gather(*[
+                describe_frame(index, frame_path)
+                for index, frame_path in enumerate(frame_paths)
+            ])
+
+            video.frame_descriptions = [desc for desc in frame_results if desc]
+
+            if video.frame_descriptions:
+                t0_s = time.time()
+                summary = await asyncio.to_thread(
+                    self.media.call_text,
+                    self.config.video_visual_summary_prompt.format(
+                        title=note.title,
+                        poster=video.poster_description or video.poster_ocr or "无",
+                        frames="\n".join(
+                            f"{idx+1}. {desc}"
+                            for idx, desc in enumerate(video.frame_descriptions)
+                        ),
+                    ),
+                    512,
+                )
+                dt_s = time.time() - t0_s
+                self.timing.record("llm_video_visual_summary", dt_s)
+                video.visual_summary = summary
+                self._log("video_visual_summary", summary[:80], dt_s)
+
+        await asyncio.gather(poster_vision(), poster_ocr(), frame_understanding(), transcribe())
+
+    @staticmethod
+    def _infer_video_stream_type(url: str) -> str:
+        lower = (url or "").lower()
+        if ".mp4" in lower:
+            return "mp4"
+        if ".m3u8" in lower:
+            return "m3u8"
+        if ".mov" in lower:
+            return "mov"
+        if ".m4v" in lower:
+            return "m4v"
+        if lower.startswith("blob:"):
+            return "blob"
+        return ""
 
     # ── Image saving for reports ────────────────────────────────
 
@@ -467,5 +612,25 @@ class NoteProcessor:
             path = img_dir / fname
             path.write_bytes(img_bytes)
             saved.append(str(path))
+
+        return saved
+
+    async def save_video_frames(self, note: NoteEntity, output_dir: str) -> list[str]:
+        """Copy extracted video frame samples to disk for reports."""
+        if not note.video or not note.video.frame_paths:
+            return []
+
+        frame_dir = Path(output_dir) / "video_frames"
+        frame_dir.mkdir(parents=True, exist_ok=True)
+        saved: list[str] = []
+        safe_title = "".join(c if c.isalnum() else "_" for c in note.title[:15]) or "video"
+
+        for index, frame_path in enumerate(note.video.frame_paths):
+            src = Path(frame_path)
+            if not src.exists():
+                continue
+            dest = frame_dir / f"{safe_title}_frame{index+1}{src.suffix or '.jpg'}"
+            dest.write_bytes(src.read_bytes())
+            saved.append(str(dest))
 
         return saved

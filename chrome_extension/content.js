@@ -38,6 +38,89 @@ function wait(ms) {
   return new Promise(r => setTimeout(r, ms));
 }
 
+const mediaRequestLog = [];
+
+function recordMediaRequest(entry) {
+  if (!entry || !entry.url) return;
+  const normalized = {
+    url: String(entry.url),
+    source: entry.source || 'page_hook',
+    ts: entry.ts || Date.now(),
+    kind: inferVideoKind(entry.url),
+  };
+  mediaRequestLog.push(normalized);
+  if (mediaRequestLog.length > 500) {
+    mediaRequestLog.splice(0, mediaRequestLog.length - 500);
+  }
+}
+
+function installMediaRequestHook() {
+  window.addEventListener('message', (event) => {
+    if (event.source !== window) return;
+    if (event.data?.type !== 'clawvision_media_request') return;
+    recordMediaRequest(event.data.payload);
+  });
+
+  const script = document.createElement('script');
+  script.dataset.clawvisionMediaHook = 'true';
+  script.textContent = `
+    (() => {
+      if (window.__clawvisionMediaHookInstalled) return;
+      window.__clawvisionMediaHookInstalled = true;
+
+      const emit = (payload) => {
+        try {
+          window.postMessage({
+            type: 'clawvision_media_request',
+            payload: { ...payload, ts: Date.now(), href: location.href }
+          }, '*');
+        } catch {}
+      };
+
+      const normalizeUrl = (value) => {
+        try {
+          return new URL(String(value), location.href).href;
+        } catch {
+          return String(value || '');
+        }
+      };
+
+      const originalFetch = window.fetch;
+      if (originalFetch) {
+        window.fetch = function(input, init) {
+          const raw = typeof input === 'string' ? input : input?.url;
+          if (raw) emit({ url: normalizeUrl(raw), source: 'fetch' });
+          return originalFetch.apply(this, arguments);
+        };
+      }
+
+      const originalOpen = XMLHttpRequest.prototype.open;
+      XMLHttpRequest.prototype.open = function(method, url) {
+        if (url) emit({ url: normalizeUrl(url), source: 'xhr' });
+        return originalOpen.apply(this, arguments);
+      };
+
+      const originalCreateObjectURL = URL.createObjectURL;
+      if (originalCreateObjectURL) {
+        URL.createObjectURL = function(obj) {
+          const blobUrl = originalCreateObjectURL.call(this, obj);
+          emit({
+            url: blobUrl,
+            source: 'createObjectURL',
+            blob_type: obj?.type || '',
+            blob_size: obj?.size || 0,
+          });
+          return blobUrl;
+        };
+      }
+    })();
+  `;
+  (document.documentElement || document.head || document.body).appendChild(script);
+  script.remove();
+}
+
+installMediaRequestHook();
+
 function waitForSelector(selector, timeout = 10000) {
   return new Promise((resolve, reject) => {
     const el = $(selector);
@@ -49,6 +132,127 @@ function waitForSelector(selector, timeout = 10000) {
     observer.observe(document.body, { childList: true, subtree: true });
     setTimeout(() => { observer.disconnect(); resolve(null); }, timeout);
   });
+}
+
+function parseCount(raw) {
+  const textValue = String(raw || '').trim().toLowerCase().replace(/,/g, '').replace(/\+/g, '');
+  if (!textValue) return 0;
+
+  const match = textValue.match(/(\d+(?:\.\d+)?)(万|w|k)?/i);
+  if (!match) return 0;
+
+  let value = parseFloat(match[1]);
+  const unit = (match[2] || '').toLowerCase();
+  if (unit === '万' || unit === 'w') value *= 10000;
+  if (unit === 'k') value *= 1000;
+  return Math.round(value);
+}
+
+function uniqueStrings(values) {
+  const seen = new Set();
+  const result = [];
+  for (const value of values) {
+    const key = String(value || '').trim();
+    if (!key || seen.has(key)) continue;
+    seen.add(key);
+    result.push(key);
+  }
+  return result;
+}
+
+function inferVideoKind(url) {
+  const lower = String(url || '').toLowerCase();
+  if (!lower) return 'unknown';
+  if (lower.startsWith('blob:')) return 'blob';
+  if (lower.includes('.mp4')) return 'mp4';
+  if (lower.includes('.m3u8')) return 'm3u8';
+  if (lower.includes('.mov')) return 'mov';
+  if (lower.includes('.m4v')) return 'm4v';
+  return 'unknown';
+}
+
+function scoreVideoCandidate(url) {
+  const lower = String(url || '').toLowerCase();
+  if (!lower) return -1;
+  if (lower.startsWith('blob:')) return 0;
+  if (lower.startsWith('https://') || lower.startsWith('http://')) {
+    const kind = inferVideoKind(lower);
+    if (kind === 'mp4') return 5;
+    if (kind === 'm3u8') return 4;
+    if (kind === 'mov' || kind === 'm4v') return 3;
+    return 2;
+  }
+  return 1;
+}
+
+function collectVideoCandidates(videoEl) {
+  const candidates = [];
+  const seen = new Set();
+
+  function push(url, source) {
+    if (!url) return;
+    let normalized = '';
+    try {
+      normalized = new URL(url, window.location.href).href;
+    } catch {
+      normalized = String(url);
+    }
+    if (!normalized || seen.has(normalized)) return;
+    seen.add(normalized);
+    candidates.push({
+      url: normalized,
+      source,
+      kind: inferVideoKind(normalized),
+      score: scoreVideoCandidate(normalized),
+    });
+  }
+
+  push(videoEl?.src, 'video.src');
+  push(videoEl?.currentSrc, 'video.currentSrc');
+
+  for (const sourceEl of $$('video source, source')) {
+    push(sourceEl.src || sourceEl.currentSrc || sourceEl.getAttribute('src'), 'source');
+  }
+
+  const attrRoots = [
+    videoEl,
+    videoEl?.parentElement,
+    videoEl?.closest('.player-container, .video-player, .xgplayer, [class*="video"]'),
+    document.querySelector('.player-container'),
+    document.querySelector('.xg-video-container'),
+  ].filter(Boolean);
+
+  for (const root of attrRoots) {
+    for (const attr of ['src', 'data-src', 'data-url', 'data-playurl', 'data-play-url', 'data-m3u8', 'data-hls']) {
+      push(root.getAttribute?.(attr), `attr:${attr}`);
+    }
+  }
+
+  try {
+    const perfEntries = performance.getEntriesByType('resource');
+    for (const entry of perfEntries.slice(-200)) {
+      const url = entry.name || '';
+      if (/(\.mp4|\.m3u8|\.m4v|\.mov)(\?|$)/i.test(url) || /video|vod|hls|playurl|sns-video/i.test(url)) {
+        push(url, 'performance');
+      }
+    }
+  } catch {}
+
+  for (const entry of mediaRequestLog.slice(-300)) {
+    const url = entry.url || '';
+    if (/(\.mp4|\.m3u8|\.m4v|\.mov)(\?|$)/i.test(url) || /video|vod|hls|playurl|sns-video/i.test(url)) {
+      push(url, entry.source || 'page_hook');
+    }
+  }
+
+  try {
+    const fullScriptText = [...document.scripts].map(s => s.textContent || '').join('\n');
+    const matches = fullScriptText.match(/https?:\/\/[^\s"'\\]+?(?:\.mp4|\.m3u8|\.m4v|\.mov)(?:\?[^\s"'\\]*)?/ig) || [];
+    for (const match of matches) push(match, 'script');
+  } catch {}
+
+  candidates.sort((a, b) => b.score - a.score);
+  return candidates;
 }
 
 // ── State Detection ────────────────────────────────────────────
@@ -101,6 +305,9 @@ function extractSearchCards() {
     const noteId = card.dataset?.noteId
       || link.match(/\/explore\/([a-f0-9]{24})/)?.[1]
       || '';
+    const hasVideo = !!card.querySelector(
+      '.play-icon, .video-icon, svg[class*="video"], .duration'
+    );
 
     return {
       position: i,
@@ -110,23 +317,118 @@ function extractSearchCards() {
       cover_url: imgEl ? (imgEl.src || imgEl.dataset?.src || '') : '',
       link,
       note_id: noteId,
+      type: hasVideo ? 'video' : 'image',
     };
   }).filter(c => c.title || c.link);
+}
+
+function extractSearchTabs() {
+  const labels = ['全部', '图文', '视频', '用户'];
+  const candidates = $$('button, a, div, span').filter((el) => {
+    const label = text(el);
+    if (!labels.includes(label)) return false;
+    if (!(el instanceof HTMLElement)) return false;
+    const rect = el.getBoundingClientRect();
+    return rect.width > 24 && rect.height > 18;
+  });
+
+  const seen = new Set();
+  const tabs = [];
+  for (const el of candidates) {
+    const label = text(el);
+    if (seen.has(label)) continue;
+    seen.add(label);
+    const node = el;
+    const ariaSelected = node.getAttribute('aria-selected') === 'true';
+    const className = node.className || '';
+    const isActive =
+      ariaSelected
+      || /\bactive\b|current|selected/.test(className)
+      || node.getAttribute('data-active') === 'true';
+    tabs.push({
+      label,
+      active: isActive,
+    });
+  }
+  return tabs;
+}
+
+function detectSearchPageState() {
+  const cards = extractSearchCards();
+  const tabs = extractSearchTabs();
+  const activeTab = tabs.find(tab => tab.active)?.label || '';
+  const noResultText = firstText([
+    '.empty-result-page',
+    '.empty-page',
+    '.no-result',
+    '.empty',
+    '[class*="empty"]',
+  ]);
+  const pageText = document.body ? document.body.innerText : '';
+  const hasNoResults =
+    /没有找到相关内容|换个词试试|暂无相关内容|暂无结果/.test(noResultText || pageText);
+  const skeletonCount = $$(
+    '[class*="skeleton"], [class*="Skeleton"], [class*="loading"], [class*="shimmer"]'
+  ).length;
+
+  return {
+    card_count: cards.length,
+    tabs,
+    active_filter: activeTab,
+    has_no_results: hasNoResults,
+    loading: !cards.length && !hasNoResults,
+    skeleton_count: skeletonCount,
+  };
+}
+
+async function clickSearchTab(label) {
+  const labels = ['全部', '图文', '视频', '用户'];
+  if (!labels.includes(label)) {
+    return { ok: false, error: `Unsupported search tab: ${label}` };
+  }
+
+  const candidates = $$('button, a, div, span').filter((el) => text(el) === label);
+  for (const el of candidates) {
+    if (!(el instanceof HTMLElement)) continue;
+    const rect = el.getBoundingClientRect();
+    if (rect.width < 24 || rect.height < 18) continue;
+    el.click();
+    await wait(1500);
+    return {
+      ok: true,
+      label,
+      state: detectSearchPageState(),
+    };
+  }
+  return { ok: false, error: `Search tab not found: ${label}` };
 }
 
 // ── Note Content Extraction ────────────────────────────────────
 
 async function waitForNoteContent(timeout = 8000) {
-  /** Wait for note content elements to appear in DOM (XHS loads async). */
-  const selectors = [
+  /** Wait for text or media elements to appear in DOM (XHS loads async). */
+  const textSelectors = [
     '#detail-title', '.note-content .title', '.note-scroller .title',
     '#detail-desc', '.note-content .desc', '.note-scroller .desc',
   ];
+  const mediaSelectors = [
+    'video',
+    '.player-container',
+    '.video-player',
+    '.xg-video-container',
+    '.carousel-image img',
+    '.slide img',
+    '.swiper-slide img',
+  ];
   const deadline = Date.now() + timeout;
   while (Date.now() < deadline) {
-    for (const sel of selectors) {
+    for (const sel of textSelectors) {
       const el = document.querySelector(sel);
       if (el && el.textContent.trim()) return el;
+    }
+    for (const sel of mediaSelectors) {
+      const el = document.querySelector(sel);
+      if (el) return el;
     }
     await wait(500);
   }
@@ -136,6 +438,11 @@ async function waitForNoteContent(timeout = 8000) {
 function extractNoteContent() {
   const note = {};
   note.type = detectNoteType();
+  note.url = window.location.href;
+  note.note_id =
+    window.location.href.match(/\/explore\/([a-f0-9]{24})/)?.[1]
+    || document.querySelector('[data-note-id]')?.dataset?.noteId
+    || '';
 
   // Title — multiple fallbacks for image-text vs video notes
   note.title = firstText([
@@ -209,6 +516,18 @@ function extractNoteContent() {
     '.author-container a[href*="/user/"], .info a[href*="/user/profile/"]'
   );
   note.author_url = authorLink ? authorLink.href : '';
+  note.ip_location = firstText([
+    '.note-content .ip-location',
+    '.publish-info .ip-location',
+    '.ip-location',
+    '.note-ip-location',
+  ]);
+  note.location = firstText([
+    '.note-content .location',
+    '.publish-info .location',
+    '.location-info',
+    '.note-location',
+  ]);
 
   // Hashtags
   note.hashtags = $$('.hash-tag a, a[href*="/page/topics/"], .note-content .tag, #detail-desc a.tag')
@@ -234,9 +553,15 @@ function extractNoteContent() {
   } else {
     // Video note — get video poster/thumbnail
     const video = document.querySelector('video');
+    const videoCandidates = collectVideoCandidates(video);
+    const preferred = videoCandidates.find(c => c.kind !== 'blob') || videoCandidates[0] || null;
+
     if (video && video.poster) note.image_urls = [video.poster];
     else note.image_urls = [];
-    note.video_url = video ? (video.src || video.currentSrc || '') : '';
+    note.poster_url = video ? (video.poster || '') : '';
+    note.video_url = preferred ? preferred.url : (video ? (video.src || video.currentSrc || '') : '');
+    note.video_url_candidates = videoCandidates;
+    note.duration_s = video && Number.isFinite(video.duration) ? Math.round(video.duration * 10) / 10 : null;
   }
 
   note.image_count = note.total_images || note.image_urls.length || 1;
@@ -246,28 +571,91 @@ function extractNoteContent() {
 
 // ── Comment Extraction (with dedup) ────────────────────────────
 
-function extractComments() {
-  const items = $$(
-    '.comment-item, .parent-comment, .comment-inner, ' +
-    '.comments-container .comment-item-inner'
-  );
+function extractComments(options = {}) {
+  const rootSelectors = [
+    '.comment-item',
+    '.parent-comment',
+    '.comment-inner',
+    '.comments-container .comment-item-inner',
+    '.comment-wrapper',
+  ].join(', ');
+  const childSelectors = [
+    '.reply-item',
+    '.sub-comment-item',
+    '.child-comment-item',
+    '.reply-comment-item',
+  ].join(', ');
 
+  function parseComment(item, includeChildren = true) {
+    const username = firstText(['.name', '.user-name', '.nickname', '.author-name'], item);
+    const commentText = firstText(
+      ['.content', '.comment-text', '.note-text', '.desc', '[class*="content"]'],
+      item,
+    );
+    const likes = firstText(
+      ['.like .count', '.like-wrapper .count', '.interact-wrapper .count', '[class*="like"] .count'],
+      item,
+    );
+    const time = firstText(
+      ['.time', '.date', '.create-time', '.comment-time', '[class*="time"]'],
+      item,
+    );
+    const badgeText = firstText(
+      ['.author-tag', '.tag.author', '.reply-tag', '.user-tag', '[class*="author-tag"]'],
+      item,
+    );
+    const topText = firstText(['.top-tag', '.pinned-tag', '[class*="top-tag"]'], item);
+    const isAuthorReply = /作者|博主|楼主/.test(badgeText);
+    const isPinned = /置顶/.test(topText);
+
+    const childComments = [];
+    if (includeChildren) {
+      const childNodes = $$(childSelectors, item).filter(sub => !sub.parentElement?.closest(childSelectors));
+      for (const child of childNodes) {
+        const parsed = parseComment(child, false);
+        if (parsed.text) childComments.push(parsed);
+      }
+    }
+
+    const likeCount = parseCount(likes);
+    const replyCount = childComments.length;
+    const heatScore = likeCount + replyCount * 3 + (isAuthorReply ? 5 : 0) + (isPinned ? 10 : 0);
+
+    return {
+      username,
+      text: commentText,
+      likes,
+      like_count: likeCount,
+      time,
+      is_author_reply: isAuthorReply,
+      is_pinned: isPinned,
+      badge: badgeText,
+      reply_count: replyCount,
+      heat_score: heatScore,
+      sub_comments: childComments,
+    };
+  }
+
+  const items = $$(rootSelectors).filter(item => !item.parentElement?.closest(rootSelectors));
   const seen = new Set();
-  const comments = [];
+  let comments = [];
 
   for (const item of items) {
-    const username = firstText(['.name', '.user-name', '.nickname'], item);
-    const commentText = firstText(['.content', '.comment-text', '.note-text'], item);
-    const likes = firstText(['.like .count', '.like-wrapper .count'], item);
+    const parsed = parseComment(item, true);
+    if (!parsed.text) continue;
 
-    if (!commentText) continue;
-
-    // Dedup by username + first 30 chars of text
-    const key = `${username}:${commentText.slice(0, 30)}`;
+    const key = `${parsed.username}:${parsed.text.slice(0, 30)}`;
     if (seen.has(key)) continue;
     seen.add(key);
+    comments.push(parsed);
+  }
 
-    comments.push({ username, text: commentText, likes });
+  if (options.prefer_hot !== false) {
+    comments.sort((a, b) => (b.heat_score || 0) - (a.heat_score || 0));
+  }
+
+  if (options.max_comments) {
+    comments = comments.slice(0, options.max_comments);
   }
 
   return comments;
@@ -690,6 +1078,18 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
           result = { cards: extractSearchCards() };
           break;
 
+        case 'extract_search_tabs':
+          result = { tabs: extractSearchTabs() };
+          break;
+
+        case 'get_search_page_state':
+          result = detectSearchPageState();
+          break;
+
+        case 'click_search_tab':
+          result = await clickSearchTab(msg.params?.label ?? '全部');
+          break;
+
         case 'extract_note_content':
           // Wait for XHS to render content before extracting
           await waitForNoteContent(msg.params?.timeout || 8000);
@@ -701,7 +1101,7 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
           break;
 
         case 'extract_comments':
-          result = { comments: extractComments() };
+          result = { comments: extractComments(msg.params || {}) };
           break;
 
         case 'click_card':

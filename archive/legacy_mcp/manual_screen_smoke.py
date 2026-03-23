@@ -1,6 +1,6 @@
-"""Smoke tests for screen capture — run manually on macOS with permissions granted."""
+"""Archived smoke script for the legacy screen-level automation helpers."""
 
-from clawvision.screen import ScreenController
+from screen import ScreenController
 
 
 def test_capture_full_screen():

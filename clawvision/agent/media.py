@@ -8,27 +8,16 @@ from __future__ import annotations
 
 import base64
 import json
-import os
 import re
+import shutil
+import tempfile
 import urllib.request
 from dataclasses import dataclass
+from pathlib import Path
 
 import anthropic
 
-# Load API key from zshrc if not in env
-if not os.environ.get("ANTHROPIC_API_KEY"):
-    for _p in [
-        os.path.expanduser("~/.zshrc.pre-oh-my-zsh"),
-        os.path.expanduser("~/.zshrc"),
-    ]:
-        if os.path.exists(_p):
-            with open(_p) as _f:
-                for _line in _f:
-                    if "ANTHROPIC_API_KEY" in _line and "export" in _line:
-                        os.environ["ANTHROPIC_API_KEY"] = (
-                            _line.strip().split("=", 1)[1].strip().strip('"').strip("'")
-                        )
-                        break
+from ..runtime import load_runtime_env
 
 DEFAULT_MODEL = "claude-sonnet-4-6"
 
@@ -46,6 +35,7 @@ class MediaProcessor:
     """Generic media processor: LLM calls, OCR, transcription, image utils."""
 
     def __init__(self, config: MediaConfig | None = None):
+        load_runtime_env()
         self.config = config or MediaConfig()
         self.client = anthropic.Anthropic()
         self._ocr = None
@@ -110,14 +100,49 @@ class MediaProcessor:
                 pass
         return self._transcriber
 
-    async def transcribe_video(self, video_url: str, language: str = "zh") -> str:
+    async def transcribe_video(
+        self,
+        video_url: str,
+        language: str = "zh",
+        referer: str = "",
+        max_audio_seconds: int | None = 90,
+        timeout_s: float = 300,
+    ) -> str:
         """Download video and transcribe audio. Returns empty string on failure."""
         if not self.transcriber:
             return ""
         try:
-            return await self.transcriber.download_and_transcribe(video_url, language)
+            return await self.transcriber.download_and_transcribe(
+                video_url,
+                language,
+                referer=referer,
+                max_audio_seconds=max_audio_seconds,
+                timeout_s=timeout_s,
+            )
         except Exception:
             return ""
+
+    async def extract_video_frames(
+        self,
+        source: str,
+        referer: str = "",
+        max_seconds: int = 60,
+        num_frames: int = 4,
+        timeout_s: float = 180,
+    ) -> list[str]:
+        """Sample video frames to local JPEG files. Returns frame paths."""
+        from ..vision.transcriber import WhisperTranscriber
+
+        try:
+            return await WhisperTranscriber.extract_video_frames(
+                source,
+                referer=referer,
+                max_seconds=max_seconds,
+                num_frames=num_frames,
+                timeout_s=timeout_s,
+            )
+        except Exception:
+            return []
 
     # ── Image Utilities ─────────────────────────────────────────
 
@@ -146,6 +171,23 @@ class MediaProcessor:
                 return resp.read()
         except Exception:
             return None
+
+    @staticmethod
+    def download_file(url: str, referer: str = "", suffix: str = "") -> str:
+        """Download a remote file to a temporary local path."""
+        headers = {"User-Agent": "Mozilla/5.0"}
+        if referer:
+            headers["Referer"] = referer
+        req = urllib.request.Request(url, headers=headers)
+        fd, path = tempfile.mkstemp(suffix=suffix)
+        Path(path).unlink(missing_ok=True)
+        try:
+            with urllib.request.urlopen(req, timeout=60) as resp, open(path, "wb") as out:
+                shutil.copyfileobj(resp, out)
+            return path
+        except Exception:
+            Path(path).unlink(missing_ok=True)
+            return ""
 
     @staticmethod
     def extract_json(text: str):

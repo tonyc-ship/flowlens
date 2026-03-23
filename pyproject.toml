@@ -1,22 +1,19 @@
 [project]
 name = "clawvision"
 version = "0.1.0"
-description = "Visual perception MCP server for AI agents - screen understanding and precise UI interaction"
+description = "Xiaohongshu research agent with Chrome extension browser automation and media enrichment"
 requires-python = ">=3.11"
 dependencies = [
-    "mcp[cli]>=1.0.0",
     "anthropic>=0.40.0",
-    "pyautogui>=0.9.54",
     "pyobjc-framework-Quartz>=10.0",
-    "pyobjc-framework-ScreenCaptureKit>=10.0",
     "pyobjc-framework-Vision>=10.0",
     "Pillow>=10.0.0",
-    "numpy>=1.26.0",
     "websockets>=13.0",
 ]
 
 [project.optional-dependencies]
 detect = [
+    "numpy>=1.26.0",
     "ultralytics>=8.2.0",        # YOLOv8 (OmniParser UI detector)
     "transformers>=4.40.0",       # OWLv2 open-vocabulary detector
     "torch>=2.2.0",               # PyTorch with MPS support
@@ -35,7 +32,7 @@ dev = [
 ]
 
 [project.scripts]
-clawvision = "clawvision.server:main"
+clawvision = "clawvision.cli:main"
 
 [build-system]
 requires = ["hatchling"]

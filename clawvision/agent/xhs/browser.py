@@ -115,6 +115,40 @@ class XHSBrowser:
         result = await self.bridge.send_command("extract_search_cards")
         return result.get("cards", [])
 
+    async def extract_search_tabs(self) -> list[dict]:
+        """Extract top-level search tabs like 全部 / 图文 / 视频 / 用户."""
+        result = await self.bridge.send_command("extract_search_tabs")
+        return result.get("tabs", [])
+
+    async def get_search_page_state(self) -> dict:
+        """Inspect whether search results are ready, still loading, or empty."""
+        return await self.bridge.send_command("get_search_page_state")
+
+    async def click_search_tab(self, label: str) -> dict:
+        """Switch the active XHS search tab."""
+        return await self.bridge.send_command("click_search_tab", {"label": label})
+
+    async def wait_for_search_results(
+        self,
+        *,
+        preferred_filter: str | None = None,
+        timeout_s: float = 20.0,
+        poll_s: float = 1.5,
+    ) -> dict:
+        """Wait until search cards are ready or the page clearly reports no results."""
+        if preferred_filter:
+            await self.click_search_tab(preferred_filter)
+            await asyncio.sleep(1)
+
+        deadline = asyncio.get_running_loop().time() + timeout_s
+        last_state: dict = {}
+        while asyncio.get_running_loop().time() < deadline:
+            last_state = await self.get_search_page_state()
+            if last_state.get("card_count", 0) > 0 or last_state.get("has_no_results"):
+                return last_state
+            await asyncio.sleep(poll_s)
+        return last_state
+
     async def extract_note_content(self) -> dict:
         """Extract note title, content, images, etc. from DOM."""
         result = await self.bridge.send_command("extract_note_content")
@@ -132,9 +166,16 @@ class XHSBrowser:
         )
         return result.get("image_urls", []), result.get("debug", {})
 
-    async def extract_comments(self) -> list[dict]:
-        """Extract comments from note detail (deduplicated)."""
-        result = await self.bridge.send_command("extract_comments")
+    async def extract_comments(
+        self,
+        max_comments: int | None = None,
+        prefer_hot: bool = True,
+    ) -> list[dict]:
+        """Extract comments from note detail, optionally ranked by heat."""
+        params = {"prefer_hot": prefer_hot}
+        if max_comments is not None:
+            params["max_comments"] = max_comments
+        result = await self.bridge.send_command("extract_comments", params)
         return result.get("comments", [])
 
     async def extract_profile_info(self) -> dict:

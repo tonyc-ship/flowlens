@@ -117,6 +117,23 @@ class XHSUserAnalyzer:
             self._log_step("screenshot_error", f"{label}: {e}")
             return ""
 
+    async def _collect_note_comments(self) -> list[Comment]:
+        """Collect and merge hot comments across several scroll rounds."""
+        merged: list[Comment] = []
+        for round_idx in range(self.config.max_comment_scrolls + 1):
+            raw_comments = await self.browser.extract_comments(
+                max_comments=self.config.max_comments_per_note,
+                prefer_hot=True,
+            )
+            merged = NoteEntity.merge_comments(
+                [*merged, *[Comment.from_dom_dict(c) for c in raw_comments]]
+            )
+            if round_idx >= self.config.max_comment_scrolls:
+                break
+            await self.browser.scroll_note(400)
+            await asyncio.sleep(1)
+        return merged[:self.config.max_comments_per_note]
+
     # ── Main Flow ───────────────────────────────────────────────
 
     async def analyze(self, user_url: str) -> dict:
@@ -326,23 +343,15 @@ class XHSUserAnalyzer:
 
         # Comments → Comment entities
         t0 = time.time()
-        raw_comments = await self.browser.extract_comments()
-        for _ in range(self.config.max_comment_scrolls):
-            await self.browser.scroll_note(400)
-            more = await self.browser.extract_comments()
-            existing_keys = {f"{c.get('username', '')}:{c.get('text', '')[:30]}" for c in raw_comments}
-            for c in more:
-                key = f"{c.get('username', '')}:{c.get('text', '')[:30]}"
-                if key not in existing_keys:
-                    raw_comments.append(c)
-                    existing_keys.add(key)
-
-        note.comments = [
-            Comment.from_dom_dict(c) for c in raw_comments[:self.config.max_comments_per_note]
-        ]
+        note.comments = await self._collect_note_comments()
+        note.refresh_derived_fields()
         comments_dt = time.time() - t0
         self.timing.record("comments_extract", comments_dt)
-        self._log_step("comments", f"{len(note.comments)} comments", duration=comments_dt)
+        self._log_step(
+            "comments",
+            f"{len(note.comments)} comments, hottest={note.hottest_comments(1)[0].like_count if note.comments else 0}",
+            duration=comments_dt,
+        )
 
         # Completeness
         comp = note.completeness
@@ -509,6 +518,13 @@ class XHSUserAnalyzer:
                 f"Comments: {_esc(note.get('comments_count', '?'))} | "
                 f"Images: {note.get('image_count', '?')}</p>"
             )
+            if note.get("author_url"):
+                parts.append(f"<p class='meta'>Author URL: <a href=\"{_esc(note['author_url'])}\" target=\"_blank\">{_esc(note['author_url'])}</a></p>")
+            if note.get("location") or note.get("ip_location"):
+                parts.append(
+                    f"<p class='meta'>Location: {_esc(note.get('location', ''))} | "
+                    f"IP: {_esc(note.get('ip_location', ''))}</p>"
+                )
 
             if note.get("hashtags"):
                 tags = " ".join(f"<span class='tag'>{_esc(t)}</span>" for t in note["hashtags"])
@@ -517,6 +533,21 @@ class XHSUserAnalyzer:
             content = note.get("content", "")
             if content:
                 parts.append(f"<p>{_esc(content[:800])}</p>")
+
+            if note.get("format_hints") or note.get("price_mentions") or note.get("cta_phrases") or note.get("key_points"):
+                parts.append("<div class='meta'>")
+                if note.get("format_hints"):
+                    parts.append(f"<p>Format: {_esc(', '.join(note['format_hints']))}</p>")
+                if note.get("price_mentions"):
+                    parts.append(f"<p>Price mentions: {_esc(', '.join(note['price_mentions']))}</p>")
+                if note.get("cta_phrases"):
+                    parts.append(f"<p>CTA: {_esc(' | '.join(note['cta_phrases']))}</p>")
+                if note.get("key_points"):
+                    parts.append("<p>Key points:</p><ol>")
+                    for point in note["key_points"][:5]:
+                        parts.append(f"<li>{_esc(point)}</li>")
+                    parts.append("</ol>")
+                parts.append("</div>")
 
             if note.get("cover_description"):
                 parts.append(f"<h4>Cover Image (Vision)</h4><p>{_esc(note['cover_description'])}</p>")
@@ -536,14 +567,19 @@ class XHSUserAnalyzer:
                 parts.append(f"<h4>Video Transcript Summary</h4><div class='transcript'>{_esc(note['transcript_summary'])}</div>")
             if note.get("transcript"):
                 parts.append(f"<details><summary>Full transcript ({len(note['transcript'])} chars)</summary><div class='transcript'>{_esc(note['transcript'][:2000])}</div></details>")
+            if note.get("video_resolved_url") or note.get("video_url"):
+                parts.append(
+                    f"<p class='meta'>Video source: {_esc(note.get('video_resolved_url') or note.get('video_url'))}</p>"
+                )
 
             if note.get("screenshot"):
                 rel = os.path.relpath(note["screenshot"], str(self.output_dir))
                 parts.append(f'<img class="screenshot" src="{rel}">')
 
-            if note.get("comments"):
-                parts.append(f"<h4>Comments ({len(note['comments'])})</h4>")
-                for c in note["comments"][:8]:
+            comment_items = note.get("hot_comments") or note.get("comments") or []
+            if comment_items:
+                parts.append(f"<h4>Hot Comments ({len(comment_items)})</h4>")
+                for c in comment_items[:8]:
                     likes_str = f"<span class='likes'>{c.get('likes', '')}</span>" if c.get("likes") else ""
                     parts.append(
                         f"<div class='comment'><strong>{_esc(c.get('username', ''))}</strong>: "

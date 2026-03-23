@@ -36,6 +36,7 @@ from .processor import NoteProcessor, ProcessorConfig, TimingRecord
 class ResearchConfig:
     """Configuration for a research session."""
     max_notes_per_keyword: int = 2
+    max_comments_per_note: int = 20
     max_comment_scrolls: int = 2
     max_keywords: int = 3
     use_vision_fallback: bool = True
@@ -202,6 +203,23 @@ class XHSResearchAgent:
             self._log_step("screenshot_error", f"{label}: {e}")
             return ""
 
+    async def _collect_note_comments(self) -> list[Comment]:
+        """Collect and merge hot comments across several scroll rounds."""
+        merged: list[Comment] = []
+        for round_idx in range(self.config.max_comment_scrolls + 1):
+            raw_comments = await self.browser.extract_comments(
+                max_comments=self.config.max_comments_per_note,
+                prefer_hot=True,
+            )
+            merged = NoteEntity.merge_comments(
+                [*merged, *[Comment.from_dom_dict(c) for c in raw_comments]]
+            )
+            if round_idx >= self.config.max_comment_scrolls:
+                break
+            await self.browser.scroll_note(400)
+            await asyncio.sleep(1)
+        return merged[:self.config.max_comments_per_note]
+
     # ── Research Flow ───────────────────────────────────────────
 
     async def research(
@@ -241,15 +259,20 @@ class XHSResearchAgent:
             self._log_step("search", f"[{ki+1}/{len(keywords)}] {keyword}")
 
             await self.browser.navigate_to_search(keyword)
+            search_state = await self.browser.wait_for_search_results(timeout_s=20, poll_s=2)
+            self._log_step(
+                "search_state",
+                f"filter={search_state.get('active_filter') or 'unknown'} "
+                f"cards={search_state.get('card_count', 0)} "
+                f"loading={search_state.get('loading')} "
+                f"no_results={search_state.get('has_no_results')}",
+            )
 
             search_screenshot = await self._take_screenshot(f"search_{ki+1}_{keyword}")
             if search_screenshot:
                 self._screenshots.append(search_screenshot)
 
             raw_cards = await self.browser.extract_search_cards()
-            if not raw_cards:
-                await asyncio.sleep(3)
-                raw_cards = await self.browser.extract_search_cards()
 
             cards = [NoteCard.from_dom_dict(c) for c in raw_cards]
             self._log_step("cards", f"{len(cards)} cards from DOM")
@@ -381,21 +404,15 @@ class XHSResearchAgent:
 
         # Comments (with scroll for more)
         t0 = time.time()
-        raw_comments = await self.browser.extract_comments()
-        for _ in range(self.config.max_comment_scrolls):
-            await self.browser.scroll_note(400)
-            more = await self.browser.extract_comments()
-            existing_keys = {f"{c.get('username', '')}:{c.get('text', '')[:30]}" for c in raw_comments}
-            for c in more:
-                key = f"{c.get('username', '')}:{c.get('text', '')[:30]}"
-                if key not in existing_keys:
-                    raw_comments.append(c)
-                    existing_keys.add(key)
-
-        note.comments = [Comment.from_dom_dict(c) for c in raw_comments]
+        note.comments = await self._collect_note_comments()
+        note.refresh_derived_fields()
         comments_dt = time.time() - t0
         self.timing.record("comments_extract", comments_dt)
-        self._log_step("comments", f"{len(note.comments)} comments (deduped)", duration=comments_dt)
+        self._log_step(
+            "comments",
+            f"{len(note.comments)} comments, hottest={note.hottest_comments(1)[0].like_count if note.comments else 0}",
+            duration=comments_dt,
+        )
 
         # Completeness
         comp = note.completeness
@@ -487,6 +504,13 @@ class XHSResearchAgent:
                 f"Type: {note.get('type', '?')}</p>"
             )
             parts.append(f"<p class='meta'>Keyword: {_esc(note.get('source_keyword', ''))}</p>")
+            if note.get("author_url"):
+                parts.append(f"<p class='meta'>Author URL: <a href=\"{_esc(note['author_url'])}\" target=\"_blank\">{_esc(note['author_url'])}</a></p>")
+            if note.get("location") or note.get("ip_location"):
+                parts.append(
+                    f"<p class='meta'>Location: {_esc(note.get('location', ''))} | "
+                    f"IP: {_esc(note.get('ip_location', ''))}</p>"
+                )
 
             if note.get("hashtags"):
                 tags = " ".join(f"<span class='tag'>{_esc(t)}</span>" for t in note["hashtags"])
@@ -496,19 +520,42 @@ class XHSResearchAgent:
             if content:
                 parts.append(f"<p>{_esc(content[:600])}</p>")
 
+            if note.get("format_hints") or note.get("price_mentions") or note.get("cta_phrases") or note.get("key_points"):
+                parts.append("<div class='meta'>")
+                if note.get("format_hints"):
+                    parts.append(f"<p>Format: {_esc(', '.join(note['format_hints']))}</p>")
+                if note.get("price_mentions"):
+                    parts.append(f"<p>Price mentions: {_esc(', '.join(note['price_mentions']))}</p>")
+                if note.get("cta_phrases"):
+                    parts.append(f"<p>CTA: {_esc(' | '.join(note['cta_phrases']))}</p>")
+                if note.get("key_points"):
+                    parts.append("<p>Key points:</p><ol>")
+                    for point in note["key_points"][:5]:
+                        parts.append(f"<li>{_esc(point)}</li>")
+                    parts.append("</ol>")
+                parts.append("</div>")
+
             if note.get("image_descriptions"):
                 parts.append("<h4>Image Content (Vision)</h4><ol>")
                 for desc in note["image_descriptions"]:
                     parts.append(f"<li>{_esc(desc[:300])}</li>")
                 parts.append("</ol>")
 
+            if note.get("video_resolved_url") or note.get("video_url"):
+                parts.append(
+                    f"<p class='meta'>Video source: {_esc(note.get('video_resolved_url') or note.get('video_url'))}</p>"
+                )
+            if note.get("transcript_summary"):
+                parts.append(f"<p><strong>Video Summary:</strong> {_esc(note['transcript_summary'][:400])}</p>")
+
             if note.get("screenshot"):
                 rel_path = os.path.relpath(note["screenshot"], str(self.output_dir))
                 parts.append(f'<img class="screenshot" src="{rel_path}">')
 
-            if note.get("comments"):
-                parts.append(f"<h4>Comments ({len(note['comments'])})</h4>")
-                for c in note["comments"][:8]:
+            comment_items = note.get("hot_comments") or note.get("comments") or []
+            if comment_items:
+                parts.append(f"<h4>Hot Comments ({len(comment_items)})</h4>")
+                for c in comment_items[:8]:
                     likes_str = f"<span class='likes'>{c.get('likes', '')}</span>" if c.get("likes") else ""
                     parts.append(
                         f"<div class='comment'><strong>{_esc(c.get('username', ''))}</strong>: "

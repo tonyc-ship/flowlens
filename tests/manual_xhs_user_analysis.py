@@ -1,14 +1,16 @@
-"""Test the User Analyzer — analyze XHS creator accounts.
+"""Manual XHS user analysis integration script.
 
 Prerequisites:
-1. Reload chrome_extension/ in Chrome (content.js was updated)
-2. Navigate to xiaohongshu.com and log in
-3. Run this test script
+1. Reload `chrome_extension/` in Chrome when the extension code changes.
+2. Log in to Xiaohongshu in that Chrome profile.
+3. Run this script and connect the extension popup to port `8765`.
 
 Usage:
-    python tests/test_user_analyzer.py                     # default test users
-    python tests/test_user_analyzer.py --user <url_or_id>  # specific user
+    python tests/manual_xhs_user_analysis.py
+    python tests/manual_xhs_user_analysis.py --user <url_or_id>
 """
+
+from __future__ import annotations
 
 import argparse
 import asyncio
@@ -17,29 +19,28 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).parent.parent))
 
-from clawvision.agent.xhs import XHSUserAnalyzer as UserAnalyzer, UserAnalysisConfig, run_user_analysis
+from clawvision.agent.bridge import ExtensionBridge
+from clawvision.agent.xhs import XHSBrowser, UserAnalysisConfig, run_user_analysis
 
 
 async def test_find_users():
-    """Step 1: Find XHS operation expert accounts to analyze."""
-    print("\n=== Finding XHS Operation Expert Accounts ===\n")
-    from clawvision.agent.bridge import ExtensionBridge
+    """Step 1: Find XHS accounts to analyze."""
+    print("\n=== Finding Candidate Accounts ===\n")
 
     bridge = ExtensionBridge(port=8765)
+    browser = XHSBrowser(bridge)
     await bridge.start()
     print("  Waiting for extension...")
     await bridge.wait_for_connection(timeout=120)
 
-    # Search for XHS operation experts
     keywords = ["小红书运营干货", "小红书涨粉教程"]
     users = {}
 
     for kw in keywords:
-        url = f"https://www.xiaohongshu.com/search_result?keyword={kw}&source=web_search_result_notes"
-        await bridge.navigate(url, wait_ms=5000)
-        await asyncio.sleep(4)
+        await browser.navigate_to_search(kw)
+        await asyncio.sleep(2)
 
-        cards = await bridge.extract_search_cards()
+        cards = await browser.extract_search_cards()
         print(f"  '{kw}': {len(cards)} cards")
 
         for c in cards:
@@ -69,9 +70,6 @@ async def test_user_analysis(user_url: str, output_dir: str):
         max_notes_to_detail=8,
         max_images_per_note=3,
         max_comment_scrolls=1,
-        use_apple_ocr=True,
-        use_whisper=True,
-        use_vision_for_covers=True,
     )
 
     report = await run_user_analysis(
@@ -106,16 +104,11 @@ async def main():
         await test_user_analysis(args.user, "tests/eval_report/user_analysis_custom")
         return
 
-    # Default: find users then analyze top ones
-    # Step 1: Find operation experts
     users = await test_find_users()
-
     if not users:
         print("No users found!")
         return
 
-    # Step 2: Pick first 2 users with the most engaging content
-    # and run analysis on each
     print("\n" + "=" * 60)
     print("Now analyzing top users...")
     print("=" * 60)
@@ -125,8 +118,6 @@ async def main():
         if not link:
             continue
 
-        # Extract user profile URL from note link
-        # We'll navigate to the note first, then extract author URL
         output = f"tests/eval_report/user_analysis_{i+1}"
         print(f"\n>>> Analyzing user {i+1}: {u['author']} <<<")
         await test_user_analysis(link, output)
