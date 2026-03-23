@@ -12,4 +12,6 @@ tests/skill_debug_output/
 tests/pipeline_comparison/
 tests/eval_report/
 research_output/
+user_analysis/
+*_output/
 .DS_Store
