@@ -219,6 +219,42 @@ class ExtensionBridge:
         """CDP-based mouse move to viewport coordinates."""
         return await self.send_command("mouse_move", {"x": x, "y": y})
 
+    async def create_background_window(self, url: str = "about:blank", minimized: bool = False) -> dict:
+        """Create a new browser window in the background (same profile, shares login state)."""
+        result = await self.send_command("create_background_window", {
+            "url": url,
+            "minimized": minimized,
+        })
+        return result
+
+    async def close_window(self, window_id: int) -> None:
+        """Close a browser window by ID."""
+        await self.send_command("close_window", {"windowId": window_id})
+
+    async def reload_extension(self) -> None:
+        """Reload the Chrome Extension to pick up code changes.
+
+        After reload, the WebSocket connection drops and extension auto-reconnects.
+        We clear the connected state and wait for a fresh connection to ensure
+        the NEW code (not the pre-reload connection) is what we talk to.
+        """
+        try:
+            await self.send_command("reload_extension", timeout=5)
+        except Exception:
+            pass  # Expected — connection drops during reload
+
+        # Clear connected state so we wait for the NEW connection after reload
+        self._connected.clear()
+        self._ws = None
+        self._log("reload", "Extension reloading, waiting for reconnect...")
+        await asyncio.sleep(3)  # Give chrome.runtime.reload() time to fire
+        try:
+            await self.wait_for_connection(timeout=30)
+            self._log("reload", "Extension reconnected after reload")
+        except RuntimeError:
+            self._log("reload_failed", "Extension did not reconnect after reload")
+            raise
+
     async def scroll_page(self, pixels: int = 600) -> dict:
         """Scroll the page."""
         return await self.send_command("scroll_page", {"pixels": pixels})

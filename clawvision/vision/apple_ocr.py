@@ -19,34 +19,27 @@ class AppleOCR:
         self.languages = languages or ["zh-Hans", "zh-Hant", "en"]
 
     def _load_cgimage(self, source: str | bytes | Path) -> object:
-        """Load image as CGImage from file path or bytes."""
+        """Load image as CGImage from file path or bytes.
+
+        Uses CGImageSource (ImageIO) which handles JPEG, PNG, WebP, HEIC,
+        TIFF, GIF, and other formats natively on macOS 11+.
+        """
         if isinstance(source, (str, Path)):
             path = str(source)
             url = Quartz.CFURLCreateWithFileSystemPath(
                 None, path, Quartz.kCFURLPOSIXPathStyle, False
             )
-            provider = Quartz.CGDataProviderCreateWithURL(url)
-            if path.lower().endswith(".png"):
-                return Quartz.CGImageCreateWithPNGDataProvider(
-                    provider, None, True, Quartz.kCGRenderingIntentDefault
-                )
-            else:
-                return Quartz.CGImageCreateWithJPEGDataProvider(
-                    provider, None, True, Quartz.kCGRenderingIntentDefault
-                )
+            image_source = Quartz.CGImageSourceCreateWithURL(url, None)
         else:
-            # bytes
-            data = Quartz.CFDataCreate(None, source, len(source))
-            provider = Quartz.CGDataProviderCreateWithCFData(data)
-            # Try JPEG first, then PNG
-            img = Quartz.CGImageCreateWithJPEGDataProvider(
-                provider, None, True, Quartz.kCGRenderingIntentDefault
-            )
-            if img is None:
-                img = Quartz.CGImageCreateWithPNGDataProvider(
-                    provider, None, True, Quartz.kCGRenderingIntentDefault
-                )
-            return img
+            # bytes — wrap in CFData
+            cf_data = Quartz.CFDataCreate(None, source, len(source))
+            image_source = Quartz.CGImageSourceCreateWithData(cf_data, None)
+
+        if image_source is None:
+            return None
+        if Quartz.CGImageSourceGetCount(image_source) < 1:
+            return None
+        return Quartz.CGImageSourceCreateImageAtIndex(image_source, 0, None)
 
     def recognize(self, source: str | bytes | Path) -> list[dict]:
         """Recognize text in image. Returns list of {text, confidence, bbox}."""

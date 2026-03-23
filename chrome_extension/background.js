@@ -181,6 +181,35 @@ async function handleCommand(msg) {
       return { ok: true, tabId: tab.id };
     }
 
+    case 'create_background_window': {
+      // Create a new window in the background (same profile = same login state)
+      // Does NOT wait for content script — caller should wait separately
+      const win = await chrome.windows.create({
+        url: params.url || 'about:blank',
+        focused: false,  // Don't steal focus from user
+        state: params.minimized ? 'minimized' : 'normal',
+        width: params.width || 1280,
+        height: params.height || 900,
+      });
+      const tab = win.tabs[0];
+      activeTabId = tab.id;
+      return { ok: true, windowId: win.id, tabId: tab.id };
+    }
+
+    case 'close_window': {
+      if (params.windowId) {
+        await chrome.windows.remove(params.windowId);
+      }
+      return { ok: true };
+    }
+
+    case 'reload_extension': {
+      // Reload the extension to pick up code changes (content.js, etc.)
+      // Sends response first, then reloads after a short delay
+      setTimeout(() => chrome.runtime.reload(), 200);
+      return { ok: true, message: 'Reloading in 200ms — reconnect after' };
+    }
+
     case 'run_js': {
       // Execute JS directly in the page context via chrome.scripting
       // Note: uses world: 'MAIN' to bypass extension CSP

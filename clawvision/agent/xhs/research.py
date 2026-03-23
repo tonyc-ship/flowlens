@@ -1,21 +1,16 @@
 """XHS Research Agent — topic research on Xiaohongshu.
 
-Uses XHSBrowser for DOM extraction and browser actions.
-Uses MediaProcessor for LLM decisions and Vision analysis.
-Uses entity models (NoteEntity, NoteCard) for structured, thorough extraction.
+Task-level orchestration only. Delegates note understanding to NoteProcessor.
 
 Flow:
   1. Generate search keywords (Claude Text)
   2. Navigate to XHS search via XHSBrowser
   3. Extract NoteCards from DOM
   4. Pick best notes (Claude Text)
-  5. Open each note → populate NoteEntity:
-     a. DOM extraction (title, content, engagement, author)
-     b. Vision fallback if DOM failed
-     c. Download images → OCR + Vision descriptions
-     d. Scroll + extract comments
-     e. Check completeness before moving on
-  6. Synthesize findings using note.to_summary()
+  5. Open each note → NoteProcessor.process_note() handles all media
+  6. Vision fallback if DOM text extraction failed
+  7. Scroll + extract comments
+  8. Synthesize findings using note.to_summary()
 """
 
 from __future__ import annotations
@@ -26,13 +21,15 @@ import json
 import os
 import re
 import time
+from contextlib import contextmanager
 from dataclasses import dataclass
 from pathlib import Path
 
 from ..bridge import ExtensionBridge
 from ..media import MediaProcessor
 from .browser import XHSBrowser
-from .entities import Comment, ImageInfo, NoteCard, NoteEntity, NoteType
+from .entities import Comment, NoteCard, NoteEntity, NoteType
+from .processor import NoteProcessor, ProcessorConfig, TimingRecord
 
 
 @dataclass
@@ -41,14 +38,15 @@ class ResearchConfig:
     max_notes_per_keyword: int = 2
     max_comment_scrolls: int = 2
     max_keywords: int = 3
-    max_images_per_note: int = 3
     use_vision_fallback: bool = True
-    use_vision_for_images: bool = True
     screenshot_dir: str = "screenshots"
+    # NoteProcessor config
+    max_images_per_note: int = 10
+    vision_concurrency: int = 3
 
 
 class XHSResearchAgent:
-    """Autonomous XHS research agent using entity-driven extraction."""
+    """Autonomous XHS research agent. Delegates media processing to NoteProcessor."""
 
     def __init__(
         self,
@@ -72,34 +70,57 @@ class XHSResearchAgent:
 
         self.media = media or MediaProcessor()
 
+        # NoteProcessor handles all media understanding
+        proc_config = ProcessorConfig(
+            max_images=self.config.max_images_per_note,
+            vision_concurrency=self.config.vision_concurrency,
+        )
+        self.processor = NoteProcessor(
+            self.browser, self.media, proc_config, log_fn=self._log_step,
+        )
+
         self._step = 0
         self._log: list[dict] = []
         self._t0 = 0
         self._screenshots: list[str] = []
 
-    def _log_step(self, action: str, detail: str = ""):
+    @property
+    def timing(self) -> TimingRecord:
+        return self.processor.timing
+
+    def _log_step(self, action: str, detail: str = "", duration: float | None = None):
         self._step += 1
         elapsed = time.time() - self._t0 if self._t0 else 0
+        dur_str = f" ({duration:.2f}s)" if duration is not None else ""
         entry = {
             "step": self._step,
             "time": time.strftime("%H:%M:%S"),
             "elapsed_s": round(elapsed, 1),
             "action": action,
-            "detail": detail[:200],
+            "detail": detail[:200] + dur_str,
         }
+        if duration is not None:
+            entry["duration_s"] = round(duration, 2)
         self._log.append(entry)
-        print(f"  [{self._step:03d} {elapsed:5.1f}s] {action}: {detail[:100]}")
+        print(f"  [{self._step:03d} {elapsed:5.1f}s] {action}{dur_str}: {detail[:100]}")
+
+    @contextmanager
+    def _timed(self, op: str):
+        t0 = time.time()
+        yield
+        self.timing.record(op, time.time() - t0)
 
     # ── LLM Decision Functions ──────────────────────────────────
 
     def generate_keywords(self, topic: str) -> list[str]:
-        raw = self.media.call_text(
-            f"I want to research '{topic}' on Xiaohongshu (小红书). "
-            f"Generate {self.config.max_keywords} Chinese search keywords "
-            f"that would find the most relevant and diverse results. "
-            f"Return only a JSON array of strings.",
-            256,
-        )
+        with self._timed("llm_keywords"):
+            raw = self.media.call_text(
+                f"I want to research '{topic}' on Xiaohongshu (小红书). "
+                f"Generate {self.config.max_keywords} Chinese search keywords "
+                f"that would find the most relevant and diverse results. "
+                f"Return only a JSON array of strings.",
+                256,
+            )
         result = self.media.extract_json(raw)
         return result if isinstance(result, list) else [topic]
 
@@ -107,22 +128,22 @@ class XHSResearchAgent:
         if len(cards) <= max_picks:
             return cards
 
-        # Convert to dicts for LLM context
         card_dicts = [
             {"title": c.title, "author": c.author_name, "likes": c.likes,
              "type": c.note_type.value, "position": c.position}
             for c in cards
         ]
-        raw = self.media.call_text(
-            f"I'm researching '{topic}' on Xiaohongshu.\n"
-            f"Here are the note cards from search results:\n"
-            f"{json.dumps(card_dicts, ensure_ascii=False, indent=1)}\n\n"
-            f"Pick the {max_picks} most relevant and interesting notes. "
-            f"Prefer notes with: high engagement, diverse perspectives, "
-            f"content-rich titles, and relevance to the research topic. "
-            f"Return a JSON array of position numbers (integers) for the selected notes.",
-            512,
-        )
+        with self._timed("llm_pick_notes"):
+            raw = self.media.call_text(
+                f"I'm researching '{topic}' on Xiaohongshu.\n"
+                f"Here are the note cards from search results:\n"
+                f"{json.dumps(card_dicts, ensure_ascii=False, indent=1)}\n\n"
+                f"Pick the {max_picks} most relevant and interesting notes. "
+                f"Prefer notes with: high engagement, diverse perspectives, "
+                f"content-rich titles, and relevance to the research topic. "
+                f"Return a JSON array of position numbers (integers) for the selected notes.",
+                512,
+            )
         picks = self.media.extract_json(raw)
         if isinstance(picks, list):
             picked_positions = set(picks)
@@ -136,54 +157,36 @@ class XHSResearchAgent:
         for s, n in zip(summaries, notes):
             s["keyword"] = n.source_keyword
 
-        return self.media.call_text(
-            f"I researched '{topic}' on Xiaohongshu (小红书).\n\n"
-            f"Keywords searched: {json.dumps(keywords, ensure_ascii=False)}\n\n"
-            f"Notes collected:\n{json.dumps(summaries, ensure_ascii=False, indent=1)}\n\n"
-            f"Write a research report in Chinese (3-4 paragraphs). Cover:\n"
-            f"1. Main trends and themes found\n"
-            f"2. Popular content patterns and engagement insights\n"
-            f"3. Key opinions and recommendations from creators\n"
-            f"4. Actionable takeaways for someone interested in this topic",
-            2048,
-        )
+        with self._timed("llm_synthesize"):
+            return self.media.call_text(
+                f"I researched '{topic}' on Xiaohongshu (小红书).\n\n"
+                f"Keywords searched: {json.dumps(keywords, ensure_ascii=False)}\n\n"
+                f"Notes collected:\n{json.dumps(summaries, ensure_ascii=False, indent=1)}\n\n"
+                f"Write a research report in Chinese (3-4 paragraphs). Cover:\n"
+                f"1. Main trends and themes found\n"
+                f"2. Popular content patterns and engagement insights\n"
+                f"3. Key opinions and recommendations from creators\n"
+                f"4. Actionable takeaways for someone interested in this topic",
+                2048,
+            )
 
-    # ── Vision Helpers ───────────────────────────────────────────
+    # ── Vision Fallback (DOM-first, Vision-backup) ───────────────
 
-    def vision_extract_note(self, screenshot_b64: str) -> dict:
-        raw = self.media.call_vision(
-            screenshot_b64,
-            "Extract the note content from this Xiaohongshu screenshot. "
-            "Return a JSON object with these fields:\n"
-            '{"title": "...", "author": "...", "content": "...", '
-            '"likes": "...", "favorites": "...", "comments_count": "...", '
-            '"hashtags": ["...", "..."], "date": "...", "image_count": N}',
-            media_type="image/png",
-            max_tokens=1024,
-        )
+    def _vision_extract_note(self, screenshot_b64: str) -> dict:
+        """UX-fallback: extract note content from screenshot when DOM fails."""
+        with self._timed("vision_extract_note"):
+            raw = self.media.call_vision(
+                screenshot_b64,
+                "Extract the note content from this Xiaohongshu screenshot. "
+                "Return a JSON object with these fields:\n"
+                '{"title": "...", "author": "...", "content": "...", '
+                '"likes": "...", "favorites": "...", "comments_count": "...", '
+                '"hashtags": ["...", "..."], "date": "...", "image_count": N}',
+                media_type="image/png",
+                max_tokens=1024,
+            )
         result = self.media.extract_json(raw)
         return result if isinstance(result, dict) else {}
-
-    async def _enrich_images(self, note: NoteEntity) -> None:
-        """Download and describe images with Vision API, populating ImageInfo."""
-        for img in note.images[:self.config.max_images_per_note]:
-            if not img.url:
-                continue
-            try:
-                img_bytes = self.media.download_image(img.url, referer=XHSBrowser.XHS_REFERER)
-                if not img_bytes:
-                    continue
-                desc = self.media.describe_image(
-                    img_bytes,
-                    f"Describe this image from a Xiaohongshu note titled '{note.title}'. "
-                    f"Be concise (1-2 sentences). Focus on key visual content, "
-                    f"any text/labels, products, and overall aesthetic.",
-                    max_tokens=512,
-                )
-                img.vision_description = desc
-                self._log_step("image_vision", f"[{img.index+1}] {desc[:80]}")
-            except Exception as e:
-                self._log_step("image_error", f"[{img.index+1}] Failed: {e}")
 
     # ── Screenshot Helper ────────────────────────────────────────
 
@@ -243,7 +246,6 @@ class XHSResearchAgent:
             if search_screenshot:
                 self._screenshots.append(search_screenshot)
 
-            # Extract cards as NoteCard entities
             raw_cards = await self.browser.extract_search_cards()
             if not raw_cards:
                 await asyncio.sleep(3)
@@ -285,6 +287,9 @@ class XHSResearchAgent:
         elapsed_total = time.time() - self._t0
         self._log_step("done", f"Total: {elapsed_total:.1f}s, {len(all_notes)} notes")
 
+        timing_summary = self.timing.summary()
+        self._log_step("timing_summary", json.dumps(timing_summary, ensure_ascii=False))
+
         report = {
             "topic": topic,
             "keywords": keywords,
@@ -293,6 +298,7 @@ class XHSResearchAgent:
             "timing": {
                 "data_collection_s": round(elapsed_collect, 1),
                 "total_s": round(elapsed_total, 1),
+                "breakdown": timing_summary,
             },
             "screenshots": [s for s in self._screenshots if s],
             "log": self._log,
@@ -305,17 +311,20 @@ class XHSResearchAgent:
     async def _process_note(
         self, card: NoteCard, keyword: str, search_url: str
     ) -> NoteEntity | None:
-        """Open, extract into NoteEntity, and close a single note."""
+        """Open, extract, process media, and close a single note."""
+        note_t0 = time.time()
         self._log_step("open_note", card.title[:60])
 
         # Click card to open as overlay
+        t0 = time.time()
         await self.browser.click_card(card.position)
         await asyncio.sleep(3)
+        self.timing.record("click_card", time.time() - t0)
 
         state = await self.browser.detect_state()
         if state.get("state") != "note_detail":
             if card.link and "/explore/" in card.link:
-                self._log_step("navigate_fallback", f"Click didn't open overlay, navigating")
+                self._log_step("navigate_fallback", "Click didn't open overlay, navigating")
                 await self.browser.navigate(card.link, wait_ms=5000)
                 await asyncio.sleep(3)
                 state = await self.browser.detect_state()
@@ -326,11 +335,14 @@ class XHSResearchAgent:
             await asyncio.sleep(2)
             return None
 
-        # Extract note content from DOM → NoteEntity
+        # DOM extraction → NoteEntity
+        t0 = time.time()
         raw_note = await self.browser.extract_note_content()
         note = NoteEntity.from_dom_dict(raw_note)
         note.source_keyword = keyword
         note.source_context = "search"
+        dom_dt = time.time() - t0
+        self.timing.record("dom_extract", dom_dt)
 
         # Screenshot
         note_label = re.sub(r'[^\w]', '_', card.title[:20]).strip('_') or f"note_{card.position}"
@@ -341,38 +353,34 @@ class XHSResearchAgent:
         self._log_step(
             "dom_extract",
             f"title='{note.title[:30]}' author='{note.author_name}' "
-            f"content_len={len(note.content)} type={note.note_type.value}"
+            f"content_len={len(note.content)} type={note.note_type.value}",
+            duration=dom_dt,
         )
 
-        # Vision fallback if DOM extraction failed
+        # DOM-first / Vision-fallback for text content
         if not note.has_content and note.screenshot_path and self.config.use_vision_fallback:
-            self._log_step("vision_fallback", "DOM empty, trying Vision extraction from screenshot")
+            self._log_step("vision_fallback", "DOM empty → Vision extraction from screenshot")
             try:
                 with open(note.screenshot_path, "rb") as f:
                     img_b64 = base64.b64encode(f.read()).decode()
-                vision_data = self.vision_extract_note(img_b64)
+                vision_data = self._vision_extract_note(img_b64)
                 if vision_data:
-                    if not note.title and vision_data.get("title"):
-                        note.title = vision_data["title"]
-                    if not note.content and vision_data.get("content"):
-                        note.content = vision_data["content"]
-                    if not note.author_name and vision_data.get("author"):
-                        note.author_name = vision_data["author"]
-                    if not note.likes and vision_data.get("likes"):
-                        note.likes = vision_data["likes"]
+                    for field in ("title", "content", "author", "likes"):
+                        if not getattr(note, field if field != "author" else "author_name", None):
+                            val = vision_data.get(field)
+                            if val:
+                                setattr(note, field if field != "author" else "author_name", val)
                     if not note.hashtags and vision_data.get("hashtags"):
                         note.hashtags = vision_data["hashtags"]
                     self._log_step("vision_extract", f"Got: title='{note.title[:30]}'")
             except Exception as e:
                 self._log_step("vision_error", str(e))
 
-        # Enrich images with Vision API descriptions
-        if note.images and self.config.use_vision_for_images:
-            await self._enrich_images(note)
-            described = sum(1 for img in note.images if img.vision_description)
-            self._log_step("image_desc", f"{described} image(s) described")
+        # NoteProcessor handles all media (images/video) — DOM-first, carousel-fallback
+        await self.processor.process_note(note)
 
-        # Extract comments (with scroll for more)
+        # Comments (with scroll for more)
+        t0 = time.time()
         raw_comments = await self.browser.extract_comments()
         for _ in range(self.config.max_comment_scrolls):
             await self.browser.scroll_note(400)
@@ -385,13 +393,21 @@ class XHSResearchAgent:
                     existing_keys.add(key)
 
         note.comments = [Comment.from_dom_dict(c) for c in raw_comments]
-        self._log_step("comments", f"{len(note.comments)} comments (deduped)")
+        comments_dt = time.time() - t0
+        self.timing.record("comments_extract", comments_dt)
+        self._log_step("comments", f"{len(note.comments)} comments (deduped)", duration=comments_dt)
 
-        # Log completeness
+        # Completeness
         comp = note.completeness
         score = note.completeness_score
         missing = [k for k, v in comp.items() if not v]
-        self._log_step("completeness", f"{score:.0%} — missing: {missing}" if missing else f"{score:.0%} — complete")
+        note_dt = time.time() - note_t0
+        self.timing.record("process_note_total", note_dt)
+        self._log_step(
+            "completeness",
+            f"{score:.0%} — missing: {missing}" if missing else f"{score:.0%} — complete",
+            duration=note_dt,
+        )
 
         # Close note and return to search
         await self.browser.close_note()

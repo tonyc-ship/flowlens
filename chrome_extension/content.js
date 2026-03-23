@@ -383,6 +383,140 @@ function extractProfileNotes() {
   }).filter(c => c.link || c.title);
 }
 
+// ── Carousel Image Collection ─────────────────────────────────
+
+async function collectAllCarouselImages(maxImages = 20) {
+  /**
+   * Flip through all carousel images using arrow keys, collecting every
+   * unique image URL. XHS lazy-loads carousel images — only the current
+   * slide and ±1 neighbors have real `src` attributes.
+   *
+   * Strategy: use multiple selector strategies to find carousel images,
+   * from specific (known XHS classes) to broad (any img in note overlay).
+   *
+   * Returns { ok, image_urls: string[], total: number, debug: object }
+   */
+
+  // Find the note overlay container to scope image search
+  // This prevents picking up search result thumbnails behind the modal
+  const noteOverlay = document.querySelector(
+    '.note-detail-mask, .note-overlay, #noteContainer, .note-detail-modal'
+  );
+  const searchRoot = noteOverlay || document;
+
+  // Image selectors scoped to the note overlay
+  const selectorStrategies = [
+    '.carousel-image img, .slide img, .swiper-slide img',
+    '.note-slider img, .note-image',
+    '.media-container img, .note-scroller img',
+    'img',  // Broadest: any img within the scoped container
+  ];
+
+  const seenUrls = new Set();
+  const orderedUrls = [];
+  let matchedStrategy = '';
+
+  function collectVisible() {
+    for (const sel of selectorStrategies) {
+      const imgs = [...searchRoot.querySelectorAll(sel)];
+      for (const img of imgs) {
+        const src = img.src || img.dataset?.src || '';
+        // Filter: must be from XHS CDN, reasonably sized, not data URI
+        if (src && !seenUrls.has(src) && !src.startsWith('data:') &&
+            src.includes('xhscdn.com') && img.naturalWidth > 100) {
+          seenUrls.add(src);
+          orderedUrls.push(src);
+          if (!matchedStrategy) matchedStrategy = sel;
+        }
+      }
+      // Stop at first strategy that finds images
+      if (orderedUrls.length > 0) break;
+    }
+  }
+
+  collectVisible();
+
+  // Read total from indicator (e.g. "2/7") — try multiple selectors
+  const indicatorSelectors = [
+    '.indicator', '.carousel-indicator', '.slide-indicator', '.image-index',
+    // XHS specific
+    '.note-scroller .index', '.media-container .index',
+    '[class*="indicator"]', '[class*="index"]',
+  ];
+  let total = orderedUrls.length;
+  for (const sel of indicatorSelectors) {
+    const el = document.querySelector(sel);
+    if (el) {
+      const m = text(el).match(/(\d+)\s*[/／]\s*(\d+)/);
+      if (m) { total = parseInt(m[2]); break; }
+    }
+  }
+
+  // Build debug info for diagnosing selector issues
+  const debug = {
+    found: orderedUrls.length,
+    total,
+    matchedStrategy,
+    allImgCount: $$('img').length,
+    xhsImgCount: $$('img').filter(i => (i.src || '').includes('xhscdn.com')).length,
+  };
+
+  // If only 1 image or we already have all, return early
+  if (total <= 1 || orderedUrls.length >= total) {
+    return { ok: true, image_urls: orderedUrls, total, debug };
+  }
+
+  // Find the carousel container to dispatch arrow key events
+  // Try multiple container selectors
+  const containerSelectors = [
+    '.carousel', '.swiper', '.note-slider', '.slide-list',
+    '.note-scroller', '.media-container', '.note-detail',
+    '.note-detail-mask', '#noteContainer', '.note-overlay',
+    '[class*="carousel"]', '[class*="slider"]', '[class*="swiper"]',
+  ];
+  let carousel = null;
+  for (const sel of containerSelectors) {
+    carousel = document.querySelector(sel);
+    if (carousel) { debug.carouselContainer = sel; break; }
+  }
+  if (!carousel) {
+    carousel = document.body;
+    debug.carouselContainer = 'document.body (fallback)';
+  }
+
+  // Navigate forward through all slides
+  let staleCount = 0;
+  for (let i = 0; i < maxImages; i++) {
+    const prevCount = seenUrls.size;
+
+    // Dispatch ArrowRight key on the carousel container
+    carousel.dispatchEvent(new KeyboardEvent('keydown', {
+      key: 'ArrowRight', code: 'ArrowRight', keyCode: 39,
+      bubbles: true, cancelable: true,
+    }));
+    // Also dispatch on document in case carousel doesn't capture it
+    document.dispatchEvent(new KeyboardEvent('keydown', {
+      key: 'ArrowRight', code: 'ArrowRight', keyCode: 39,
+      bubbles: true, cancelable: true,
+    }));
+
+    await wait(400); // Wait for slide transition + lazy load
+    collectVisible();
+
+    if (seenUrls.size === prevCount) {
+      staleCount++;
+      if (staleCount >= 3) break; // No new images after 3 attempts
+    } else {
+      staleCount = 0;
+    }
+
+    if (orderedUrls.length >= total) break;
+  }
+
+  debug.finalCount = orderedUrls.length;
+  return { ok: true, image_urls: orderedUrls, total, debug };
+}
+
 // ── Actions ────────────────────────────────────────────────────
 
 async function clickNoteCard(index) {
@@ -560,6 +694,10 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
           // Wait for XHS to render content before extracting
           await waitForNoteContent(msg.params?.timeout || 8000);
           result = { note: extractNoteContent() };
+          break;
+
+        case 'collect_carousel_images':
+          result = await collectAllCarouselImages(msg.params?.max_images ?? 20);
           break;
 
         case 'extract_comments':

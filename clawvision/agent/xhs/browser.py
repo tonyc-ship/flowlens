@@ -120,6 +120,18 @@ class XHSBrowser:
         result = await self.bridge.send_command("extract_note_content")
         return result.get("note", {})
 
+    async def collect_carousel_images(self, max_images: int = 20) -> tuple[list[str], dict]:
+        """Flip through all carousel images and collect every unique URL.
+
+        Uses arrow key navigation to trigger XHS lazy-loading of carousel
+        slides, collecting image URLs as they appear in the DOM.
+        Returns (list of image URLs, debug info dict).
+        """
+        result = await self.bridge.send_command(
+            "collect_carousel_images", {"max_images": max_images}
+        )
+        return result.get("image_urls", []), result.get("debug", {})
+
     async def extract_comments(self) -> list[dict]:
         """Extract comments from note detail (deduplicated)."""
         result = await self.bridge.send_command("extract_comments")
