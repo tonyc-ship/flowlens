@@ -1,0 +1,127 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <title>ClawVision Observer</title>
+  <style>
+    :root {
+      --bg: #0d1117; --surface: #161b22; --border: #30363d;
+      --text: #e6edf3; --text2: #8b949e; --accent: #ff2442;
+      --green: #3fb950; --blue: #58a6ff; --yellow: #d29922; --purple: #bc8cff;
+    }
+    * { box-sizing: border-box; margin: 0; padding: 0; }
+    body {
+      background: var(--bg); color: var(--text); font-family: -apple-system, 'SF Pro Text', sans-serif;
+      font-size: 13px; line-height: 1.5; padding: 20px 24px;
+    }
+    h1 { font-size: 20px; font-weight: 600; margin-bottom: 4px; }
+    h1 span { color: var(--accent); }
+    .subtitle { color: var(--text2); margin-bottom: 20px; font-size: 12px; }
+    .stats-bar {
+      display: flex; gap: 16px; margin-bottom: 20px; flex-wrap: wrap;
+    }
+    .stat {
+      background: var(--surface); border: 1px solid var(--border); border-radius: 8px;
+      padding: 10px 16px; min-width: 120px;
+    }
+    .stat .label { color: var(--text2); font-size: 11px; text-transform: uppercase; letter-spacing: 0.5px; }
+    .stat .value { font-size: 22px; font-weight: 600; margin-top: 2px; }
+    .stat .value.green { color: var(--green); }
+    .stat .value.blue { color: var(--blue); }
+    .stat .value.yellow { color: var(--yellow); }
+    .stat .value.purple { color: var(--purple); }
+
+    .tabs {
+      display: flex; gap: 0; border-bottom: 1px solid var(--border); margin-bottom: 16px;
+    }
+    .tab {
+      padding: 8px 16px; cursor: pointer; color: var(--text2); font-size: 13px;
+      border-bottom: 2px solid transparent; transition: all 0.15s;
+    }
+    .tab:hover { color: var(--text); }
+    .tab.active { color: var(--accent); border-bottom-color: var(--accent); }
+
+    .panel { display: none; }
+    .panel.active { display: block; }
+
+    table { width: 100%; border-collapse: collapse; font-size: 12px; }
+    th { text-align: left; padding: 8px 10px; color: var(--text2); font-weight: 500;
+         border-bottom: 1px solid var(--border); position: sticky; top: 0; background: var(--bg); }
+    td { padding: 6px 10px; border-bottom: 1px solid var(--border); vertical-align: top; }
+    tr:hover td { background: var(--surface); }
+    .mono { font-family: 'SF Mono', 'Menlo', monospace; font-size: 11px; }
+    .tag {
+      display: inline-block; padding: 1px 6px; border-radius: 4px; font-size: 11px;
+      font-weight: 500; margin-right: 4px;
+    }
+    .tag.click { background: #1f3a2d; color: var(--green); }
+    .tag.navigate { background: #1c2d4a; color: var(--blue); }
+    .tag.scroll { background: #2a2215; color: var(--yellow); }
+    .tag.overlay_open { background: #2a1f3d; color: var(--purple); }
+    .tag.overlay_close { background: #2a1f3d; color: var(--purple); }
+    .tag.page_leave { background: #2d1f1f; color: #f47067; }
+    .tag.page_structure { background: #1f2d2d; color: #76d9e6; }
+    .tag.session_start { background: #2d2a1f; color: #d2a8ff; }
+
+    .pattern-card {
+      background: var(--surface); border: 1px solid var(--border); border-radius: 8px;
+      padding: 14px 18px; margin-bottom: 10px;
+    }
+    .pattern-card h4 { font-size: 13px; margin-bottom: 6px; }
+    .pattern-card .count { color: var(--accent); font-weight: 600; }
+    .pattern-card .path { color: var(--blue); font-family: monospace; font-size: 11px; word-break: break-all; }
+    .pattern-card .examples { color: var(--text2); font-size: 11px; margin-top: 4px; }
+
+    .tree { font-family: monospace; font-size: 11px; line-height: 1.6; white-space: pre; }
+    .tree .tag-name { color: var(--blue); }
+    .tree .class-name { color: var(--green); }
+    .tree .count-badge { color: var(--yellow); }
+
+    .toolbar {
+      display: flex; gap: 8px; margin-bottom: 16px; align-items: center;
+    }
+    button {
+      background: var(--surface); color: var(--text); border: 1px solid var(--border);
+      padding: 6px 14px; border-radius: 6px; cursor: pointer; font-size: 12px;
+    }
+    button:hover { border-color: var(--accent); color: var(--accent); }
+    button.danger { border-color: #f47067; color: #f47067; }
+    button.danger:hover { background: #2d1f1f; }
+    .spacer { flex: 1; }
+    select {
+      background: var(--surface); color: var(--text); border: 1px solid var(--border);
+      padding: 4px 8px; border-radius: 4px; font-size: 12px;
+    }
+    .empty { color: var(--text2); text-align: center; padding: 40px; font-size: 14px; }
+    .flow-arrow { color: var(--text2); margin: 0 6px; }
+  </style>
+</head>
+<body>
+  <h1><span>ClawVision</span> Observer</h1>
+  <p class="subtitle">Passive site learning &mdash; all data stays local</p>
+
+  <div class="stats-bar" id="statsBar"></div>
+
+  <div class="tabs" id="tabBar">
+    <div class="tab active" data-panel="timeline">Timeline</div>
+    <div class="tab" data-panel="clicks">Click Patterns</div>
+    <div class="tab" data-panel="navigation">Navigation Flows</div>
+    <div class="tab" data-panel="structure">Page Structures</div>
+  </div>
+
+  <div class="toolbar">
+    <select id="siteFilter"><option value="">All sites</option></select>
+    <select id="pageFilter"><option value="">All pages</option></select>
+    <div class="spacer"></div>
+    <button id="exportBtn">Export JSON</button>
+    <button id="clearBtn" class="danger">Clear Data</button>
+  </div>
+
+  <div id="timeline" class="panel active"></div>
+  <div id="clicks" class="panel"></div>
+  <div id="navigation" class="panel"></div>
+  <div id="structure" class="panel"></div>
+
+  <script src="observer_viewer.js"></script>
+</body>
+</html>
