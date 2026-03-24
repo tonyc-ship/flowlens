@@ -66,8 +66,17 @@ class TaskAgent:
     Site-specific actions are delegated to the browser skill.
     """
 
-    def __init__(self, media: MediaProcessor):
+    def __init__(self, media: MediaProcessor, site_context: str = ""):
+        """
+        Args:
+            media: LLM / OCR / vision utilities.
+            site_context: Platform description injected by the site skill layer,
+                e.g. "Xiaohongshu (小红书), a Chinese social media platform with
+                notes, videos, and image carousel posts."
+                Keeps TaskAgent generic — it never hardcodes site knowledge.
+        """
         self.media = media
+        self.site_context = site_context
         self._reasoning_log: list[dict] = []
         self._t0 = time.time()
 
@@ -91,22 +100,21 @@ class TaskAgent:
 
         Returns structured understanding including search strategy.
         """
+        site_line = f"\nPlatform: {self.site_context}\n" if self.site_context else ""
         prompt = f"""You are a browser automation agent. A user has given you this task:
 
 "{task}"
 
-Today's date: {time.strftime('%Y-%m-%d')}
-
+Today's date: {time.strftime('%Y-%m-%d')}{site_line}
 Analyze the task and return a JSON object with:
 {{
   "goal": "one sentence describing what to achieve",
   "target_type": "video" | "image_post" | "user_profile" | "information",
   "search_criteria": {{
     // key attributes the target must match, e.g.:
-    // "source": "bloc1攀岩馆",
-    // "content": "v2线路合集",
-    // "time_range": "2026年3月 (this month)",
-    // "media_type": "video"
+    // "topic": "camping gear",
+    // "content_type": "video",
+    // "time_range": "recent"
   }},
   "search_keywords": ["keyword1", "keyword2", "keyword3"],
   "success_criteria": "how to confirm the task is complete"
@@ -115,7 +123,7 @@ Analyze the task and return a JSON object with:
 Think step by step about:
 1. What exactly is the user looking for?
 2. What are the MUST-HAVE criteria vs nice-to-have?
-3. What search keywords would work best on Xiaohongshu?
+3. What search keywords would work best on this platform?
 4. How will you know you found the right thing?
 
 Return ONLY the JSON object."""
@@ -163,7 +171,8 @@ Return ONLY the JSON object."""
 
         criteria_text = json.dumps(task_understanding.search_criteria, ensure_ascii=False, indent=2)
 
-        prompt = f"""You are evaluating Xiaohongshu search results for a task.
+        site_label = f" on {self.site_context}" if self.site_context else ""
+        prompt = f"""You are evaluating search results{site_label} for a task.
 
 **Task goal:** {task_understanding.goal}
 **Search criteria:**
@@ -251,7 +260,8 @@ Return ONLY the JSON array."""
             "has_video": note_content.get("type") == "video",
         }, ensure_ascii=False, indent=2)
 
-        prompt = f"""You have opened a Xiaohongshu note. Verify if it matches the task.
+        site_label = f" on {self.site_context}" if self.site_context else ""
+        prompt = f"""You have opened a content page{site_label}. Verify if it matches the task.
 
 **Task goal:** {task_understanding.goal}
 **Required criteria:**

@@ -303,7 +303,10 @@ async def run_task(task: str):
 
     # ── Step 1: LLM understands the task ──
     media = MediaProcessor()
-    agent = TaskAgent(media)
+    agent = TaskAgent(
+        media,
+        site_context="Xiaohongshu (小红书), a Chinese social media platform with notes, videos, and image carousel posts",
+    )
 
     action.log("llm_understand", "Asking LLM to understand the task...")
     t_u = time.time()
