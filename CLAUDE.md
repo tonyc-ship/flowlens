@@ -42,6 +42,57 @@ clawvision/
     └── legacy_mcp/                   # Archived screen-level MCP route
 ```
 
+## Development Principles
+
+### Never report untested code
+
+Every change must be tested and verified before presenting to the user. No exceptions. No "needs re-test" or "not yet integrated". If it's not tested, it's not done.
+
+### Test → Evaluate → Fix → Present
+
+After every significant change, follow this mandatory workflow:
+1. **Test** on real data (live site, not mocks)
+2. **Screenshot** at key steps (search results, note detail, etc.)
+3. **Time** every operation
+4. **Generate** a visual HTML report with screenshots, images, OCR/Vision results, timing
+5. **Self-evaluate** the results (check completeness, quality, timing)
+6. **Fix** any issues found
+7. **Re-run** if needed
+8. **Present** final verified results to user
+
+Never deliver only JSON or console output — always include a human-scannable visual HTML report.
+
+### Session recording and reasoning logs
+
+Every task run must produce:
+- **Session recording** — Animated GIF of the Chrome window captured throughout the entire session (periodic CDP screenshots). Saved alongside the report.
+- **Reasoning log** — All agent thinking and decision-making: why a note was picked, why a search term was chosen, what the agent observed and concluded. Not just "what happened" but "why". Included in the HTML report.
+
+### Self-unblock with Accessibility tools
+
+When blocked by something that needs manual browser/UI interaction (reload Chrome extension, click dialogs, navigate chrome:// pages, approve permissions), use macOS Accessibility APIs (screen.py, pyautogui, AppleScript) to do it instead of asking the user. This also serves as self-hosting validation of ClawVision's own capabilities.
+
+### Autonomous long-horizon work
+
+Do as much as possible autonomously — verify each step, then present the final result. Don't stop to ask the user for simple operational steps. Auto-open browsers/websites as needed.
+
+### Use Claude Vision to verify screenshots
+
+During testing, use Claude Vision to inspect screenshots and verify correctness, not just check for non-empty data.
+
+### No pixel-heuristic CV
+
+Prefer semantic understanding over pixel math. Don't use pixel-level heuristics for UI understanding.
+
+### Strategic architecture
+
+The project's goal is **robust agentic browser automation**, not a single-site scraper. Architecture is layered:
+1. **Generic Agent Infrastructure** (bridge.py, media.py, recorder.py) — WebSocket, CDP, screenshots, session recording, background windows, LLM/OCR/Whisper. Platform-independent.
+2. **Site Skills** (xhs/, future: douyin/, taobao/, etc.) — Site-specific DOM extraction, navigation patterns, entity models. Each site is a "skill" integrated one by one.
+3. **Task Agents** (research.py, user_analysis.py) — High-level orchestration using site skills.
+
+New generic capabilities (background windows, dedup, session recording) belong in the generic layer. Site-specific DOM selectors and navigation belong in site skill modules.
+
 ## Runtime Flow
 
 1. Python starts a local WebSocket server.
