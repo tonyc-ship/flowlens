@@ -5,6 +5,7 @@ ClawVision is currently maintained as a Xiaohongshu research / analysis agent bu
 - Python orchestration in `clawvision.agent.xhs`
 - A Chrome Extension in `chrome_extension/`
 - Shared media / vision utilities in `clawvision.agent.media` and `clawvision.vision`
+- A lightweight task layer in `clawvision.agent.tasks` / `clawvision.agent.task_agent`
 
 The old screen-level MCP route has been archived under `archive/legacy_mcp/`.
 
@@ -18,14 +19,19 @@ clawvision/
 │   ├── __main__.py                   # `python -m clawvision`
 │   ├── server.py                     # Archived-route compatibility stub
 │   ├── runtime.py                    # Local env / path discovery
+│   ├── reporting.py                  # Shared markdown/html report rendering
 │   ├── agent/
 │   │   ├── bridge.py                 # WebSocket bridge to the extension
 │   │   ├── media.py                  # Anthropic, OCR, transcription helpers
+│   │   ├── task_agent.py             # Generic task understanding / assessment
+│   │   ├── tasks.py                  # Structured task definitions
 │   │   └── xhs/
 │   │       ├── browser.py            # XHS-specific browser actions / DOM extraction
+│   │       ├── capabilities.py       # Costed extraction capabilities / plans
 │   │       ├── entities.py           # Note / author / card schemas
 │   │       ├── processor.py          # OCR / vision / transcript enrichment
 │   │       ├── research.py           # Topic research flow
+│   │       ├── task_runner.py        # Task -> XHS workflow runtime
 │   │       └── user_analysis.py      # Creator profile analysis flow
 │   └── vision/
 │       ├── llm.py                    # Vision API wrapper
@@ -37,7 +43,12 @@ clawvision/
 ├── tests/
 │   ├── manual_xhs_research.py        # Manual integration script
 │   ├── manual_xhs_user_analysis.py   # Manual integration script
-│   └── manual_xhs_carousel.py        # Manual media pipeline script
+│   ├── manual_xhs_carousel.py        # Manual media pipeline script
+│   ├── manual_xhs_task_workflows.py  # Manual task-layer integration script
+│   ├── test_task_specs.py            # Structured task tests
+│   ├── test_task_agent.py            # Task-agent parsing tests
+│   ├── test_xhs_capabilities.py      # Capability / extraction-plan tests
+│   └── test_reporting.py             # Shared report rendering tests
 └── archive/
     └── legacy_mcp/                   # Archived screen-level MCP route
 ```
@@ -47,6 +58,14 @@ clawvision/
 ### Never report untested code
 
 Every change must be tested and verified before presenting to the user. No exceptions. No "needs re-test" or "not yet integrated". If it's not tested, it's not done.
+
+### Keep CLAUDE.md in sync with the codebase
+
+When a change materially affects architecture, runtime flow, testing entry points, or core operating rules, update `CLAUDE.md` in the same working session.
+
+- Do not leave architecture docs stale after a refactor.
+- If the change is operational rather than architectural, add the rule to local memory as well when it is likely to matter in future turns.
+- Generated outputs and local run artifacts should stay out of git unless explicitly requested.
 
 ### Test → Evaluate → Fix → Present
 
@@ -76,6 +95,14 @@ When blocked by something that needs manual browser/UI interaction (reload Chrom
 
 Do as much as possible autonomously — verify each step, then present the final result. Don't stop to ask the user for simple operational steps. Auto-open browsers/websites as needed.
 
+### Always use a background Chrome window for live runs
+
+When running live browser tests, create and use a **new background Chrome window** that reuses the user's existing Chrome profile and login state.
+
+- Do **not** take over or overwrite the user's current foreground browsing tab/window.
+- Keep automation in the background window unless the user explicitly asks to watch or interact with it.
+- Treat the user's foreground browsing as independent from the automation target.
+
 ### Use Claude Vision to verify screenshots
 
 During testing, use Claude Vision to inspect screenshots and verify correctness, not just check for non-empty data.
@@ -89,7 +116,9 @@ Prefer semantic understanding over pixel math. Don't use pixel-level heuristics 
 The project's goal is **robust agentic browser automation**, not a single-site scraper. Architecture is layered:
 1. **Generic Agent Infrastructure** (bridge.py, media.py, recorder.py) — WebSocket, CDP, screenshots, session recording, background windows, LLM/OCR/Whisper. Platform-independent.
 2. **Site Skills** (xhs/, future: douyin/, taobao/, etc.) — Site-specific DOM extraction, navigation patterns, entity models. Each site is a "skill" integrated one by one.
-3. **Task Agents** (research.py, user_analysis.py) — High-level orchestration using site skills.
+3. **Capability Layer** (`xhs/capabilities.py`) — Declares what can be extracted at what latency/cost, and defines `lite` vs `deep` extraction plans.
+4. **Task Layer** (`tasks.py`, `task_agent.py`, `xhs/task_runner.py`) — Structured tasks, execution planning, workflow dispatch, task assessment, and task-level reporting.
+5. **Workflow Layer** (`research.py`, `user_analysis.py`) — High-level XHS workflows that consume the site skill and capability layers.
 
 New generic capabilities (background windows, dedup, session recording) belong in the generic layer. Site-specific DOM selectors and navigation belong in site skill modules.
 
@@ -98,9 +127,10 @@ New generic capabilities (background windows, dedup, session recording) belong i
 1. Python starts a local WebSocket server.
 2. The Chrome extension connects from the logged-in browser profile.
 3. `XHSBrowser` issues DOM extraction and CDP-backed interaction commands.
-4. `research.py` / `user_analysis.py` orchestrate note collection.
-5. `processor.py` enriches notes with OCR, image descriptions, and video transcription.
-6. The agent writes JSON + HTML reports to `research_output/`, `user_analysis/`, or a custom output dir.
+4. The task layer chooses a bounded execution strategy (`coverage_first` / `balanced` / `deep_focus`) using the available capability catalog.
+5. `research.py` / `user_analysis.py` orchestrate note collection using `lite` and `deep` extraction plans.
+6. `processor.py` enriches notes with OCR, image descriptions, and video transcription when the chosen plan requires it.
+7. The agent writes JSON + HTML reports plus a session GIF to `task_runs/` or a custom output dir.
 
 ## Setup
 
@@ -166,6 +196,8 @@ python tests/manual_xhs_research.py -t 4
 python tests/manual_xhs_user_analysis.py --find
 python tests/manual_xhs_user_analysis.py --user <url_or_id>
 python tests/manual_xhs_carousel.py
+python tests/manual_xhs_task_workflows.py --preset topic_research
+python tests/manual_xhs_task_workflows.py --preset creator_growth
 ```
 
 These are manual scripts for live-browser validation, not stable unit tests.
@@ -179,6 +211,22 @@ When implementation or tests hit a page-state bug and the DOM behavior is unclea
 3. Use that visual diagnosis to confirm what the page is actually showing before changing selectors, state detection, or action logic.
 
 Do not guess page state from code alone when a screenshot can disambiguate the issue quickly.
+
+## XHS Anti-Bot Prior
+
+Xiaohongshu's web app has several anti-bot / throttling states that must be treated as first-class runtime states:
+
+- `error_page` / "The page isn't available right now" / "请扫码在手机上查看"
+- `security_verification` / captcha / verification image
+- soft throttling where direct detail-page navigation fails but a human-like click from search/profile still opens a modal note
+
+Runtime implications:
+
+- Prefer **human-like UI entry** into note detail from visible cards on search/profile pages.
+- Avoid unnecessary direct navigation to `/explore/<note_id>` when the same note can be opened via in-page click.
+- Prefer **human-like UI exit** from note detail (`X` close button or Escape) instead of refreshing/reloading the search page, because reloads cost time, reorder results, and add request pressure.
+- Treat `error_page`, scan-on-phone prompts, and security verification as explicit anti-bot signals in logs/reports, not generic failures.
+- When these states appear, slow down and reduce page-level navigations before retrying.
 
 ## Vision Status
 

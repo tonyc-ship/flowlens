@@ -372,6 +372,12 @@ class NoteEntity:
 
     # Card-level engagement (from search results card, before opening note)
     card_likes: str = ""
+    source_position: int = -1
+
+    # Extraction metadata
+    extraction_level: str = "deep"
+    requested_sections: tuple[str, ...] = ("content", "media", "engagement", "comments", "author")
+    applied_capabilities: list[str] = field(default_factory=list)
 
     @property
     def has_content(self) -> bool:
@@ -396,12 +402,16 @@ class NoteEntity:
     @property
     def completeness(self) -> dict[str, bool]:
         """Check which aspects have been extracted."""
-        return {
+        raw = {
             "content": self.has_content,
             "media": self.has_media,
             "engagement": self.has_engagement,
             "comments": self.has_comments,
             "author": bool(self.author_name),
+        }
+        return {
+            key: (value if key in self.requested_sections else True)
+            for key, value in raw.items()
         }
 
     @property
@@ -458,6 +468,8 @@ class NoteEntity:
             "hashtags": self.hashtags,
             "image_count": self.image_count,
             "comments_count": self.comments_count,
+            "extraction_level": self.extraction_level,
+            "source_position": self.source_position,
         }
         if self.cover_description:
             d["cover_description"] = self.cover_description
@@ -579,7 +591,11 @@ class NoteEntity:
             "shares": self.shares,
             "image_count": self.image_count,
             "source_keyword": self.source_keyword,
+            "source_position": self.source_position,
             "screenshot": self.screenshot_path,
+            "extraction_level": self.extraction_level,
+            "requested_sections": list(self.requested_sections),
+            "applied_capabilities": self.applied_capabilities,
             # comments as list of dicts (existing format)
             "comments": [c.to_report_dict() for c in self.comments],
             "hot_comments": [c.to_report_dict() for c in self.hottest_comments(5)],

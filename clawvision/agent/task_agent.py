@@ -59,6 +59,35 @@ class NoteVerification:
     reasoning: str = ""
 
 
+@dataclass
+class TaskAssessment:
+    """LLM judgment on whether a workflow output satisfied the task."""
+
+    complete: bool = False
+    confidence: float = 0.0
+    strengths: list[str] = field(default_factory=list)
+    gaps: list[str] = field(default_factory=list)
+    next_actions: list[str] = field(default_factory=list)
+    reasoning: str = ""
+
+
+@dataclass
+class ExecutionStrategy:
+    """Budget-aware workflow strategy chosen from available capabilities."""
+
+    mode: str = "balanced"
+    keyword_count: int = 4
+    cards_per_keyword: int = 12
+    lite_note_count: int = 10
+    deep_note_count: int = 4
+    timeline_sample_count: int = 12
+    deep_sample_count: int = 4
+    lite_comment_count: int = 4
+    deep_comment_count: int = 12
+    report_style: str = "concise_evidence"
+    reasoning: str = ""
+
+
 class TaskAgent:
     """Generic LLM-driven agent for browser tasks.
 
@@ -89,9 +118,95 @@ class TaskAgent:
             "response_summary": response_summary[:500],
         })
 
+    def _parse_json_response(self, raw: str):
+        """Best-effort JSON parser for LLM responses with optional wrappers."""
+        cleaned = raw.strip()
+        if cleaned.startswith("```"):
+            cleaned = cleaned.split("\n", 1)[1].rsplit("```", 1)[0]
+        try:
+            return json.loads(cleaned)
+        except json.JSONDecodeError:
+            return self.media.extract_json(raw)
+
     @property
     def reasoning_log(self) -> list[dict]:
         return self._reasoning_log
+
+    def plan_execution(
+        self,
+        task_prompt: str,
+        task_kind: str,
+        capability_catalog: str,
+    ) -> ExecutionStrategy:
+        """Choose a breadth-vs-depth strategy from the available capabilities."""
+        prompt = f"""You are planning a browser workflow.
+
+**Task kind:** {task_kind}
+**Task definition:**
+{task_prompt}
+
+**Available capabilities (with cost/latency):**
+{capability_catalog}
+
+Choose a budget-aware strategy. Prefer:
+1. broad coverage first
+2. lightweight reads before deep multimodal work
+3. a small number of deep reads only when justified
+4. concise, evidence-driven final reporting
+
+Return ONLY a JSON object:
+{{
+  "mode": "coverage_first" | "balanced" | "deep_focus",
+  "keyword_count": 4,
+  "cards_per_keyword": 12,
+  "lite_note_count": 10,
+  "deep_note_count": 4,
+  "timeline_sample_count": 12,
+  "deep_sample_count": 4,
+  "lite_comment_count": 4,
+  "deep_comment_count": 12,
+  "report_style": "concise_evidence",
+  "reasoning": "short explanation"
+}}
+
+For topic research, keyword_count/cards_per_keyword/lite_note_count/deep_note_count matter most.
+For creator analysis, timeline_sample_count/deep_sample_count matter most.
+"""
+
+        raw = self.media.call_text(prompt, max_tokens=1024)
+        self._log_reasoning("plan_execution", f"Planning {task_kind}", raw[:400])
+        data = self._parse_json_response(raw) or {}
+
+        if task_kind == "topic_research":
+            defaults = {
+                "keyword_count": 4,
+                "cards_per_keyword": 12,
+                "lite_note_count": 10,
+                "deep_note_count": 4,
+                "lite_comment_count": 4,
+                "deep_comment_count": 12,
+            }
+        else:
+            defaults = {
+                "timeline_sample_count": 12,
+                "deep_sample_count": 4,
+                "lite_comment_count": 4,
+                "deep_comment_count": 12,
+            }
+
+        return ExecutionStrategy(
+            mode=data.get("mode", "balanced"),
+            keyword_count=max(2, int(data.get("keyword_count", defaults.get("keyword_count", 4)))),
+            cards_per_keyword=max(6, int(data.get("cards_per_keyword", defaults.get("cards_per_keyword", 12)))),
+            lite_note_count=max(4, int(data.get("lite_note_count", defaults.get("lite_note_count", 10)))),
+            deep_note_count=max(2, int(data.get("deep_note_count", defaults.get("deep_note_count", 4)))),
+            timeline_sample_count=max(6, int(data.get("timeline_sample_count", defaults.get("timeline_sample_count", 12)))),
+            deep_sample_count=max(2, int(data.get("deep_sample_count", defaults.get("deep_sample_count", 4)))),
+            lite_comment_count=max(2, int(data.get("lite_comment_count", defaults.get("lite_comment_count", 4)))),
+            deep_comment_count=max(4, int(data.get("deep_comment_count", defaults.get("deep_comment_count", 12)))),
+            report_style=data.get("report_style", "concise_evidence"),
+            reasoning=data.get("reasoning", raw[:300]),
+        )
 
     # ── Task Understanding ─────────────────────────────────────
 
@@ -132,14 +247,7 @@ Return ONLY the JSON object."""
         self._log_reasoning("understand_task", f"Task: {task}", raw[:400])
 
         # Parse JSON from response
-        try:
-            # Handle markdown code blocks
-            cleaned = raw.strip()
-            if cleaned.startswith("```"):
-                cleaned = cleaned.split("\n", 1)[1].rsplit("```", 1)[0]
-            data = json.loads(cleaned)
-        except json.JSONDecodeError:
-            data = {}
+        data = self._parse_json_response(raw) or {}
 
         return TaskUnderstanding(
             goal=data.get("goal", task),
@@ -212,13 +320,7 @@ Return ONLY the JSON array."""
             raw[:400],
         )
 
-        try:
-            cleaned = raw.strip()
-            if cleaned.startswith("```"):
-                cleaned = cleaned.split("\n", 1)[1].rsplit("```", 1)[0]
-            evaluations_data = json.loads(cleaned)
-        except json.JSONDecodeError:
-            evaluations_data = []
+        evaluations_data = self._parse_json_response(raw) or []
 
         results = []
         for e in evaluations_data:
@@ -305,13 +407,7 @@ Return ONLY the JSON object."""
             raw[:400],
         )
 
-        try:
-            cleaned = raw.strip()
-            if cleaned.startswith("```"):
-                cleaned = cleaned.split("\n", 1)[1].rsplit("```", 1)[0]
-            data = json.loads(cleaned)
-        except json.JSONDecodeError:
-            data = {}
+        data = self._parse_json_response(raw) or {}
 
         return NoteVerification(
             matches_task=data.get("matches_task", False),
@@ -367,10 +463,54 @@ Return ONLY the JSON object."""
         raw = self.media.call_text(prompt, max_tokens=512)
         self._log_reasoning("check_completion", "Checking task completion", raw[:300])
 
-        try:
-            cleaned = raw.strip()
-            if cleaned.startswith("```"):
-                cleaned = cleaned.split("\n", 1)[1].rsplit("```", 1)[0]
-            return json.loads(cleaned)
-        except json.JSONDecodeError:
-            return {"complete": False, "reasoning": raw[:200], "next_action": "try_more_keywords"}
+        return self._parse_json_response(raw) or {
+            "complete": False,
+            "reasoning": raw[:200],
+            "next_action": "try_more_keywords",
+        }
+
+    def assess_workflow_result(
+        self,
+        task_understanding: TaskUnderstanding,
+        workflow_name: str,
+        result_summary: dict,
+    ) -> TaskAssessment:
+        """Evaluate whether a workflow output satisfied the original task."""
+        summary_json = json.dumps(result_summary, ensure_ascii=False, indent=2)
+        prompt = f"""You are reviewing the result of a browser automation workflow.
+
+**Original goal:** {task_understanding.goal}
+**Success criteria:** {task_understanding.success_criteria}
+**Workflow used:** {workflow_name}
+
+**Workflow output summary:**
+{summary_json}
+
+Assess whether the workflow output is good enough to consider the task complete.
+Return ONLY a JSON object:
+{{
+  "complete": true/false,
+  "confidence": 0.0-1.0,
+  "strengths": ["evidence-backed strengths"],
+  "gaps": ["important missing pieces or risks"],
+  "next_actions": ["what to improve or run next"],
+  "reasoning": "short explanation"
+}}"""
+
+        raw = self.media.call_text(prompt, max_tokens=1024)
+        self._log_reasoning(
+            "assess_workflow_result",
+            f"Reviewing {workflow_name}",
+            raw[:400],
+        )
+
+        data = self._parse_json_response(raw) or {}
+
+        return TaskAssessment(
+            complete=data.get("complete", False),
+            confidence=data.get("confidence", 0),
+            strengths=data.get("strengths", []),
+            gaps=data.get("gaps", []),
+            next_actions=data.get("next_actions", []),
+            reasoning=data.get("reasoning", raw[:300]),
+        )

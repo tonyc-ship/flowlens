@@ -27,23 +27,40 @@ from pathlib import Path
 
 from ..bridge import ExtensionBridge
 from ..media import MediaProcessor
+from ...reporting import markdown_styles, render_markdown_block
+from .capabilities import NoteExtractionPlan, deep_note_plan, lite_note_plan
 from .browser import XHSBrowser
-from .entities import Comment, NoteCard, NoteEntity, NoteType
+from .entities import Comment, NoteCard, NoteEntity, NoteType, parse_count_text
 from .processor import NoteProcessor, ProcessorConfig, TimingRecord
 
 
 @dataclass
 class ResearchConfig:
     """Configuration for a research session."""
-    max_notes_per_keyword: int = 2
+    max_cards_per_keyword: int = 12
+    max_search_scroll_rounds: int = 4
+    max_lite_notes: int = 10
+    max_deep_notes: int = 4
+    lite_comment_count: int = 4
+    lite_comment_scrolls: int = 0
     max_comments_per_note: int = 20
     max_comment_scrolls: int = 2
-    max_keywords: int = 3
+    max_keywords: int = 4
     use_vision_fallback: bool = True
+    inter_note_pause_s: float = 1.2
+    anti_bot_backoff_s: float = 8.0
     screenshot_dir: str = "screenshots"
     # NoteProcessor config
     max_images_per_note: int = 10
     vision_concurrency: int = 3
+
+
+@dataclass
+class ResearchCandidate:
+    keyword: str
+    search_url: str
+    card: NoteCard
+    note: NoteEntity | None = None
 
 
 class XHSResearchAgent:
@@ -56,6 +73,7 @@ class XHSResearchAgent:
         config: ResearchConfig | None = None,
         browser: XHSBrowser | None = None,
         media: MediaProcessor | None = None,
+        manage_bridge_lifecycle: bool | None = None,
     ):
         self.config = config or ResearchConfig()
         self.output_dir = Path(output_dir)
@@ -68,6 +86,9 @@ class XHSResearchAgent:
             bridge = ExtensionBridge(port=port)
             self.browser = XHSBrowser(bridge)
             bridge.on_log(self._log_step)
+        self.manage_bridge_lifecycle = (
+            browser is None if manage_bridge_lifecycle is None else manage_bridge_lifecycle
+        )
 
         self.media = media or MediaProcessor()
 
@@ -125,49 +146,144 @@ class XHSResearchAgent:
         result = self.media.extract_json(raw)
         return result if isinstance(result, list) else [topic]
 
-    def pick_notes(self, cards: list[NoteCard], topic: str, max_picks: int) -> list[NoteCard]:
-        if len(cards) <= max_picks:
-            return cards
+    def pick_candidates_for_lite(
+        self,
+        candidates: list[ResearchCandidate],
+        topic: str,
+        max_picks: int,
+    ) -> list[ResearchCandidate]:
+        if len(candidates) <= max_picks:
+            return candidates
 
         card_dicts = [
-            {"title": c.title, "author": c.author_name, "likes": c.likes,
-             "type": c.note_type.value, "position": c.position}
-            for c in cards
+            {
+                "index": idx,
+                "keyword": candidate.keyword,
+                "title": candidate.card.title,
+                "author": candidate.card.author_name,
+                "likes": candidate.card.likes,
+                "type": candidate.card.note_type.value,
+            }
+            for idx, candidate in enumerate(candidates)
         ]
         with self._timed("llm_pick_notes"):
             raw = self.media.call_text(
                 f"I'm researching '{topic}' on Xiaohongshu.\n"
-                f"Here are the note cards from search results:\n"
+                f"Here are note cards collected across multiple keywords:\n"
                 f"{json.dumps(card_dicts, ensure_ascii=False, indent=1)}\n\n"
-                f"Pick the {max_picks} most relevant and interesting notes. "
-                f"Prefer notes with: high engagement, diverse perspectives, "
-                f"content-rich titles, and relevance to the research topic. "
-                f"Return a JSON array of position numbers (integers) for the selected notes.",
-                512,
+                f"Pick {max_picks} cards for a LIGHTWEIGHT read. Prefer topic relevance, diversity, and strong signal. "
+                f"Avoid near-duplicates. Return a JSON array of index integers.",
+                768,
             )
         picks = self.media.extract_json(raw)
         if isinstance(picks, list):
-            picked_positions = set(picks)
-            selected = [c for c in cards if c.position in picked_positions]
+            selected = [candidate for idx, candidate in enumerate(candidates) if idx in {int(v) for v in picks if isinstance(v, int)}]
             if selected:
                 return selected[:max_picks]
-        return cards[:max_picks]
+        return self._fallback_pick_candidates(candidates, max_picks)
 
-    def synthesize(self, topic: str, keywords: list[str], notes: list[NoteEntity]) -> str:
+    def pick_candidates_for_deep(
+        self,
+        notes: list[ResearchCandidate],
+        topic: str,
+        max_picks: int,
+    ) -> list[ResearchCandidate]:
+        if len(notes) <= max_picks:
+            return notes
+
+        note_dicts = [
+            {
+                "index": idx,
+                "keyword": candidate.keyword,
+                "title": candidate.note.title if candidate.note else candidate.card.title,
+                "author": candidate.note.author_name if candidate.note else candidate.card.author_name,
+                "likes": candidate.note.likes if candidate.note else candidate.card.likes,
+                "favorites": candidate.note.favorites if candidate.note else "",
+                "comments": candidate.note.comments_count if candidate.note else "",
+                "type": candidate.note.note_type.value if candidate.note else candidate.card.note_type.value,
+                "content_preview": candidate.note.content[:240] if candidate.note else "",
+                "top_comments": [comment.text[:80] for comment in candidate.note.hottest_comments(2)] if candidate.note else [],
+                "format_hints": candidate.note.format_hints if candidate.note else [],
+                "key_points": candidate.note.key_points[:3] if candidate.note else [],
+            }
+            for idx, candidate in enumerate(notes)
+        ]
+        with self._timed("llm_pick_deep_notes"):
+            raw = self.media.call_text(
+                f"You are planning DEEP multimodal reading for Xiaohongshu topic research: '{topic}'.\n"
+                f"These notes already had a lightweight read:\n"
+                f"{json.dumps(note_dicts, ensure_ascii=False, indent=1)}\n\n"
+                f"Pick {max_picks} notes that most deserve expensive deep reading. "
+                f"Prefer representative or unusually informative samples. Return a JSON array of index integers.",
+                768,
+            )
+        picks = self.media.extract_json(raw)
+        if isinstance(picks, list):
+            selected = [candidate for idx, candidate in enumerate(notes) if idx in {int(v) for v in picks if isinstance(v, int)}]
+            if selected:
+                return selected[:max_picks]
+        return self._fallback_pick_candidates(notes, max_picks, use_note=True)
+
+    @staticmethod
+    def _fallback_pick_candidates(
+        candidates: list[ResearchCandidate],
+        max_picks: int,
+        *,
+        use_note: bool = False,
+    ) -> list[ResearchCandidate]:
+        def signal(candidate: ResearchCandidate) -> int:
+            if use_note and candidate.note:
+                return parse_count_text(candidate.note.likes) + parse_count_text(candidate.note.favorites)
+            return parse_count_text(candidate.card.likes)
+
+        ordered = sorted(candidates, key=signal, reverse=True)
+        seen_keys: set[str] = set()
+        picked: list[ResearchCandidate] = []
+        for candidate in ordered:
+            title = candidate.note.title if use_note and candidate.note else candidate.card.title
+            author = candidate.note.author_name if use_note and candidate.note else candidate.card.author_name
+            note_type = candidate.note.note_type.value if use_note and candidate.note else candidate.card.note_type.value
+            key = f"{author}:{note_type}:{title[:30]}"
+            if key in seen_keys:
+                continue
+            seen_keys.add(key)
+            picked.append(candidate)
+            if len(picked) >= max_picks:
+                break
+        return picked
+
+    def synthesize(
+        self,
+        topic: str,
+        keywords: list[str],
+        notes: list[NoteEntity],
+        *,
+        coverage: dict,
+    ) -> str:
         summaries = [n.to_summary() for n in notes]
-        for s, n in zip(summaries, notes):
-            s["keyword"] = n.source_keyword
+        for summary, note in zip(summaries, notes):
+            summary["keyword"] = note.source_keyword
+            summary["capabilities"] = note.applied_capabilities
 
         with self._timed("llm_synthesize"):
             return self.media.call_text(
-                f"I researched '{topic}' on Xiaohongshu (小红书).\n\n"
-                f"Keywords searched: {json.dumps(keywords, ensure_ascii=False)}\n\n"
-                f"Notes collected:\n{json.dumps(summaries, ensure_ascii=False, indent=1)}\n\n"
-                f"Write a research report in Chinese (3-4 paragraphs). Cover:\n"
-                f"1. Main trends and themes found\n"
-                f"2. Popular content patterns and engagement insights\n"
-                f"3. Key opinions and recommendations from creators\n"
-                f"4. Actionable takeaways for someone interested in this topic",
+                f"你刚完成了一次小红书话题研究。主题是“{topic}”。\n\n"
+                f"## 覆盖范围\n{json.dumps(coverage, ensure_ascii=False, indent=2)}\n\n"
+                f"## 搜索关键词\n{json.dumps(keywords, ensure_ascii=False)}\n\n"
+                f"## 样本笔记摘要\n{json.dumps(summaries, ensure_ascii=False, indent=1)}\n\n"
+                "请输出一份中文 Markdown 研究结论，要求简洁、证据化，不要写散文长文。\n"
+                "结构必须包含这些部分：\n"
+                "## Coverage\n"
+                "## 内容切入点\n"
+                "## 用户需求与评论主题\n"
+                "## 代表样本\n"
+                "## 可执行建议\n"
+                "## Unknowns\n\n"
+                "写法要求：\n"
+                "- 每节以短 bullet 为主\n"
+                "- 明确指出哪些结论来自 deep read，哪些只是 lite read\n"
+                "- 引用样本时写出标题\n"
+                "- 如果证据不足就直接说不确定\n",
                 2048,
             )
 
@@ -203,22 +319,22 @@ class XHSResearchAgent:
             self._log_step("screenshot_error", f"{label}: {e}")
             return ""
 
-    async def _collect_note_comments(self) -> list[Comment]:
+    async def _collect_note_comments(self, max_comments: int, max_scrolls: int) -> list[Comment]:
         """Collect and merge hot comments across several scroll rounds."""
         merged: list[Comment] = []
-        for round_idx in range(self.config.max_comment_scrolls + 1):
+        for round_idx in range(max_scrolls + 1):
             raw_comments = await self.browser.extract_comments(
-                max_comments=self.config.max_comments_per_note,
+                max_comments=max_comments,
                 prefer_hot=True,
             )
             merged = NoteEntity.merge_comments(
                 [*merged, *[Comment.from_dom_dict(c) for c in raw_comments]]
             )
-            if round_idx >= self.config.max_comment_scrolls:
+            if round_idx >= max_scrolls:
                 break
             await self.browser.scroll_note(400)
             await asyncio.sleep(1)
-        return merged[:self.config.max_comments_per_note]
+        return merged[:max_comments]
 
     # ── Research Flow ───────────────────────────────────────────
 
@@ -233,8 +349,11 @@ class XHSResearchAgent:
 
         self._log_step("start", f"Research topic: {topic}")
 
-        await self.browser.bridge.start()
-        self._log_step("bridge_ready", f"WebSocket server on port {self.browser.bridge.port}")
+        if self.manage_bridge_lifecycle:
+            await self.browser.bridge.start()
+            self._log_step("bridge_ready", f"WebSocket server on port {self.browser.bridge.port}")
+        else:
+            self._log_step("bridge_ready", f"Using external bridge on port {self.browser.bridge.port}")
 
         print(
             "\n  >>> Waiting for Chrome Extension to connect. <<<\n"
@@ -250,54 +369,54 @@ class XHSResearchAgent:
 
         if keywords is None:
             keywords = self.generate_keywords(topic)
+        keywords = [keyword for keyword in dict.fromkeys(keywords) if keyword][: self.config.max_keywords]
         self._log_step("keywords", f"{len(keywords)} keywords: {keywords}")
 
-        all_notes: list[NoteEntity] = []
-        seen_titles: set[str] = set()
-
+        candidate_pool: list[ResearchCandidate] = []
+        coverage_by_keyword: dict[str, int] = {}
         for ki, keyword in enumerate(keywords):
             self._log_step("search", f"[{ki+1}/{len(keywords)}] {keyword}")
+            collected = await self._collect_search_candidates(keyword, ki)
+            coverage_by_keyword[keyword] = len(collected)
+            candidate_pool.extend(collected)
 
-            await self.browser.navigate_to_search(keyword)
-            search_state = await self.browser.wait_for_search_results(timeout_s=20, poll_s=2)
-            self._log_step(
-                "search_state",
-                f"filter={search_state.get('active_filter') or 'unknown'} "
-                f"cards={search_state.get('card_count', 0)} "
-                f"loading={search_state.get('loading')} "
-                f"no_results={search_state.get('has_no_results')}",
-            )
+        candidate_pool = self._dedupe_candidates(candidate_pool)
+        self._log_step("candidate_pool", f"{len(candidate_pool)} unique cards across {len(keywords)} keywords")
 
-            search_screenshot = await self._take_screenshot(f"search_{ki+1}_{keyword}")
-            if search_screenshot:
-                self._screenshots.append(search_screenshot)
+        keyword_rank = {keyword: idx for idx, keyword in enumerate(keywords)}
+        lite_candidates = self.pick_candidates_for_lite(candidate_pool, topic, self.config.max_lite_notes)
+        lite_candidates = sorted(
+            lite_candidates,
+            key=lambda candidate: (keyword_rank.get(candidate.keyword, 999), candidate.card.position),
+        )
+        self._log_step("lite_pick", f"{len(lite_candidates)} candidates selected for lite read")
 
-            raw_cards = await self.browser.extract_search_cards()
+        lite_plan = lite_note_plan(
+            max_comments=self.config.lite_comment_count,
+            max_comment_scrolls=self.config.lite_comment_scrolls,
+        )
+        for index, candidate in enumerate(lite_candidates, start=1):
+            self._log_step("lite_read", f"[{index}/{len(lite_candidates)}] {candidate.card.title[:50]}")
+            candidate.note = await self._process_note(candidate, lite_plan)
 
-            cards = [NoteCard.from_dom_dict(c) for c in raw_cards]
-            self._log_step("cards", f"{len(cards)} cards from DOM")
-            for c in cards[:5]:
-                print(f"      {c.title[:40]} | {c.author_name} | {c.likes}")
+        lite_notes = [candidate for candidate in lite_candidates if candidate.note]
+        deep_targets = self.pick_candidates_for_deep(lite_notes, topic, self.config.max_deep_notes)
+        deep_targets = sorted(
+            deep_targets,
+            key=lambda candidate: (keyword_rank.get(candidate.keyword, 999), candidate.card.position),
+        )
+        self._log_step("deep_pick", f"{len(deep_targets)} lite notes selected for deep read")
 
-            if not cards:
-                self._log_step("no_cards", f"No cards found for '{keyword}'")
-                continue
+        deep_plan = deep_note_plan(
+            max_comments=self.config.max_comments_per_note,
+            max_comment_scrolls=self.config.max_comment_scrolls,
+            max_images=self.config.max_images_per_note,
+        )
+        for index, candidate in enumerate(deep_targets, start=1):
+            self._log_step("deep_read", f"[{index}/{len(deep_targets)}] {candidate.card.title[:50]}")
+            candidate.note = await self._process_note(candidate, deep_plan)
 
-            picks = self.pick_notes(cards, topic, self.config.max_notes_per_keyword)
-            self._log_step("picked", f"{len(picks)} notes to examine")
-
-            search_url = (await self.browser.get_tab_info()).get("url", "")
-
-            for card in picks:
-                if not card.title or card.title in seen_titles:
-                    if card.title:
-                        self._log_step("skip_dup", f"Already: {card.title[:40]}")
-                    continue
-                seen_titles.add(card.title)
-
-                note = await self._process_note(card, keyword, search_url)
-                if note:
-                    all_notes.append(note)
+        all_notes = [candidate.note for candidate in lite_candidates if candidate.note]
 
         # Synthesize
         elapsed_collect = time.time() - self._t0
@@ -305,7 +424,17 @@ class XHSResearchAgent:
 
         synthesis = ""
         if all_notes:
-            synthesis = self.synthesize(topic, keywords, all_notes)
+            synthesis = self.synthesize(
+                topic,
+                keywords,
+                all_notes,
+                coverage={
+                    "cards_scanned": len(candidate_pool),
+                    "coverage_by_keyword": coverage_by_keyword,
+                    "lite_reads": len(lite_candidates),
+                    "deep_reads": len(deep_targets),
+                },
+            )
 
         elapsed_total = time.time() - self._t0
         self._log_step("done", f"Total: {elapsed_total:.1f}s, {len(all_notes)} notes")
@@ -316,6 +445,12 @@ class XHSResearchAgent:
         report = {
             "topic": topic,
             "keywords": keywords,
+            "coverage": {
+                "cards_scanned": len(candidate_pool),
+                "coverage_by_keyword": coverage_by_keyword,
+                "lite_reads": len(lite_candidates),
+                "deep_reads": len(deep_targets),
+            },
             "notes": [n.to_report_dict() for n in all_notes],
             "synthesis": synthesis,
             "timing": {
@@ -328,42 +463,174 @@ class XHSResearchAgent:
         }
 
         self._save_report(report)
-        await self.browser.bridge.stop()
+        if self.manage_bridge_lifecycle:
+            await self.browser.bridge.stop()
         return report
 
-    async def _process_note(
-        self, card: NoteCard, keyword: str, search_url: str
-    ) -> NoteEntity | None:
-        """Open, extract, process media, and close a single note."""
-        note_t0 = time.time()
-        self._log_step("open_note", card.title[:60])
+    async def _collect_search_candidates(self, keyword: str, keyword_index: int) -> list[ResearchCandidate]:
+        await self.browser.navigate_to_search(keyword)
+        search_state = await self.browser.wait_for_search_results(timeout_s=20, poll_s=2)
+        if search_state.get("loading") and search_state.get("card_count", 0) == 0:
+            self._log_step("search_wait_extend", f"{keyword}: still loading after initial wait, extending")
+            search_state = await self.browser.wait_for_search_results(timeout_s=15, poll_s=2)
+        self._log_step(
+            "search_state",
+            f"filter={search_state.get('active_filter') or 'unknown'} "
+            f"cards={search_state.get('card_count', 0)} "
+            f"loading={search_state.get('loading')} "
+            f"no_results={search_state.get('has_no_results')}",
+        )
 
-        # Click card to open as overlay
+        search_screenshot = await self._take_screenshot(f"search_{keyword_index+1}_{keyword}")
+        if search_screenshot:
+            self._screenshots.append(search_screenshot)
+
+        if search_state.get("has_no_results"):
+            self._log_step("search_empty", f"{keyword}: no results")
+            return []
+        if search_state.get("card_count", 0) == 0 and search_state.get("loading"):
+            self._log_step("search_skip", f"{keyword}: still loading without cards, skip keyword")
+            return []
+
+        search_url = (await self.browser.get_tab_info()).get("url", "")
+        candidates: list[ResearchCandidate] = []
+        seen_ids: set[str] = set()
+        stagnant_rounds = 0
+
+        for round_idx in range(self.config.max_search_scroll_rounds):
+            try:
+                raw_cards = await self.browser.extract_search_cards()
+            except Exception as exc:
+                self._log_step("cards_round_error", f"{keyword}: round {round_idx+1} failed: {exc}")
+                try:
+                    await self.browser.wait_for_search_results(timeout_s=6, poll_s=1.0)
+                except Exception:
+                    pass
+                if round_idx == 0:
+                    return candidates
+                break
+            new_count = 0
+            for raw in raw_cards:
+                card = NoteCard.from_dom_dict(raw)
+                dedupe_key = card.note_id or card.link or f"{card.title}:{card.author_name}"
+                if not card.title or not dedupe_key or dedupe_key in seen_ids:
+                    continue
+                seen_ids.add(dedupe_key)
+                candidates.append(ResearchCandidate(keyword=keyword, search_url=search_url, card=card))
+                new_count += 1
+
+            self._log_step("cards_round", f"{keyword}: round {round_idx+1} +{new_count}, total={len(candidates)}")
+            if len(candidates) >= self.config.max_cards_per_keyword:
+                break
+            if new_count == 0:
+                stagnant_rounds += 1
+                if stagnant_rounds >= 2:
+                    break
+            else:
+                stagnant_rounds = 0
+
+            await self.browser.scroll_page(1100)
+            await asyncio.sleep(1.5)
+            await self.browser.wait_for_search_results(timeout_s=8, poll_s=1.0)
+
+        return candidates[: self.config.max_cards_per_keyword]
+
+    @staticmethod
+    def _dedupe_candidates(candidates: list[ResearchCandidate]) -> list[ResearchCandidate]:
+        deduped: list[ResearchCandidate] = []
+        seen: set[str] = set()
+        for candidate in candidates:
+            key = candidate.card.note_id or candidate.card.link or f"{candidate.card.title}:{candidate.card.author_name}"
+            if not key or key in seen:
+                continue
+            seen.add(key)
+            deduped.append(candidate)
+        return deduped
+
+    async def _process_note(self, candidate: ResearchCandidate, plan: NoteExtractionPlan) -> NoteEntity | None:
+        """Open, extract, optionally enrich media, and return to search."""
+        note_t0 = time.time()
+        card = candidate.card
+        self._log_step("open_note", f"{plan.level.value}: {card.title[:60]}")
+
+        async def ensure_search_context() -> dict:
+            try:
+                current_state = await self.browser.detect_state()
+            except Exception:
+                current_state = {}
+            try:
+                current_url = (await self.browser.get_tab_info()).get("url", "")
+            except Exception:
+                current_url = ""
+
+            if current_state.get("state") == "search_results" and current_url == candidate.search_url:
+                return current_state
+
+            await self.browser.navigate(candidate.search_url, wait_ms=5000)
+            await asyncio.sleep(2)
+            return await self.browser.wait_for_search_results(timeout_s=20, poll_s=1.5)
+
+        async def ensure_note_detail(label: str, wait_s: float = 1.5) -> bool:
+            await asyncio.sleep(wait_s)
+            last_state = {}
+            for _ in range(3):
+                try:
+                    last_state = await self.browser.detect_state()
+                    if last_state.get("state") == "note_detail":
+                        return True
+                except Exception as exc:
+                    self._log_step("state_probe_retry", f"{label}: {exc}")
+                await asyncio.sleep(1)
+            self._log_step("state_probe", f"{label}: {last_state.get('state', 'unknown')}")
+            return False
+
+        async def handle_anti_bot(label: str, state: dict | None = None) -> bool:
+            detected = (state or {}).get("state", "")
+            if not self.browser.is_anti_bot_state(detected):
+                return False
+            self._log_step("anti_bot_detected", f"{label}: {detected}")
+            await asyncio.sleep(self.config.anti_bot_backoff_s)
+            await ensure_search_context()
+            return True
+
         t0 = time.time()
-        await self.browser.click_card(card.position)
-        await asyncio.sleep(3)
-        self.timing.record("click_card", time.time() - t0)
+        await ensure_search_context()
+        opened = False
+        if card.note_id:
+            self._log_step("open_attempt", f"dom note_id={card.note_id}")
+            dom_click = await self.browser.click_note_by_id(card.note_id)
+            if dom_click.get("ok"):
+                opened = await ensure_note_detail("note_id_click")
+        if not opened and card.position is not None:
+            self._log_step("open_attempt", f"position={card.position}")
+            indexed_click = await self.browser.click_card(card.position)
+            if indexed_click.get("ok"):
+                opened = await ensure_note_detail("position_click")
+        if not opened and card.note_id:
+            self._log_step("open_attempt", f"cdp note_id={card.note_id}")
+            opened = await self.browser.open_note_on_search(card.note_id)
+            if opened:
+                opened = await ensure_note_detail("cdp_click")
+        await asyncio.sleep(2)
+        self.timing.record("open_note_from_search", time.time() - t0)
 
         state = await self.browser.detect_state()
         if state.get("state") != "note_detail":
-            if card.link and "/explore/" in card.link:
-                self._log_step("navigate_fallback", "Click didn't open overlay, navigating")
-                await self.browser.navigate(card.link, wait_ms=5000)
-                await asyncio.sleep(3)
-                state = await self.browser.detect_state()
-
-        if state.get("state") != "note_detail":
+            if await handle_anti_bot("open_note", state):
+                return None
             self._log_step("state_mismatch", f"Expected note_detail, got {state.get('state')}")
-            await self.browser.navigate(search_url, wait_ms=5000)
-            await asyncio.sleep(2)
             return None
 
         # DOM extraction → NoteEntity
         t0 = time.time()
         raw_note = await self.browser.extract_note_content()
         note = NoteEntity.from_dom_dict(raw_note)
-        note.source_keyword = keyword
+        note.source_keyword = candidate.keyword
         note.source_context = "search"
+        note.source_position = card.position
+        note.extraction_level = plan.level.value
+        note.requested_sections = plan.requested_sections
+        note.applied_capabilities = list(plan.capabilities)
         dom_dt = time.time() - t0
         self.timing.record("dom_extract", dom_dt)
 
@@ -381,7 +648,7 @@ class XHSResearchAgent:
         )
 
         # DOM-first / Vision-fallback for text content
-        if not note.has_content and note.screenshot_path and self.config.use_vision_fallback:
+        if not note.has_content and note.screenshot_path and plan.use_vision_fallback and self.config.use_vision_fallback:
             self._log_step("vision_fallback", "DOM empty → Vision extraction from screenshot")
             try:
                 with open(note.screenshot_path, "rb") as f:
@@ -399,20 +666,21 @@ class XHSResearchAgent:
             except Exception as e:
                 self._log_step("vision_error", str(e))
 
-        # NoteProcessor handles all media (images/video) — DOM-first, carousel-fallback
-        await self.processor.process_note(note)
+        if plan.use_media:
+            await self.processor.process_note(note, plan)
 
         # Comments (with scroll for more)
-        t0 = time.time()
-        note.comments = await self._collect_note_comments()
-        note.refresh_derived_fields()
-        comments_dt = time.time() - t0
-        self.timing.record("comments_extract", comments_dt)
-        self._log_step(
-            "comments",
-            f"{len(note.comments)} comments, hottest={note.hottest_comments(1)[0].like_count if note.comments else 0}",
-            duration=comments_dt,
-        )
+        if plan.include_comments:
+            t0 = time.time()
+            note.comments = await self._collect_note_comments(plan.max_comments, plan.max_comment_scrolls)
+            note.refresh_derived_fields()
+            comments_dt = time.time() - t0
+            self.timing.record("comments_extract", comments_dt)
+            self._log_step(
+                "comments",
+                f"{len(note.comments)} comments, hottest={note.hottest_comments(1)[0].like_count if note.comments else 0}",
+                duration=comments_dt,
+            )
 
         # Completeness
         comp = note.completeness
@@ -426,15 +694,17 @@ class XHSResearchAgent:
             duration=note_dt,
         )
 
-        # Close note and return to search
-        await self.browser.close_note()
-        await asyncio.sleep(1)
-
-        state = await self.browser.detect_state()
-        if state.get("state") != "search_results":
-            self._log_step("recovery", f"State after close: {state.get('state')}, navigating back")
-            await self.browser.navigate(search_url, wait_ms=5000)
-            await asyncio.sleep(2)
+        close_result = await self.browser.close_note()
+        self._log_step("close_note", close_result.get("method", "unknown"))
+        close_state = await self.browser.wait_for_state(
+            {"search_results", "profile_page", "homepage", *self.browser.ANTI_BOT_STATES},
+            timeout=4.0,
+        )
+        if await handle_anti_bot("close_note", close_state):
+            return note
+        if close_state.get("state") != "search_results":
+            await ensure_search_context()
+        await asyncio.sleep(self.config.inter_note_pause_s)
 
         return note
 
@@ -464,12 +734,13 @@ class XHSResearchAgent:
             "h1{color:#ff2442}h2{color:#333;border-bottom:2px solid #ff2442;padding-bottom:5px}",
             ".note{background:#fff;border:1px solid #eee;border-radius:8px;padding:16px;margin:12px 0;box-shadow:0 1px 3px rgba(0,0,0,0.05)}",
             ".meta{color:#888;font-size:13px}.tag{background:#fff0f0;color:#ff2442;padding:2px 8px;border-radius:12px;font-size:12px;margin:2px;display:inline-block}",
-            ".synthesis{background:#f8f8f8;padding:20px;border-radius:8px;margin:20px 0;white-space:pre-wrap}",
+            ".synthesis{background:#f8f8f8;padding:20px;border-radius:8px;margin:20px 0}",
             ".comment{background:#fafafa;padding:8px 10px;margin:4px 0;border-radius:4px;font-size:13px}",
             ".comment strong{color:#333}.comment .likes{color:#999;font-size:11px;margin-left:8px}",
             "img.screenshot{max-width:100%;max-height:500px;border:1px solid #ddd;border-radius:6px;margin:8px 0}",
             ".timing{background:#e8f5e9;padding:12px;border-radius:6px;font-size:13px;margin:10px 0}",
             ".log{font-family:monospace;font-size:11px;color:#666;max-height:400px;overflow-y:auto;background:#f5f5f5;padding:10px;border-radius:6px}",
+            markdown_styles(),
             "</style></head><body>",
             f"<h1>XHS Research: {_esc(data['topic'])}</h1>",
             f"<p class='meta'>Keywords: {', '.join(data['keywords'])} | "
@@ -478,10 +749,24 @@ class XHSResearchAgent:
         ]
 
         timing = data.get("timing", {})
+        coverage = data.get("coverage", {})
         parts.append(
             f"<div class='timing'>Data collection: {timing.get('data_collection_s', '?')}s | "
-            f"Total: {timing.get('total_s', '?')}s</div>"
+            f"Total: {timing.get('total_s', '?')}s | "
+            f"Cards scanned: {coverage.get('cards_scanned', '?')} | "
+            f"Lite reads: {coverage.get('lite_reads', '?')} | "
+            f"Deep reads: {coverage.get('deep_reads', '?')}</div>"
         )
+
+        if coverage:
+            parts.append("<h2>Coverage</h2><div class='note'>")
+            parts.append(f"<p><strong>Cards scanned:</strong> {coverage.get('cards_scanned', '?')}</p>")
+            if coverage.get("coverage_by_keyword"):
+                parts.append("<p><strong>By keyword:</strong></p><ul>")
+                for keyword, count in coverage["coverage_by_keyword"].items():
+                    parts.append(f"<li>{_esc(keyword)}: {count}</li>")
+                parts.append("</ul>")
+            parts.append("</div>")
 
         screenshots = data.get("screenshots", [])
         if screenshots:
@@ -490,7 +775,7 @@ class XHSResearchAgent:
                 rel_path = os.path.relpath(sp, str(self.output_dir))
                 parts.append(f'<img class="screenshot" src="{rel_path}" alt="search screenshot">')
 
-        parts.append(f"<h2>Research Summary</h2><div class='synthesis'>{_esc(data.get('synthesis', ''))}</div>")
+        parts.append(f"<h2>Research Summary</h2><div class='synthesis'>{render_markdown_block(data.get('synthesis', ''))}</div>")
 
         parts.append(f"<h2>Notes ({len(data['notes'])})</h2>")
         for i, note in enumerate(data["notes"]):
@@ -501,9 +786,12 @@ class XHSResearchAgent:
                 f"Favorites: {_esc(note.get('favorites', '?'))} | "
                 f"Comments: {_esc(note.get('comments_count', '?'))} | "
                 f"Images: {note.get('image_count', '?')} | "
-                f"Type: {note.get('type', '?')}</p>"
+                f"Type: {note.get('type', '?')} | "
+                f"Level: {_esc(note.get('extraction_level', ''))}</p>"
             )
             parts.append(f"<p class='meta'>Keyword: {_esc(note.get('source_keyword', ''))}</p>")
+            if note.get("applied_capabilities"):
+                parts.append(f"<p class='meta'>Capabilities: {_esc(', '.join(note['applied_capabilities']))}</p>")
             if note.get("author_url"):
                 parts.append(f"<p class='meta'>Author URL: <a href=\"{_esc(note['author_url'])}\" target=\"_blank\">{_esc(note['author_url'])}</a></p>")
             if note.get("location") or note.get("ip_location"):
@@ -536,17 +824,17 @@ class XHSResearchAgent:
                 parts.append("</div>")
 
             if note.get("image_descriptions"):
-                parts.append("<h4>Image Content (Vision)</h4><ol>")
+                parts.append("<h4>Image Content (Vision)</h4>")
                 for desc in note["image_descriptions"]:
-                    parts.append(f"<li>{_esc(desc[:300])}</li>")
-                parts.append("</ol>")
+                    parts.append(render_markdown_block(desc[:1200], "vision"))
 
             if note.get("video_resolved_url") or note.get("video_url"):
                 parts.append(
                     f"<p class='meta'>Video source: {_esc(note.get('video_resolved_url') or note.get('video_url'))}</p>"
                 )
             if note.get("transcript_summary"):
-                parts.append(f"<p><strong>Video Summary:</strong> {_esc(note['transcript_summary'][:400])}</p>")
+                parts.append("<h4>Video Summary</h4>")
+                parts.append(render_markdown_block(note["transcript_summary"][:2000], "vision"))
 
             if note.get("screenshot"):
                 rel_path = os.path.relpath(note["screenshot"], str(self.output_dir))

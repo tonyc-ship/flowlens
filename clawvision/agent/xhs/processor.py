@@ -25,6 +25,7 @@ from pathlib import Path
 
 from ..media import MediaProcessor
 from .browser import XHSBrowser
+from .capabilities import NoteExtractionPlan, deep_note_plan
 from .entities import ImageInfo, NoteEntity, NoteType, VideoInfo
 
 
@@ -118,7 +119,7 @@ class NoteProcessor:
 
     # ── Main Entry Point ────────────────────────────────────────
 
-    async def process_note(self, note: NoteEntity) -> None:
+    async def process_note(self, note: NoteEntity, plan: NoteExtractionPlan | None = None) -> None:
         """Fully process a NoteEntity's media: images OR video.
 
         After this call, note.images will have OCR + Vision descriptions,
@@ -128,11 +129,19 @@ class NoteProcessor:
         only flips carousel when DOM count < indicator total.
         """
         t0 = time.time()
+        plan = plan or deep_note_plan(
+            max_images=self.config.max_images,
+            max_video_frames=self.config.max_video_frame_samples,
+        )
+
+        if not plan.use_media:
+            note.refresh_derived_fields()
+            return
 
         if note.note_type == NoteType.VIDEO:
-            await self._process_video(note)
+            await self._process_video(note, plan)
         else:
-            await self._process_images(note)
+            await self._process_images(note, plan)
 
         note.refresh_derived_fields()
 
@@ -142,14 +151,14 @@ class NoteProcessor:
 
     # ── Image Processing Pipeline ────────────────────────────────
 
-    async def _process_images(self, note: NoteEntity) -> None:
+    async def _process_images(self, note: NoteEntity, plan: NoteExtractionPlan) -> None:
         """Collect images (DOM-first, carousel-fallback), then parallel OCR + Vision."""
         await self._ensure_all_images(note)
 
         if not note.images:
             return
 
-        images = note.images[:self.config.max_images]
+        images = note.images[: min(self.config.max_images, plan.max_images)]
 
         # Download all images in parallel
         t0 = time.time()
@@ -194,8 +203,10 @@ class NoteProcessor:
         async def enrich_single(img: ImageInfo, img_bytes: bytes | None):
             if not isinstance(img_bytes, bytes) or not img_bytes:
                 return
-            await self._ocr_image(img, img_bytes)
-            await self._vision_image(img, img_bytes, note.title, semaphore)
+            if plan.use_image_ocr:
+                await self._ocr_image(img, img_bytes)
+            if plan.use_image_vision:
+                await self._vision_image(img, img_bytes, note.title, semaphore)
             if img.is_cover and img.vision_description:
                 note.cover_description = img.vision_description
 
@@ -377,7 +388,7 @@ class NoteProcessor:
 
     # ── Video Processing Pipeline ────────────────────────────────
 
-    async def _process_video(self, note: NoteEntity) -> None:
+    async def _process_video(self, note: NoteEntity, plan: NoteExtractionPlan) -> None:
         """Process video note: poster OCR + Vision + Whisper, all in parallel."""
         if note.video is None:
             note.video = VideoInfo()
@@ -426,7 +437,7 @@ class NoteProcessor:
 
         # Run poster analysis + transcription in parallel
         async def poster_vision():
-            if not poster_bytes or not self.config.use_vision:
+            if not poster_bytes or not self.config.use_vision or not plan.use_image_vision:
                 return
             t0 = time.time()
             try:
@@ -443,7 +454,7 @@ class NoteProcessor:
                 self._log("vision_error", str(e)[:80])
 
         async def poster_ocr():
-            if not poster_bytes or not self.config.use_ocr:
+            if not poster_bytes or not self.config.use_ocr or not plan.use_image_ocr:
                 return
             t0 = time.time()
             ocr_text = await asyncio.to_thread(self.media.ocr_image, poster_bytes)
@@ -454,7 +465,7 @@ class NoteProcessor:
                 self._log("ocr_poster", f"{len(ocr_text)} chars", dt)
 
         async def transcribe():
-            if not processing_source or not self.config.use_whisper:
+            if not processing_source or not self.config.use_whisper or not plan.use_video_transcript:
                 return
             t0 = time.time()
             self._log("transcribe_start", "Downloading + transcribing video...")
@@ -492,14 +503,14 @@ class NoteProcessor:
                 self._log("transcribe_error", str(e)[:100])
 
         async def frame_understanding():
-            if not processing_source or not self.config.use_vision:
+            if not processing_source or not self.config.use_vision or not plan.use_video_frames:
                 return
             t0 = time.time()
             frame_paths = await self.media.extract_video_frames(
                 processing_source,
                 referer=XHSBrowser.XHS_REFERER if str(processing_source).startswith("http") else "",
                 max_seconds=self.config.max_video_frame_seconds,
-                num_frames=self.config.max_video_frame_samples,
+                num_frames=min(self.config.max_video_frame_samples, plan.max_video_frames),
                 timeout_s=self.config.transcription_timeout_s,
             )
             dt = time.time() - t0

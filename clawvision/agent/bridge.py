@@ -224,12 +224,33 @@ class ExtensionBridge:
         result = await self.send_command("create_background_window", {
             "url": url,
             "minimized": minimized,
+            "lock": True,
         })
         return result
 
     async def close_window(self, window_id: int) -> None:
         """Close a browser window by ID."""
         await self.send_command("close_window", {"windowId": window_id})
+
+    async def lock_active_tab(self, tab_id: int | None = None) -> dict:
+        """Pin automation to a specific tab so front-window browsing does not hijack it."""
+        params = {}
+        if tab_id is not None:
+            params["tabId"] = tab_id
+        return await self.send_command("lock_active_tab", params)
+
+    async def release_active_tab(self) -> dict:
+        """Release the pinned automation tab."""
+        return await self.send_command("release_active_tab")
+
+    async def press_key(self, key: str, *, code: str | None = None, windows_virtual_key_code: int | None = None) -> dict:
+        """Dispatch a real key press via CDP."""
+        params = {"key": key}
+        if code is not None:
+            params["code"] = code
+        if windows_virtual_key_code is not None:
+            params["windowsVirtualKeyCode"] = windows_virtual_key_code
+        return await self.send_command("press_key", params)
 
     async def reload_extension(self) -> None:
         """Reload the Chrome Extension to pick up code changes.

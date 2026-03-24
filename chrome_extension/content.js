@@ -160,6 +160,12 @@ function uniqueStrings(values) {
   return result;
 }
 
+function extractNoteIdFromUrl(url) {
+  const value = String(url || '');
+  const match = value.match(/\/(?:explore|search_result|discovery)\/([^/?#]+)/i);
+  return match ? match[1] : '';
+}
+
 function inferVideoKind(url) {
   const lower = String(url || '').toLowerCase();
   if (!lower) return 'unknown';
@@ -257,11 +263,23 @@ function collectVideoCandidates(videoEl) {
 
 // ── State Detection ────────────────────────────────────────────
 
+function detectAntiBotState() {
+  const url = window.location.href;
+  const pageText = document.body ? document.body.innerText : '';
+
+  if (url.includes('/404') || url.includes('error_code=')) return 'error_page';
+  if (/请扫码在手机上查看|扫码在手机上查看|在手机上查看/.test(pageText)) return 'mobile_only_gate';
+  if (/security verification|安全验证|请完成验证|请进行验证|滑块验证|验证码|拖动滑块/.test(pageText)) {
+    return 'security_verification';
+  }
+  return '';
+}
+
 function detectState() {
   const url = window.location.href;
+  const antiBotState = detectAntiBotState();
 
-  // Check for error/404 page
-  if (url.includes('/404') || url.includes('error_code=')) return 'error_page';
+  if (antiBotState) return antiBotState;
 
   // Check for note detail overlay first (can appear on any page)
   const overlay = document.querySelector(
@@ -270,7 +288,7 @@ function detectState() {
   if (overlay && overlay.offsetHeight > 0) return 'note_detail';
 
   // URL-based detection (only match actual explore URLs, not redirect params)
-  if (/\/explore\/[a-f0-9]{24}/.test(url)) return 'note_detail';
+  if (extractNoteIdFromUrl(url)) return 'note_detail';
   if (url.includes('/search_result') || url.includes('keyword=')) return 'search_results';
   if (url.includes('/user/profile/')) return 'profile_page';
   if (url.match(/xiaohongshu\.com\/?$/) || url.endsWith('/explore')) return 'homepage';
@@ -303,7 +321,7 @@ function extractSearchCards() {
 
     const link = linkEl ? linkEl.href : '';
     const noteId = card.dataset?.noteId
-      || link.match(/\/explore\/([a-f0-9]{24})/)?.[1]
+      || extractNoteIdFromUrl(link)
       || '';
     const hasVideo = !!card.querySelector(
       '.play-icon, .video-icon, svg[class*="video"], .duration'
@@ -440,7 +458,7 @@ function extractNoteContent() {
   note.type = detectNoteType();
   note.url = window.location.href;
   note.note_id =
-    window.location.href.match(/\/explore\/([a-f0-9]{24})/)?.[1]
+    extractNoteIdFromUrl(window.location.href)
     || document.querySelector('[data-note-id]')?.dataset?.noteId
     || '';
 
@@ -751,7 +769,7 @@ function extractProfileNotes() {
 
     const link = linkEl ? linkEl.href : '';
     const noteId = card.dataset?.noteId
-      || link.match(/\/explore\/([a-f0-9]{24})/)?.[1]
+      || extractNoteIdFromUrl(link)
       || '';
 
     // Detect video indicator
@@ -935,17 +953,34 @@ async function clickNoteCard(index) {
 }
 
 async function clickNoteByLink(url) {
-  // Try to find and click the card with matching link
-  const links = $$(`a[href*="${url}"]`);
+  if (!url) {
+    return { ok: false, error: 'Missing note URL' };
+  }
+
+  const links = $$('a[href]').filter((link) => link.href === url || link.href.includes(url));
   if (links.length > 0) {
+    const card = links[0].closest('section.note-item, [data-note-id]');
+    if (card) {
+      card.scrollIntoView({ behavior: 'instant', block: 'center' });
+      await wait(500);
+      const clickTarget = card.querySelector('.cover, .cover-ld, img, .note-cover') || card;
+      clickTarget.click();
+      await wait(2000);
+
+      const overlay = document.querySelector('.note-detail-mask, .note-overlay, .note-detail-modal');
+      if (overlay && overlay.offsetHeight > 0) {
+        return { ok: true, method: 'overlay' };
+      }
+      card.click();
+      await wait(2000);
+      return { ok: true, method: 'card_click' };
+    }
+
     links[0].click();
     await wait(2000);
-    return { ok: true };
+    return { ok: true, method: 'link_click' };
   }
-  // Fallback: navigate directly
-  window.location.href = url;
-  await wait(3000);
-  return { ok: true, method: 'navigate' };
+  return { ok: false, error: `No clickable card found for url: ${url}` };
 }
 
 async function clickNoteById(noteId) {
@@ -954,9 +989,10 @@ async function clickNoteById(noteId) {
   const cards = $$('section.note-item, [data-note-id]');
   for (const card of cards) {
     const link = card.querySelector('a[href]');
-    if (link && link.href.includes(noteId)) {
+    const cardNoteId = card.dataset?.noteId || card.getAttribute('data-note-id') || '';
+    if (cardNoteId === noteId || (link && link.href.includes(noteId))) {
       // Scroll card into view first
-      card.scrollIntoView({ behavior: 'smooth', block: 'center' });
+      card.scrollIntoView({ behavior: 'instant', block: 'center' });
       await wait(500);
       // Click cover image (not <a> tag) to trigger React modal
       const clickTarget = card.querySelector('.cover, .cover-ld, img, .note-cover') || card;
@@ -978,6 +1014,18 @@ async function clickNoteById(noteId) {
 }
 
 async function closeNoteDetail() {
+  const overlaySelectors = '.note-detail-mask, .note-overlay, .note-detail-modal, #noteContainer';
+
+  // First try Escape, which matches human keyboard behavior and is usually stable.
+  document.dispatchEvent(new KeyboardEvent('keydown', {
+    key: 'Escape', keyCode: 27, code: 'Escape', bubbles: true
+  }));
+  await wait(800);
+  let overlay = document.querySelector(overlaySelectors);
+  if (!overlay || overlay.offsetHeight === 0) {
+    return { ok: true, method: 'escape' };
+  }
+
   // Try close button — multiple selectors for different XHS layouts
   const closeSelectors = [
     '.close-circle',
@@ -996,27 +1044,13 @@ async function closeNoteDetail() {
       btn.click();
       await wait(1000);
       // Check if overlay is gone
-      const overlay = document.querySelector('.note-detail-mask, .note-overlay');
+      overlay = document.querySelector(overlaySelectors);
       if (!overlay || overlay.offsetHeight === 0) {
         return { ok: true, method: 'button', selector: sel };
       }
     }
   }
-
-  // Fallback: Escape key
-  document.dispatchEvent(new KeyboardEvent('keydown', {
-    key: 'Escape', keyCode: 27, code: 'Escape', bubbles: true
-  }));
-  await wait(1000);
-
-  // Fallback: browser back (via history)
-  if (window.location.href.includes('/explore/')) {
-    window.history.back();
-    await wait(1500);
-    return { ok: true, method: 'history_back' };
-  }
-
-  return { ok: true, method: 'escape' };
+  return { ok: false, error: 'Unable to close note overlay via escape or close button' };
 }
 
 async function scrollInNote(pixels = 400) {
@@ -1071,7 +1105,12 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
           break;
 
         case 'detect_state':
-          result = { state: detectState(), url: window.location.href, noteType: detectNoteType() };
+          result = {
+            state: detectState(),
+            antiBotState: detectAntiBotState(),
+            url: window.location.href,
+            noteType: detectNoteType(),
+          };
           break;
 
         case 'extract_search_cards':

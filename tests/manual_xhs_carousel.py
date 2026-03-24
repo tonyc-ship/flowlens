@@ -29,6 +29,7 @@ from clawvision.agent.media import MediaProcessor
 from clawvision.agent.xhs.browser import XHSBrowser
 from clawvision.agent.xhs.entities import Comment, NoteCard, NoteEntity, NoteType
 from clawvision.agent.xhs.processor import NoteProcessor, ProcessorConfig
+from clawvision.reporting import markdown_styles, render_markdown_block
 
 
 DEFAULT_OUTPUT_DIR = Path("test_carousel_output")
@@ -139,6 +140,7 @@ def generate_html_report(
         ".timing-table{border-collapse:collapse;width:100%;font-size:13px}",
         ".timing-table th,.timing-table td{border:1px solid #e5e7eb;padding:8px 10px;text-align:left}",
         ".timing-table th{background:#faf5eb}",
+        markdown_styles(),
         "</style></head><body>",
         "<h1>XHS Single Note Entity Report</h1>",
         f"<p class='meta'>Generated: {time.strftime('%Y-%m-%d %H:%M:%S')} | Keyword: {esc(keyword)} | Total: {total_dt:.2f}s</p>",
@@ -199,13 +201,16 @@ def generate_html_report(
         parts.append(f"<p><strong>Download error:</strong> {esc(video.download_error or 'none')}</p>")
         parts.append(f"<p><strong>Duration:</strong> {esc(video.duration_s)}</p>")
         if video.poster_description:
-            parts.append(f"<div class='vision'><strong>Poster vision:</strong> {esc(video.poster_description)}</div>")
+            parts.append("<strong>Poster vision</strong>")
+            parts.append(render_markdown_block(video.poster_description, "vision"))
         if video.poster_ocr:
             parts.append(f"<div class='ocr'><strong>Poster OCR:</strong>\n{esc(video.poster_ocr[:1200])}</div>")
         if video.visual_summary:
-            parts.append(f"<div class='vision'><strong>Visual summary:</strong> {esc(video.visual_summary)}</div>")
+            parts.append("<strong>Visual summary</strong>")
+            parts.append(render_markdown_block(video.visual_summary, "vision"))
         if video.transcript_summary:
-            parts.append(f"<div class='vision'><strong>Transcript summary:</strong> {esc(video.transcript_summary)}</div>")
+            parts.append("<strong>Transcript summary</strong>")
+            parts.append(render_markdown_block(video.transcript_summary, "vision"))
         if video.transcript:
             parts.append(f"<div class='ocr'><strong>Transcript:</strong>\n{esc(video.transcript[:4000])}</div>")
         if video.frame_descriptions or saved_video_frames:
@@ -218,7 +223,8 @@ def generate_html_report(
                     rel = os.path.relpath(frame_path, str(output_dir))
                     parts.append(f'<img src="{rel}" alt="frame {index}">')
                 if description:
-                    parts.append(f"<div class='vision'><strong>Vision:</strong> {esc(description[:600])}</div>")
+                    parts.append("<strong>Vision</strong>")
+                    parts.append(render_markdown_block(description[:1200], "vision"))
                 parts.append("</div>")
             parts.append("</div>")
         parts.append("</div>")
@@ -236,7 +242,8 @@ def generate_html_report(
             if img.ocr_text:
                 parts.append(f"<div class='ocr'><strong>OCR:</strong>\n{esc(img.ocr_text[:1200])}</div>")
             if img.vision_description:
-                parts.append(f"<div class='vision'><strong>Vision:</strong> {esc(img.vision_description[:600])}</div>")
+                parts.append("<strong>Vision</strong>")
+                parts.append(render_markdown_block(img.vision_description[:1200], "vision"))
             parts.append("</div>")
         parts.append("</div>")
 

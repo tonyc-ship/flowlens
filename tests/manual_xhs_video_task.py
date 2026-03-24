@@ -23,6 +23,8 @@ from datetime import datetime
 from html import escape
 from pathlib import Path
 
+from clawvision.reporting import markdown_styles, render_markdown_block
+
 # ── Configuration ──────────────────────────────────────────────
 
 OUTPUT_DIR = Path("task_video_output")
@@ -130,7 +132,7 @@ def generate_html_report(
           <p><strong>Details:</strong> {escape(verification.get('match_details',''))}</p>
           {"<p class='warn'>Missing: " + ', '.join(escape(m) for m in verification.get('missing_criteria',[])) + "</p>" if verification.get('missing_criteria') else ""}
           <p><strong>Should download:</strong> {verification.get('should_download', False)}</p>
-          <p style='font-size:12px;color:#555'>{escape(verification.get('reasoning','')[:400])}</p>
+          {render_markdown_block(verification.get('reasoning','')[:1200], 'vision')}
         </div>"""
 
     # Video section
@@ -144,18 +146,21 @@ def generate_html_report(
         if note.get("video_download_error"):
             video_html += f"<p class='warn'><strong>Error:</strong> {escape(note['video_download_error'])}</p>"
         if note.get("video_visual_summary"):
-            video_html += f"<h3>Visual Summary</h3><div class='vision'>{escape(note['video_visual_summary'])}</div>"
+            video_html += f"<h3>Visual Summary</h3>{render_markdown_block(note['video_visual_summary'], 'vision')}"
         frame_descs = note.get("video_frame_descriptions", [])
         if saved_frames:
             video_html += "<h3>Keyframes</h3><div class='img-grid'>"
             for i, fp in enumerate(saved_frames):
                 desc = frame_descs[i] if i < len(frame_descs) else ""
-                video_html += f"<div class='img-item'><img src='{escape(fp)}' class='note-img'><div class='vision'>{escape(desc[:200])}</div></div>"
+                video_html += (
+                    f"<div class='img-item'><img src='{escape(fp)}' class='note-img'>"
+                    f"{render_markdown_block(desc[:1200], 'vision') if desc else ''}</div>"
+                )
             video_html += "</div>"
         if note.get("transcript"):
             video_html += f"<h3>Transcript</h3><div class='ocr'>{escape(note['transcript'][:4000])}</div>"
         if note.get("transcript_summary"):
-            video_html += f"<h3>Summary</h3><div class='vision'>{escape(note['transcript_summary'])}</div>"
+            video_html += f"<h3>Summary</h3>{render_markdown_block(note['transcript_summary'], 'vision')}"
         video_html += "</div>"
 
     # Comments
@@ -176,7 +181,7 @@ def generate_html_report(
         <div class='card' style='border-left:4px solid #7c4dff;padding:10px 14px'>
           <div class='meta'>[{r['timestamp']:.1f}s] <strong>{escape(r['phase'])}</strong></div>
           <p style='margin:4px 0'><strong>Observed:</strong> {escape(r['observation'][:200])}</p>
-          <p style='margin:4px 0'><strong>Reasoning:</strong> {escape(r['reasoning'][:300])}</p>
+          {render_markdown_block(r['reasoning'][:1200], 'vision') if r.get('reasoning') else ''}
           <p style='margin:4px 0;color:#2e7d32'><strong>Decision:</strong> {escape(r['decision'][:200])}</p>
         </div>"""
 
@@ -227,6 +232,7 @@ img.note-img{{max-width:300px;max-height:400px;border:1px solid #ddd;border-radi
 .summary{{background:#e8f5e9;padding:16px;border-radius:8px;margin:12px 0;font-size:14px}}
 .warn{{color:#e65100;font-weight:bold}}.ok{{color:#2e7d32;font-weight:bold}}
 pre.log{{background:#263238;color:#eee;padding:16px;border-radius:8px;font-size:11px;overflow-x:auto;max-height:400px;overflow-y:auto}}
+{markdown_styles()}
 </style></head><body>
 <h1>Task Report</h1>
 <p class='meta'>Generated: {now} | Total: {total_time:.1f}s</p>

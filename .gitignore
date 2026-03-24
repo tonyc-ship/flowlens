@@ -15,5 +15,6 @@ tests/pipeline_comparison/
 tests/eval_report/
 research_output/
 user_analysis/
+task_runs/
 *_output/
 .DS_Store

@@ -37,6 +37,14 @@ State Transitions
 - profile_page -> note_detail      (click note card -> opens as modal overlay)
 - profile_page -> search_results   (browser back)
 
+Anti-Bot Prior
+--------------
+- Prefer opening notes from visible search/profile cards over direct `/explore/{note_id}`
+  navigation. XHS commonly throttles direct detail-page loads with 404 / scan-on-phone /
+  security verification while still allowing human-like in-page modal opens.
+- Prefer closing the modal via UI (`X` button or Escape) instead of reloading the search page.
+  Reloading adds request pressure and can reorder results, which hurts reproducibility.
+
 DOM Extraction Patterns
 -----------------------
 - Cards: each card has title text, author name, like count, cover image,
@@ -68,6 +76,7 @@ class XHSBrowser:
     """
 
     XHS_REFERER = "https://www.xiaohongshu.com/"
+    ANTI_BOT_STATES = {"error_page", "mobile_only_gate", "security_verification"}
 
     def __init__(self, bridge: ExtensionBridge):
         self.bridge = bridge
@@ -96,16 +105,39 @@ class XHSBrowser:
     async def is_anti_bot_page(self) -> bool:
         """Check if current page shows XHS anti-bot block (404/error)."""
         try:
+            state = await self.detect_state()
+            if state.get("state") in self.ANTI_BOT_STATES:
+                return True
             tab = await self.bridge.get_tab_info()
             title = tab.get("title", "")
             url = tab.get("url", "")
-            return (
-                "不见了" in title
-                or "Page Isn't Available" in title
-                or "404" in url
-            )
+            return "不见了" in title or "Page Isn't Available" in title or "404" in url
         except Exception:
             return False
+
+    @classmethod
+    def is_anti_bot_state(cls, state: str | None) -> bool:
+        return (state or "") in cls.ANTI_BOT_STATES
+
+    async def wait_for_state(
+        self,
+        expected: str | set[str] | tuple[str, ...] | list[str],
+        *,
+        timeout: float = 5.0,
+        poll: float = 0.5,
+    ) -> dict:
+        """Wait until detect_state() reports one of the expected values."""
+        targets = {expected} if isinstance(expected, str) else set(expected)
+        last_state: dict = {}
+        for _ in range(max(1, int(timeout / poll))):
+            try:
+                last_state = await self.detect_state()
+                if last_state.get("state") in targets:
+                    return last_state
+            except Exception:
+                pass
+            await asyncio.sleep(poll)
+        return last_state
 
     # ── DOM Extraction Commands ─────────────────────────────────
     # These forward to the XHS content script running on xiaohongshu.com
@@ -143,7 +175,11 @@ class XHSBrowser:
         deadline = asyncio.get_running_loop().time() + timeout_s
         last_state: dict = {}
         while asyncio.get_running_loop().time() < deadline:
-            last_state = await self.get_search_page_state()
+            try:
+                last_state = await self.get_search_page_state()
+            except Exception:
+                await asyncio.sleep(poll_s)
+                continue
             if last_state.get("card_count", 0) > 0 or last_state.get("has_no_results"):
                 return last_state
             await asyncio.sleep(poll_s)
@@ -194,8 +230,23 @@ class XHSBrowser:
         """Click a search/profile card by DOM index."""
         return await self.bridge.send_command("click_card", {"index": index})
 
+    async def click_note_link(self, url: str) -> dict:
+        """Click a specific search result note by its link."""
+        return await self.bridge.send_command("click_note_link", {"url": url})
+
+    async def click_note_by_id(self, note_id: str) -> dict:
+        """Click a specific search/profile note by its note_id."""
+        return await self.bridge.send_command("click_note_by_id", {"note_id": note_id})
+
     async def close_note(self) -> dict:
         """Close the note detail overlay."""
+        try:
+            await self.bridge.press_key("Escape", code="Escape", windows_virtual_key_code=27)
+            state = await self.wait_for_state({"search_results", "profile_page", "homepage"}, timeout=2.5)
+            if state.get("state") in {"search_results", "profile_page", "homepage"}:
+                return {"ok": True, "method": "cdp_escape"}
+        except Exception:
+            pass
         return await self.bridge.send_command("close_note")
 
     async def scroll_note(self, pixels: int = 400) -> dict:
@@ -217,31 +268,34 @@ class XHSBrowser:
 
         Returns True if overlay opened successfully.
         """
+        try:
         # Step 1: Scroll card into view (instant, not smooth — avoid coord mismatch)
-        scroll_js = f"""
+            scroll_js = f"""
             const cards = document.querySelectorAll('section.note-item, [data-note-id]');
             for (const card of cards) {{
                 const link = card.querySelector('a[href]');
-                if (link && link.href.includes('{note_id}')) {{
+                const cardNoteId = card.dataset?.noteId || card.getAttribute('data-note-id') || '';
+                if (cardNoteId === '{note_id}' || (link && link.href.includes('{note_id}'))) {{
                     card.scrollIntoView({{ behavior: 'instant', block: 'center' }});
                     return {{ ok: true }};
                 }}
             }}
             return {{ ok: false, error: 'Card not found' }};
         """
-        scroll_result = await self.bridge.run_js(scroll_js)
-        sv = scroll_result.get("value", scroll_result)
-        if not (isinstance(sv, dict) and sv.get("ok")):
-            return False
+            scroll_result = await self.bridge.run_js(scroll_js)
+            sv = scroll_result.get("value", scroll_result)
+            if not (isinstance(sv, dict) and sv.get("ok")):
+                return False
 
-        await asyncio.sleep(0.5)
+            await asyncio.sleep(0.5)
 
         # Step 2: Get accurate bounding rect after scroll settled
-        rect_js = f"""
+            rect_js = f"""
             const cards = document.querySelectorAll('section.note-item, [data-note-id]');
             for (const card of cards) {{
                 const link = card.querySelector('a[href]');
-                if (link && link.href.includes('{note_id}')) {{
+                const cardNoteId = card.dataset?.noteId || card.getAttribute('data-note-id') || '';
+                if (cardNoteId === '{note_id}' || (link && link.href.includes('{note_id}'))) {{
                     const target = card.querySelector('.cover, .cover-ld, img, .note-cover') || card;
                     const rect = target.getBoundingClientRect();
                     return {{
@@ -253,25 +307,90 @@ class XHSBrowser:
             }}
             return {{ ok: false, error: 'Card not found' }};
         """
-        locate_result = await self.bridge.run_js(rect_js)
-        value = locate_result.get("value", locate_result)
-        if not (isinstance(value, dict) and value.get("ok")):
-            return False
+            locate_result = await self.bridge.run_js(rect_js)
+            value = locate_result.get("value", locate_result)
+            if not (isinstance(value, dict) and value.get("ok")):
+                return False
 
         # Step 3: CDP real mouse move + click (human-like timing)
-        cx, cy = value["x"], value["y"]
-        await self.bridge.mouse_move(cx, cy)
-        await asyncio.sleep(0.3 + 0.2 * random.random())
-        await self.bridge.click_at(cx, cy)
+            cx, cy = value["x"], value["y"]
+            await self.bridge.mouse_move(cx, cy)
+            await asyncio.sleep(0.3 + 0.2 * random.random())
+            await self.bridge.click_at(cx, cy)
 
         # Step 4: Wait for overlay to open and content to load
-        return await self.wait_for_overlay(timeout=5.0)
+            if await self.wait_for_overlay(timeout=5.0):
+                return True
+            state = await self.wait_for_state("note_detail", timeout=3.0)
+            return state.get("state") == "note_detail"
+        except Exception:
+            return False
+
+    async def open_note_on_search(self, note_id: str) -> bool:
+        """Open a search result note via CDP real mouse click."""
+        if not note_id:
+            return False
+
+        try:
+            scroll_js = f"""
+            const cards = document.querySelectorAll('section.note-item, [data-note-id]');
+            for (const card of cards) {{
+                const link = card.querySelector('a[href]');
+                const cardNoteId = card.dataset?.noteId || card.getAttribute('data-note-id') || '';
+                if (cardNoteId === '{note_id}' || (link && link.href.includes('{note_id}'))) {{
+                    card.scrollIntoView({{ behavior: 'instant', block: 'center' }});
+                    return {{ ok: true }};
+                }}
+            }}
+            return {{ ok: false, error: 'Card not found' }};
+        """
+            scroll_result = await self.bridge.run_js(scroll_js)
+            sv = scroll_result.get("value", scroll_result)
+            if not (isinstance(sv, dict) and sv.get("ok")):
+                return False
+
+            await asyncio.sleep(0.5)
+
+            rect_js = f"""
+            const cards = document.querySelectorAll('section.note-item, [data-note-id]');
+            for (const card of cards) {{
+                const link = card.querySelector('a[href]');
+                const cardNoteId = card.dataset?.noteId || card.getAttribute('data-note-id') || '';
+                if (cardNoteId === '{note_id}' || (link && link.href.includes('{note_id}'))) {{
+                    const target = card.querySelector('.cover, .cover-ld, img, .note-cover') || card;
+                    const rect = target.getBoundingClientRect();
+                    return {{
+                        ok: true,
+                        x: Math.round(rect.left + rect.width / 2),
+                        y: Math.round(rect.top + rect.height / 2),
+                    }};
+                }}
+            }}
+            return {{ ok: false, error: 'Card not found' }};
+        """
+            locate_result = await self.bridge.run_js(rect_js)
+            value = locate_result.get("value", locate_result)
+            if not (isinstance(value, dict) and value.get("ok")):
+                return False
+
+            cx = value["x"] + random.randint(-4, 4)
+            cy = value["y"] + random.randint(-4, 4)
+            await self.bridge.mouse_move(cx, cy)
+            await asyncio.sleep(0.2 + 0.15 * random.random())
+            await self.bridge.click_at(cx, cy)
+            if await self.wait_for_overlay(timeout=5.0):
+                return True
+            state = await self.wait_for_state("note_detail", timeout=3.0)
+            return state.get("state") == "note_detail"
+        except Exception:
+            return False
 
     async def wait_for_overlay(self, timeout: float = 5.0) -> bool:
         """Poll for XHS note overlay to open with content loaded."""
         for _ in range(int(timeout / 0.5)):
             await asyncio.sleep(0.5)
-            check = await self.bridge.run_js("""
+            try:
+                check = await self.bridge.run_js("""
                 const overlay = document.querySelector(
                     '.note-detail-mask, .note-overlay, .note-detail-modal, .note-detail'
                 );
@@ -281,6 +400,11 @@ class XHSBrowser:
                     hasTitle: !!(title && title.textContent.trim()),
                 };
             """)
+            except Exception:
+                state = await self.wait_for_state(self.ANTI_BOT_STATES, timeout=0.5, poll=0.25)
+                if self.is_anti_bot_state(state.get("state")):
+                    return False
+                continue
             ov = check.get("value", check)
             if isinstance(ov, dict) and ov.get("overlay") and ov.get("hasTitle"):
                 await asyncio.sleep(1)

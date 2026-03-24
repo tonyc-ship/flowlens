@@ -20,9 +20,11 @@ from pathlib import Path
 
 from ..bridge import ExtensionBridge
 from ..media import MediaProcessor
+from ...reporting import markdown_styles, render_markdown_block
+from .capabilities import NoteExtractionPlan, deep_note_plan, lite_note_plan
 from .browser import XHSBrowser
 from .entities import (
-    AuthorEntity, Comment, NoteCard, NoteEntity, NoteType,
+    AuthorEntity, Comment, NoteCard, NoteEntity, NoteType, parse_count_text,
 )
 from .processor import NoteProcessor, ProcessorConfig, TimingRecord
 
@@ -30,13 +32,24 @@ from .processor import NoteProcessor, ProcessorConfig, TimingRecord
 @dataclass
 class UserAnalysisConfig:
     max_scroll_rounds: int = 30
-    max_notes_to_detail: int = 10
+    max_timeline_samples: int = 12
+    max_deep_notes: int = 4
+    lite_comment_count: int = 4
+    lite_comment_scrolls: int = 0
     max_comments_per_note: int = 20
     max_comment_scrolls: int = 2
+    inter_note_pause_s: float = 1.2
+    anti_bot_backoff_s: float = 8.0
     screenshot_dir: str = "screenshots"
     # NoteProcessor config
     max_images_per_note: int = 10
     vision_concurrency: int = 3
+
+
+@dataclass
+class CreatorSample:
+    card: NoteCard
+    note: NoteEntity | None = None
 
 
 class XHSUserAnalyzer:
@@ -49,6 +62,7 @@ class XHSUserAnalyzer:
         config: UserAnalysisConfig | None = None,
         browser: XHSBrowser | None = None,
         media: MediaProcessor | None = None,
+        manage_bridge_lifecycle: bool | None = None,
     ):
         self.config = config or UserAnalysisConfig()
         self.output_dir = Path(output_dir)
@@ -61,6 +75,9 @@ class XHSUserAnalyzer:
             bridge = ExtensionBridge(port=port)
             self.browser = XHSBrowser(bridge)
             bridge.on_log(self._log_step)
+        self.manage_bridge_lifecycle = (
+            browser is None if manage_bridge_lifecycle is None else manage_bridge_lifecycle
+        )
 
         self.media = media or MediaProcessor()
 
@@ -117,22 +134,22 @@ class XHSUserAnalyzer:
             self._log_step("screenshot_error", f"{label}: {e}")
             return ""
 
-    async def _collect_note_comments(self) -> list[Comment]:
+    async def _collect_note_comments(self, max_comments: int, max_scrolls: int) -> list[Comment]:
         """Collect and merge hot comments across several scroll rounds."""
         merged: list[Comment] = []
-        for round_idx in range(self.config.max_comment_scrolls + 1):
+        for round_idx in range(max_scrolls + 1):
             raw_comments = await self.browser.extract_comments(
-                max_comments=self.config.max_comments_per_note,
+                max_comments=max_comments,
                 prefer_hot=True,
             )
             merged = NoteEntity.merge_comments(
                 [*merged, *[Comment.from_dom_dict(c) for c in raw_comments]]
             )
-            if round_idx >= self.config.max_comment_scrolls:
+            if round_idx >= max_scrolls:
                 break
             await self.browser.scroll_note(400)
             await asyncio.sleep(1)
-        return merged[:self.config.max_comments_per_note]
+        return merged[:max_comments]
 
     # ── Main Flow ───────────────────────────────────────────────
 
@@ -144,8 +161,11 @@ class XHSUserAnalyzer:
 
         self._log_step("start", f"Analyzing user: {user_url}")
 
-        await self.browser.bridge.start()
-        self._log_step("bridge_ready", f"WebSocket on port {self.browser.bridge.port}")
+        if self.manage_bridge_lifecycle:
+            await self.browser.bridge.start()
+            self._log_step("bridge_ready", f"WebSocket on port {self.browser.bridge.port}")
+        else:
+            self._log_step("bridge_ready", f"Using external bridge on port {self.browser.bridge.port}")
         print("\n  >>> Waiting for Chrome Extension to connect. <<<\n")
         await self.browser.bridge.wait_for_connection(timeout=120)
 
@@ -168,21 +188,17 @@ class XHSUserAnalyzer:
         author.note_cards = await self._collect_all_notes()
         self._log_step("cards_total", f"{len(author.note_cards)} posts collected")
 
-        # Sort by engagement for priority processing
-        def parse_likes(s: str) -> float:
-            s = str(s).replace('万', '0000').replace('w', '0000').replace(',', '')
-            try:
-                return float(s)
-            except (ValueError, TypeError):
-                return 0
-        author.note_cards.sort(key=lambda c: parse_likes(c.likes), reverse=True)
+        lite_samples = self._select_timeline_samples(author.note_cards, self.config.max_timeline_samples)
+        self._log_step("timeline_pick", f"{len(lite_samples)} cards selected for lite timeline read")
 
-        # Process top notes in detail → NoteEntities
         anti_bot_strikes = 0
-        max_detail = min(self.config.max_notes_to_detail, len(author.note_cards))
-        for i, card in enumerate(author.note_cards[:max_detail]):
-            self._log_step("process_note", f"[{i+1}/{max_detail}] {card.title[:40]}")
-            result = await self._process_note(card, profile_url)
+        lite_plan = lite_note_plan(
+            max_comments=self.config.lite_comment_count,
+            max_comment_scrolls=self.config.lite_comment_scrolls,
+        )
+        for index, sample in enumerate(lite_samples, start=1):
+            self._log_step("lite_read", f"[{index}/{len(lite_samples)}] {sample.card.title[:40]}")
+            result = await self._process_note(sample.card, profile_url, lite_plan)
             if result is None:
                 continue
             if result == "anti_bot":
@@ -194,8 +210,31 @@ class XHSUserAnalyzer:
                     break
             else:
                 anti_bot_strikes = 0
+                sample.note = result
                 author.detailed_notes.append(result)
-            if i < max_detail - 1:
+            if index < len(lite_samples):
+                await asyncio.sleep(2)
+
+        deep_targets = self._pick_deep_samples(lite_samples, self.config.max_deep_notes)
+        self._log_step("deep_pick", f"{len(deep_targets)} lite notes selected for deep read")
+
+        deep_plan = deep_note_plan(
+            max_comments=self.config.max_comments_per_note,
+            max_comment_scrolls=self.config.max_comment_scrolls,
+            max_images=self.config.max_images_per_note,
+        )
+        for index, sample in enumerate(deep_targets, start=1):
+            self._log_step("deep_read", f"[{index}/{len(deep_targets)}] {sample.card.title[:40]}")
+            result = await self._process_note(sample.card, profile_url, deep_plan)
+            if isinstance(result, NoteEntity):
+                sample.note = result
+                for note_index, existing in enumerate(author.detailed_notes):
+                    if existing.note_id and existing.note_id == result.note_id:
+                        author.detailed_notes[note_index] = result
+                        break
+                else:
+                    author.detailed_notes.append(result)
+            if index < len(deep_targets):
                 await asyncio.sleep(2)
 
         # LLM synthesis
@@ -223,6 +262,11 @@ class XHSUserAnalyzer:
         report = {
             "profile": author.to_report_dict(),
             "profile_url": profile_url,
+            "sampling": {
+                "timeline_samples": len(lite_samples),
+                "deep_reads": len(deep_targets),
+                "total_cards": len(author.note_cards),
+            },
             "all_cards": [
                 {"note_id": c.note_id, "title": c.title, "author": c.author_name,
                  "likes": c.likes, "type": c.note_type.value, "link": c.link}
@@ -239,8 +283,73 @@ class XHSUserAnalyzer:
         }
 
         self._save_report(report)
-        await self.browser.bridge.stop()
+        if self.manage_bridge_lifecycle:
+            await self.browser.bridge.stop()
         return report
+
+    def _select_timeline_samples(self, cards: list[NoteCard], sample_count: int) -> list[CreatorSample]:
+        if len(cards) <= sample_count:
+            return [CreatorSample(card=card) for card in cards]
+
+        selected_indexes: set[int] = set()
+        if sample_count > 1:
+            for index in range(sample_count // 2):
+                selected_indexes.add(round(index * (len(cards) - 1) / max(1, (sample_count // 2) - 1)))
+        else:
+            selected_indexes.add(0)
+
+        by_signal = sorted(
+            enumerate(cards),
+            key=lambda item: parse_count_text(item[1].likes),
+            reverse=True,
+        )
+        for index, _card in by_signal:
+            if len(selected_indexes) >= sample_count:
+                break
+            selected_indexes.add(index)
+
+        ordered = sorted(selected_indexes)[:sample_count]
+        return [CreatorSample(card=cards[index]) for index in ordered]
+
+    def _pick_deep_samples(self, samples: list[CreatorSample], max_picks: int) -> list[CreatorSample]:
+        available = [sample for sample in samples if sample.note]
+        if len(available) <= max_picks:
+            return available
+
+        sample_summaries = [
+            {
+                "index": idx,
+                "position": sample.note.source_position,
+                "title": sample.note.title,
+                "date": sample.note.date,
+                "likes": sample.note.likes,
+                "favorites": sample.note.favorites,
+                "comments": sample.note.comments_count,
+                "type": sample.note.note_type.value,
+                "content_preview": sample.note.content[:220],
+                "format_hints": sample.note.format_hints,
+            }
+            for idx, sample in enumerate(available)
+        ]
+        with self._timed("llm_pick_deep_notes"):
+            raw = self.media.call_text(
+                "你正在做一个小红书作者起号拆解任务。下面这些帖子已经完成了轻量阅读：\n"
+                f"{json.dumps(sample_summaries, ensure_ascii=False, indent=1)}\n\n"
+                f"请选择 {max_picks} 篇最值得深读的帖子。优先考虑：阶段代表性、爆款信号、内容差异、可能的增长节点。"
+                "返回 JSON 数组，内容为 index 整数。",
+                768,
+            )
+        picks = self.media.extract_json(raw)
+        if isinstance(picks, list):
+            selected = [sample for idx, sample in enumerate(available) if idx in {int(v) for v in picks if isinstance(v, int)}]
+            if selected:
+                return selected[:max_picks]
+
+        return sorted(
+            available,
+            key=lambda sample: parse_count_text(sample.note.likes) + parse_count_text(sample.note.favorites),
+            reverse=True,
+        )[:max_picks]
 
     # ── Collect All Post Cards ──────────────────────────────────
 
@@ -272,7 +381,7 @@ class XHSUserAnalyzer:
     # ── Process Single Note ─────────────────────────────────────
 
     async def _process_note(
-        self, card: NoteCard, profile_url: str
+        self, card: NoteCard, profile_url: str, plan: NoteExtractionPlan
     ) -> NoteEntity | str | None:
         """Open a note from profile, extract and process, return to profile."""
         note_t0 = time.time()
@@ -282,22 +391,72 @@ class XHSUserAnalyzer:
         if not note_id and not card.link:
             return None
 
-        # Strategy 1: CDP real mouse click on card cover
-        try:
-            opened_as_overlay = await self.browser.open_note_on_profile(note_id)
-            if not opened_as_overlay:
-                raise RuntimeError("Overlay did not open")
-        except Exception as e:
-            self._log_step("click_failed", f"Card click failed: {e}")
-            note_url = f"https://www.xiaohongshu.com/explore/{note_id}" if note_id else card.link
-            await self.browser.navigate(note_url, wait_ms=5000)
-            await asyncio.sleep(3)
+        async def ensure_profile_context() -> dict:
+            try:
+                current_state = await self.browser.detect_state()
+            except Exception:
+                current_state = {}
+            try:
+                current_url = (await self.browser.get_tab_info()).get("url", "")
+            except Exception:
+                current_url = ""
 
-            if await self.browser.is_anti_bot_page():
-                self._log_step("anti_bot_detected", "Page blocked by anti-bot")
-                await self.browser.navigate(profile_url, wait_ms=5000)
-                await asyncio.sleep(2)
+            if current_state.get("state") == "profile_page" and current_url == profile_url:
+                return current_state
+
+            await self.browser.navigate(profile_url, wait_ms=5000)
+            await asyncio.sleep(2)
+            return await self.browser.detect_state()
+
+        async def ensure_note_detail(label: str, wait_s: float = 1.5) -> bool:
+            await asyncio.sleep(wait_s)
+            last_state = {}
+            for _ in range(3):
+                try:
+                    last_state = await self.browser.detect_state()
+                    if last_state.get("state") == "note_detail":
+                        return True
+                except Exception as exc:
+                    self._log_step("state_probe_retry", f"{label}: {exc}")
+                await asyncio.sleep(1)
+            self._log_step("state_probe", f"{label}: {last_state.get('state', 'unknown')}")
+            return False
+
+        async def handle_anti_bot(label: str, state: dict | None = None) -> bool:
+            detected = (state or {}).get("state", "")
+            if not self.browser.is_anti_bot_state(detected):
+                return False
+            self._log_step("anti_bot_detected", f"{label}: {detected}")
+            await asyncio.sleep(self.config.anti_bot_backoff_s)
+            await ensure_profile_context()
+            return True
+
+        await ensure_profile_context()
+
+        if note_id:
+            self._log_step("open_attempt", f"dom note_id={note_id}")
+            click_result = await self.browser.click_note_by_id(note_id)
+            if click_result.get("ok"):
+                opened_as_overlay = await ensure_note_detail("profile_note_id_click")
+
+        if not opened_as_overlay and card.position is not None:
+            self._log_step("open_attempt", f"position={card.position}")
+            click_result = await self.browser.click_card(card.position)
+            if click_result.get("ok"):
+                opened_as_overlay = await ensure_note_detail("profile_position_click")
+
+        if not opened_as_overlay and note_id:
+            self._log_step("open_attempt", f"cdp note_id={note_id}")
+            opened_as_overlay = await self.browser.open_note_on_profile(note_id)
+            if opened_as_overlay:
+                opened_as_overlay = await ensure_note_detail("cdp_profile_click")
+
+        state = await self.browser.detect_state()
+        if state.get("state") != "note_detail":
+            if await handle_anti_bot("open_note", state):
                 return "anti_bot"
+            self._log_step("state_mismatch", f"Expected note_detail, got {state.get('state')}")
+            return None
 
         # Screenshot
         safe_label = re.sub(r'[^\w]', '_', card.title[:20]).strip('_') or note_id[:8]
@@ -310,6 +469,10 @@ class XHSUserAnalyzer:
         note.note_id = note_id
         note.card_likes = card.likes
         note.source_context = "profile"
+        note.source_position = card.position
+        note.extraction_level = plan.level.value
+        note.requested_sections = plan.requested_sections
+        note.applied_capabilities = list(plan.capabilities)
         if note_screenshot:
             note.screenshot_path = note_screenshot
         dom_dt = time.time() - t0
@@ -319,7 +482,7 @@ class XHSUserAnalyzer:
         if not note.has_content:
             try:
                 state = await self.browser.detect_state()
-                if state.get("state") in ("error", "unknown"):
+                if self.browser.is_anti_bot_state(state.get("state")) or state.get("state") in ("error", "unknown"):
                     self._log_step("anti_bot_detected", f"Empty content, state={state.get('state')}")
                     if opened_as_overlay:
                         await self.browser.close_note()
@@ -338,20 +501,21 @@ class XHSUserAnalyzer:
             duration=dom_dt,
         )
 
-        # NoteProcessor handles all media — DOM-first, carousel/vision-fallback
-        await self.processor.process_note(note)
+        if plan.use_media:
+            await self.processor.process_note(note, plan)
 
         # Comments → Comment entities
-        t0 = time.time()
-        note.comments = await self._collect_note_comments()
-        note.refresh_derived_fields()
-        comments_dt = time.time() - t0
-        self.timing.record("comments_extract", comments_dt)
-        self._log_step(
-            "comments",
-            f"{len(note.comments)} comments, hottest={note.hottest_comments(1)[0].like_count if note.comments else 0}",
-            duration=comments_dt,
-        )
+        if plan.include_comments:
+            t0 = time.time()
+            note.comments = await self._collect_note_comments(plan.max_comments, plan.max_comment_scrolls)
+            note.refresh_derived_fields()
+            comments_dt = time.time() - t0
+            self.timing.record("comments_extract", comments_dt)
+            self._log_step(
+                "comments",
+                f"{len(note.comments)} comments, hottest={note.hottest_comments(1)[0].like_count if note.comments else 0}",
+                duration=comments_dt,
+            )
 
         # Completeness
         comp = note.completeness
@@ -367,25 +531,39 @@ class XHSUserAnalyzer:
 
         # Return to profile
         if opened_as_overlay:
-            await self.browser.close_note()
-            await asyncio.sleep(1.5)
+            close_result = await self.browser.close_note()
+            self._log_step("close_note", close_result.get("method", "unknown"))
+            close_state = await self.browser.wait_for_state(
+                {"profile_page", "homepage", *self.browser.ANTI_BOT_STATES},
+                timeout=4.0,
+            )
+            if await handle_anti_bot("close_note", close_state):
+                return note
+            if close_state.get("state") != "profile_page":
+                await ensure_profile_context()
         else:
-            await self.browser.navigate(profile_url, wait_ms=5000)
-            await asyncio.sleep(2)
+            await ensure_profile_context()
+        await asyncio.sleep(self.config.inter_note_pause_s)
 
         return note
 
     # ── LLM Analysis ────────────────────────────────────────────
 
     def _analyze_content_strategy(self, author: AuthorEntity) -> str:
-        post_summaries = []
-        for c in author.note_cards:
-            post_summaries.append(f"- {c.title[:50]} | likes={c.likes} | type={c.note_type.value}")
-
-        note_summaries = [n.to_summary() for n in author.detailed_notes]
+        post_summaries = [
+            {
+                "position": card.position,
+                "title": card.title[:60],
+                "likes": card.likes,
+                "type": card.note_type.value,
+            }
+            for card in author.note_cards[:80]
+        ]
+        note_summaries = [note.to_summary() for note in author.detailed_notes]
 
         prompt = (
-            f"请对以下小红书用户进行深度分析，用中文输出一份详细的研究报告。\n\n"
+            "请基于下面的小红书账号资料，输出一份“作者起号拆解”Markdown 报告。"
+            "不要写成散文，要用短 bullet 和证据表达。\n\n"
             f"## 用户信息\n"
             f"昵称: {author.name}\n"
             f"简介: {author.bio}\n"
@@ -394,20 +572,23 @@ class XHSUserAnalyzer:
             f"获赞与收藏: {author.total_likes}\n"
             f"认证: {author.verify_text or '无'}\n"
             f"标签: {', '.join(author.tags)}\n\n"
-            f"## 全部帖子概览 ({len(author.note_cards)} 篇)\n"
-            + "\n".join(post_summaries[:50]) + "\n\n"
-            f"## 详细分析的帖子 ({len(note_summaries)} 篇)\n"
-            f"{json.dumps(note_summaries, ensure_ascii=False, indent=1)}\n\n"
-            f"请从以下角度进行分析：\n"
-            f"1. **赛道定位**：这个账号属于什么垂直领域？细分赛道是什么？\n"
-            f"2. **内容策略**：发布频率、内容形式（图文vs视频比例）、标题风格、标签策略\n"
-            f"3. **爆款分析**：哪些帖子数据最好？为什么？有什么共同特点？\n"
-            f"4. **人设打造**：这个创作者的人设/定位是什么？TA是如何建立信任的？\n"
-            f"5. **涨粉策略**：从粉丝量和内容质量推测TA是怎么涨起来的\n"
-            f"6. **值得学习的点**：对于想模仿/学习这个账号的人，有哪些可复制的经验？\n"
-            f"7. **不足与建议**：有哪些可以改进的地方？\n"
+            f"## 帖子卡片概览\n{json.dumps(post_summaries, ensure_ascii=False, indent=1)}\n\n"
+            f"## 轻量/深度样本\n{json.dumps(note_summaries, ensure_ascii=False, indent=1)}\n\n"
+            "必须包含这些部分：\n"
+            "## Coverage\n"
+            "## 定位与内容支柱\n"
+            "## 时间线与阶段\n"
+            "## 增长信号\n"
+            "## 可能的商业化/买量信号\n"
+            "## 可复制动作\n"
+            "## Unknowns\n\n"
+            "要求：\n"
+            "- 时间线部分必须引用帖子标题和日期/位置线索\n"
+            "- 对“买量/投放”只能给出代理信号，不能无证据下结论\n"
+            "- 明确哪些判断来自 deep read，哪些来自 lite read\n"
+            "- 总长度控制在 30 行左右，不要冗长\n"
         )
-        return self.media.call_text(prompt, 4096)
+        return self.media.call_text(prompt, 3072)
 
     # ── Report ──────────────────────────────────────────────────
 
@@ -453,15 +634,19 @@ class XHSUserAnalyzer:
             ".card-mini .title{font-weight:bold;color:#333}.card-mini .stats{color:#888;font-size:11px}",
             ".timing{background:#e8f5e9;padding:12px;border-radius:6px;font-size:13px;margin:10px 0}",
             ".log{font-family:monospace;font-size:11px;color:#666;max-height:400px;overflow-y:auto;background:#f5f5f5;padding:10px;border-radius:6px}",
+            markdown_styles(),
             "</style></head><body>",
         ]
 
         parts.append(f"<h1>XHS User Analysis: {_esc(profile.get('name', ''))}</h1>")
 
         timing = data.get("timing", {})
+        sampling = data.get("sampling", {})
         parts.append(
             f"<div class='timing'>Total posts: {len(all_cards)} | "
             f"Detailed: {len(detailed)} | "
+            f"Timeline samples: {sampling.get('timeline_samples', '?')} | "
+            f"Deep reads: {sampling.get('deep_reads', '?')} | "
             f"Data collection: {timing.get('data_collection_s', '?')}s | "
             f"Total: {timing.get('total_s', '?')}s</div>"
         )
@@ -492,7 +677,7 @@ class XHSUserAnalyzer:
             parts.append(f'<img class="screenshot" src="{rel}" alt="profile">')
 
         # Analysis
-        parts.append(f"<h2>Strategy Analysis</h2><div class='analysis'>{_esc(data.get('analysis', ''))}</div>")
+        parts.append(f"<h2>Strategy Analysis</h2><div class='analysis'>{render_markdown_block(data.get('analysis', ''))}</div>")
 
         # All posts overview
         parts.append(f"<h2>All Posts ({len(all_cards)})</h2>")
@@ -516,8 +701,11 @@ class XHSUserAnalyzer:
                 f"Likes: {_esc(note.get('likes', '?'))} | "
                 f"Favorites: {_esc(note.get('favorites', '?'))} | "
                 f"Comments: {_esc(note.get('comments_count', '?'))} | "
-                f"Images: {note.get('image_count', '?')}</p>"
+                f"Images: {note.get('image_count', '?')} | "
+                f"Level: {_esc(note.get('extraction_level', ''))}</p>"
             )
+            if note.get("applied_capabilities"):
+                parts.append(f"<p class='meta'>Capabilities: {_esc(', '.join(note['applied_capabilities']))}</p>")
             if note.get("author_url"):
                 parts.append(f"<p class='meta'>Author URL: <a href=\"{_esc(note['author_url'])}\" target=\"_blank\">{_esc(note['author_url'])}</a></p>")
             if note.get("location") or note.get("ip_location"):
@@ -550,13 +738,13 @@ class XHSUserAnalyzer:
                 parts.append("</div>")
 
             if note.get("cover_description"):
-                parts.append(f"<h4>Cover Image (Vision)</h4><p>{_esc(note['cover_description'])}</p>")
+                parts.append("<h4>Cover Image (Vision)</h4>")
+                parts.append(render_markdown_block(note["cover_description"][:1600], "vision"))
 
             if note.get("image_descriptions"):
-                parts.append("<h4>Image Content (Vision)</h4><ol>")
+                parts.append("<h4>Image Content (Vision)</h4>")
                 for desc in note["image_descriptions"]:
-                    parts.append(f"<li>{_esc(desc[:300])}</li>")
-                parts.append("</ol>")
+                    parts.append(render_markdown_block(desc[:1200], "vision"))
 
             if note.get("ocr_results"):
                 parts.append("<h4>Text in Images (OCR)</h4>")
@@ -564,7 +752,8 @@ class XHSUserAnalyzer:
                     parts.append(f"<div class='ocr'>Image {r['image_index']+1}:\n{_esc(r['text'][:500])}</div>")
 
             if note.get("transcript_summary"):
-                parts.append(f"<h4>Video Transcript Summary</h4><div class='transcript'>{_esc(note['transcript_summary'])}</div>")
+                parts.append("<h4>Video Transcript Summary</h4>")
+                parts.append(render_markdown_block(note["transcript_summary"][:2000], "transcript"))
             if note.get("transcript"):
                 parts.append(f"<details><summary>Full transcript ({len(note['transcript'])} chars)</summary><div class='transcript'>{_esc(note['transcript'][:2000])}</div></details>")
             if note.get("video_resolved_url") or note.get("video_url"):
