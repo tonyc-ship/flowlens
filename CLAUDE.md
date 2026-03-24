@@ -17,6 +17,8 @@ clawvision/
 ├── clawvision/
 │   ├── cli.py                        # Primary CLI entry
 │   ├── __main__.py                   # `python -m clawvision`
+│   ├── extension_cli.py              # `python -m clawvision extension ...`
+│   ├── extension_ops.py              # Generic extension operational reports / commands
 │   ├── server.py                     # Archived-route compatibility stub
 │   ├── runtime.py                    # Local env / path discovery
 │   ├── reporting.py                  # Shared markdown/html report rendering
@@ -48,6 +50,7 @@ clawvision/
 │   ├── test_task_specs.py            # Structured task tests
 │   ├── test_task_agent.py            # Task-agent parsing tests
 │   ├── test_xhs_capabilities.py      # Capability / extraction-plan tests
+│   ├── test_extension_ops.py         # Extension operation report tests
 │   └── test_reporting.py             # Shared report rendering tests
 └── archive/
     └── legacy_mcp/                   # Archived screen-level MCP route
@@ -91,6 +94,10 @@ Every task run must produce:
 
 When blocked by something that needs manual browser/UI interaction (reload Chrome extension, click dialogs, navigate chrome:// pages, approve permissions), use macOS Accessibility APIs (screen.py, pyautogui, AppleScript) to do it instead of asking the user. This also serves as self-hosting validation of ClawVision's own capabilities.
 
+For extension reload specifically:
+- Prefer the built-in runtime path first: `bridge.reload_extension()` or `python -m clawvision extension reload`
+- If the extension is too broken or disconnected to reload itself, then fall back to macOS Accessibility on `chrome://extensions/`
+
 ### Autonomous long-horizon work
 
 Do as much as possible autonomously — verify each step, then present the final result. Don't stop to ask the user for simple operational steps. Auto-open browsers/websites as needed.
@@ -131,6 +138,21 @@ New generic capabilities (background windows, dedup, session recording) belong i
 5. `research.py` / `user_analysis.py` orchestrate note collection using `lite` and `deep` extraction plans.
 6. `processor.py` enriches notes with OCR, image descriptions, and video transcription when the chosen plan requires it.
 7. The agent writes JSON + HTML reports plus a session GIF to `task_runs/` or a custom output dir.
+
+## Extension Ops
+
+Generic extension operational commands live outside the XHS task layer.
+
+- `python -m clawvision extension reload`
+
+This path exercises the real ClawVision bridge:
+1. Python starts a local bridge server.
+2. The running extension connects back.
+3. Python sends `reload_extension`.
+4. The background worker calls `chrome.runtime.reload()`.
+5. Python waits for the fresh post-reload reconnection and writes a small HTML/JSON operation report.
+
+This is the preferred path for “reload the extension” because it validates the actual runtime, not just the Chrome UI.
 
 ## Setup
 
@@ -179,6 +201,7 @@ Primary CLI:
 clawvision "露营装备"
 clawvision "露营装备" --keywords "露营装备推荐,露营好物"
 clawvision --user "https://www.xiaohongshu.com/user/profile/xxx"
+clawvision extension reload
 ```
 
 Equivalent:
@@ -186,6 +209,7 @@ Equivalent:
 ```bash
 python -m clawvision "露营装备"
 python -m clawvision --user <user_id>
+python -m clawvision extension reload
 ```
 
 ## Manual Integration Scripts
