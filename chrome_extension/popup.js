@@ -36,7 +36,24 @@ $('disconnectBtn').addEventListener('click', () => {
   });
 });
 
+// ── Observer ──────────────────────────────────────────────────
+$('observerBtn').addEventListener('click', () => {
+  chrome.tabs.create({ url: chrome.runtime.getURL('observer_viewer.html') });
+});
+
+function updateObserverStats() {
+  chrome.storage.local.get(['observer_stats'], (result) => {
+    const s = result.observer_stats;
+    if (s && s.total_events > 0) {
+      $('observerStats').textContent =
+        `${s.total_events} events recorded across ${s.sessions || 0} sessions`;
+    }
+  });
+}
+updateObserverStats();
+
 // Poll status every 2s while popup is open
 setInterval(() => {
   chrome.runtime.sendMessage({ action: 'get_status' }, updateUI);
+  updateObserverStats();
 }, 2000);

@@ -26,7 +26,7 @@
   "content_scripts": [
     {
       "matches": ["https://www.xiaohongshu.com/*"],
-      "js": ["content.js"],
+      "js": ["content.js", "observer.js"],
       "run_at": "document_idle"
     }
   ],

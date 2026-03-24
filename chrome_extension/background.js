@@ -351,6 +351,22 @@ async function handleCommand(msg) {
       });
     }
 
+    // ── Observer data (Python agent can pull learned observations) ──
+
+    case 'get_observer_data': {
+      const keys = ['observer_events', 'observer_stats'];
+      const result = await chrome.storage.local.get(keys);
+      return {
+        events: result.observer_events || [],
+        stats: result.observer_stats || {},
+      };
+    }
+
+    case 'clear_observer_data': {
+      await chrome.storage.local.remove(['observer_events', 'observer_stats']);
+      return { ok: true };
+    }
+
     // ── Forwarded to content script ──
 
     default:
