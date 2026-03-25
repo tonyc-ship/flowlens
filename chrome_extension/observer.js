@@ -109,43 +109,29 @@
     };
   }
 
-  /** Lightweight DOM structure snapshot — captures the "shape" of a page. */
+  /** Lightweight page type snapshot — just type + URL pattern, no full DOM tree.
+   *  The agent can always read the live DOM; saving the tree wastes context. */
   function snapshotPageStructure() {
-    const walk = (el, depth = 0, maxDepth = 4, maxChildren = 10) => {
-      if (!el || depth > maxDepth) return null;
-      const tag = el.tagName?.toLowerCase();
-      if (!tag) return null;
-
-      const classes = [...(el.classList || [])]
-        .filter(c => c.length < 30 && !/^[a-f0-9]{6,}$|^css-/.test(c))
-        .slice(0, 3);
-      const role = el.getAttribute?.('role') || '';
-      const childElements = [...el.children].slice(0, maxChildren);
-      const children = childElements
-        .map(c => walk(c, depth + 1, maxDepth, maxChildren))
-        .filter(Boolean);
-
-      const node = { tag };
-      if (classes.length) node.classes = classes;
-      if (role) node.role = role;
-      if (children.length) node.children = children;
-      // Count total descendants for density info
-      if (el.children.length > maxChildren) {
-        node.total_children = el.children.length;
+    // Identify scrollable containers on this page type (useful for scroll automation)
+    const scrollables = [];
+    for (const el of document.querySelectorAll('*')) {
+      if (el.scrollHeight > el.clientHeight + 50 && el.clientHeight > 100) {
+        const path = getCssPath(el, 3);
+        if (!scrollables.some(s => s.path === path)) {
+          scrollables.push({
+            path,
+            scroll_height: el.scrollHeight,
+            client_height: el.clientHeight,
+          });
+        }
+        if (scrollables.length >= 5) break;
       }
-      return node;
-    };
-
-    // Snapshot main content area, not entire page
-    const contentRoot =
-      document.querySelector('main, #app, #root, [id*="content"], .main-content') ||
-      document.body;
+    }
 
     return {
       page_type: detectPageType(),
       url_pattern: location.pathname.replace(/[a-f0-9]{24}/g, '{id}').replace(/\d{10,}/g, '{num}'),
-      viewport: { w: window.innerWidth, h: window.innerHeight },
-      tree: walk(contentRoot, 0, 4, 8),
+      scrollable_containers: scrollables,
     };
   }
 
@@ -183,13 +169,24 @@
     });
   }
 
-  function onScroll() {
+  function onScroll(e) {
     const now = Date.now();
     if (now - lastScrollTime < SCROLL_DEBOUNCE) return;
     lastScrollTime = now;
 
-    const scrollY = window.scrollY;
-    const maxScroll = document.documentElement.scrollHeight - window.innerHeight;
+    const target = e?.target;
+    const isContainer = target && target !== document && target !== document.documentElement;
+
+    let scrollY, maxScroll, containerPath;
+    if (isContainer && target.scrollHeight > target.clientHeight) {
+      scrollY = target.scrollTop;
+      maxScroll = target.scrollHeight - target.clientHeight;
+      containerPath = getCssPath(target);
+    } else {
+      scrollY = window.scrollY;
+      maxScroll = document.documentElement.scrollHeight - window.innerHeight;
+      containerPath = 'window';
+    }
     const scrollPct = maxScroll > 0 ? Math.round((scrollY / maxScroll) * 100) : 0;
 
     record({
@@ -197,6 +194,7 @@
       scroll_y: Math.round(scrollY),
       scroll_pct: scrollPct,
       direction: scrollY > (window._lastScrollY || 0) ? 'down' : 'up',
+      container: containerPath,
     });
     window._lastScrollY = scrollY;
   }
@@ -327,6 +325,9 @@
     // Attach listeners
     document.addEventListener('click', onClickCapture, true); // Capture phase
     window.addEventListener('scroll', onScroll, { passive: true });
+    // Capture scroll events on inner containers (comments, note panel, feed)
+    // Using capture phase so we see scrolls on any scrollable element
+    document.addEventListener('scroll', onScroll, { passive: true, capture: true });
 
     // SPA navigation detection (XHS uses History API)
     const origPushState = history.pushState;

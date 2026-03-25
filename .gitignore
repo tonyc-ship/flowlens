@@ -18,3 +18,4 @@ user_analysis/
 task_runs/
 *_output/
 .DS_Store
+knowledge_output/
