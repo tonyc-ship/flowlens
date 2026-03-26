@@ -13,7 +13,7 @@ The old screen-level MCP route has been archived under `archive/legacy_mcp/`.
 
 ```
 clawvision/
-├── chrome_extension/                 # MV3 extension: websocket, CDP, DOM extraction
+├── chrome_extension/                 # MV3 extension: websocket, CDP, DOM extraction, watch mode
 ├── clawvision/
 │   ├── cli.py                        # Primary CLI entry
 │   ├── __main__.py                   # `python -m clawvision`
@@ -24,7 +24,8 @@ clawvision/
 │   ├── reporting.py                  # Shared markdown/html report rendering
 │   ├── agent/
 │   │   ├── bridge.py                 # WebSocket bridge to the extension
-│   │   ├── media.py                  # Anthropic, OCR, transcription helpers
+│   │   ├── local_llm.py              # Local MLX inference (Qwen3.5-9B-MLX-4bit)
+│   │   ├── media.py                  # LLM calls (text+vision), OCR, transcription
 │   │   ├── task_agent.py             # Generic task understanding / assessment
 │   │   ├── tasks.py                  # Structured task definitions
 │   │   └── xhs/
@@ -46,6 +47,7 @@ clawvision/
 │   ├── manual_xhs_research.py        # Manual integration script
 │   ├── manual_xhs_user_analysis.py   # Manual integration script
 │   ├── manual_xhs_carousel.py        # Manual media pipeline script
+│   ├── manual_local_llm.py           # Manual local-vs-remote backend comparison
 │   ├── manual_xhs_task_workflows.py  # Manual task-layer integration script
 │   ├── test_task_specs.py            # Structured task tests
 │   ├── test_task_agent.py            # Task-agent parsing tests
@@ -161,6 +163,7 @@ This is the preferred path for “reload the extension” because it validates t
 ```bash
 pip install -e .
 pip install -e ".[detect]"   # optional local detection models
+pip install -e ".[local-llm]" # optional local MLX backend
 ```
 
 ### Chrome Extension
@@ -189,9 +192,31 @@ Supported keys:
 
 ```bash
 ANTHROPIC_API_KEY=...
+CLAWVISION_LLM_BACKEND=...           # "sonnet" (default) or "qwen-local"
 CLAWVISION_WHISPER_CLI=...
 CLAWVISION_WHISPER_MODELS_DIR=...
 ```
+
+### Local LLM (optional)
+
+ClawVision supports local inference via MLX as an alternative to the Anthropic API:
+
+```bash
+# Download model (~6.3GB)
+modelscope download --model mlx-community/Qwen3.5-9B-MLX-4bit \
+  --local_dir ~/.clawvision/weights/Qwen3.5-9B-MLX-4bit
+
+# Switch to local backend
+export CLAWVISION_LLM_BACKEND=qwen-local
+```
+
+The local backend uses **Qwen3.5-9B-MLX-4bit** via `mlx-vlm`, which is natively
+multimodal (early-fusion) — the same model handles both text reasoning and
+vision/screenshot understanding. Requires the `local-llm` extra or equivalent
+manual installation of `mlx-lm`, `mlx-vlm`, and `modelscope`.
+
+Backend can also be set per-instance via `MediaConfig(backend="qwen-local")` or
+`VisionLLM(backend="qwen-local")`.
 
 ## Running
 
@@ -212,6 +237,12 @@ python -m clawvision --user <user_id>
 python -m clawvision extension reload
 ```
 
+Watch-mode live debugging:
+
+```bash
+python -m clawvision extension watch
+```
+
 ## Manual Integration Scripts
 
 ```bash
@@ -220,6 +251,7 @@ python tests/manual_xhs_research.py -t 4
 python tests/manual_xhs_user_analysis.py --find
 python tests/manual_xhs_user_analysis.py --user <url_or_id>
 python tests/manual_xhs_carousel.py
+python tests/manual_local_llm.py --local-only
 python tests/manual_xhs_task_workflows.py --preset topic_research
 python tests/manual_xhs_task_workflows.py --preset creator_growth
 ```

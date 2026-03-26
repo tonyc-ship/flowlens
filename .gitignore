@@ -19,3 +19,5 @@ task_runs/
 *_output/
 .DS_Store
 knowledge_output/
+.claude/
+tests/test_local_llm_results.md

@@ -23,6 +23,11 @@ ocr = [
     "paddleocr>=2.7.0",
     "opencv-python>=4.9.0",
 ]
+local-llm = [
+    "mlx-lm>=0.31.0",
+    "mlx-vlm>=0.4.0",
+    "modelscope>=1.28.0",
+]
 all = [
     "clawvision[detect,ocr]",
 ]

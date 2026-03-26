@@ -1,4 +1,10 @@
-"""Claude Vision API for high-level page understanding.
+"""Vision LLM for high-level page understanding.
+
+Supports two backends (selected via ``CLAWVISION_LLM_BACKEND`` env var or
+constructor ``backend`` kwarg):
+
+- ``"sonnet"`` (default) — Anthropic Claude Vision API
+- ``"qwen-local"`` — local Qwen3.5-9B-MLX-4bit via mlx-vlm
 
 Used for:
 - Identifying page type (search results, note detail, login, etc.)
@@ -11,20 +17,54 @@ from __future__ import annotations
 
 import base64
 import io
+import json
+import logging
+import os
 
 import anthropic
 from PIL import Image
 
 from ..runtime import load_runtime_env
 
+logger = logging.getLogger(__name__)
+
+BACKEND_SONNET = "sonnet"
+BACKEND_QWEN_LOCAL = "qwen-local"
+
+
+def _resolve_backend(explicit: str | None = None) -> str:
+    val = explicit or os.environ.get("CLAWVISION_LLM_BACKEND", "")
+    val = val.strip().lower()
+    if val in (BACKEND_QWEN_LOCAL, "qwen", "local"):
+        return BACKEND_QWEN_LOCAL
+    return BACKEND_SONNET
+
 
 class VisionLLM:
-    """High-level visual understanding via Claude Vision API."""
+    """High-level visual understanding via Claude Vision or local MLX model."""
 
-    def __init__(self, model: str = "claude-sonnet-4-6"):
+    def __init__(self, model: str = "claude-sonnet-4-6", *, backend: str | None = None):
         load_runtime_env()
-        self.client = anthropic.Anthropic()
         self.model = model
+        self.backend = _resolve_backend(backend)
+        self._anthropic_client = None
+        self._local_llm = None
+        logger.info("VisionLLM using backend: %s", self.backend)
+
+    @property
+    def client(self):
+        """Lazy Anthropic client."""
+        if self._anthropic_client is None:
+            self._anthropic_client = anthropic.Anthropic()
+        return self._anthropic_client
+
+    @property
+    def local_llm(self):
+        """Lazy local LLM."""
+        if self._local_llm is None:
+            from ..agent.local_llm import LocalLLM
+            self._local_llm = LocalLLM()
+        return self._local_llm
 
     MAX_IMAGE_BYTES = 4_800_000  # Stay under Anthropic's 5MB limit
     MAX_IMAGE_PIXELS = 1568  # Max dimension for efficient API usage
@@ -53,6 +93,42 @@ class VisionLLM:
             image.save(buffer, format="JPEG", quality=85)
         return base64.standard_b64encode(buffer.getvalue()).decode("utf-8")
 
+    # ── Core dispatch ─────────────────────────────────────────
+
+    def _call_vision(
+        self, image: Image.Image, prompt: str, max_tokens: int = 1024,
+    ) -> str:
+        """Dispatch a vision call to the active backend."""
+        if self.backend == BACKEND_QWEN_LOCAL:
+            img_b64 = self._image_to_base64(image)
+            return self.local_llm.call_vision(
+                img_b64, prompt, media_type="image/png", max_tokens=max_tokens,
+            )
+        # Anthropic backend
+        response = self.client.messages.create(
+            model=self.model,
+            max_tokens=max_tokens,
+            messages=[
+                {
+                    "role": "user",
+                    "content": [
+                        {
+                            "type": "image",
+                            "source": {
+                                "type": "base64",
+                                "media_type": "image/png",
+                                "data": self._image_to_base64(image),
+                            },
+                        },
+                        {"type": "text", "text": prompt},
+                    ],
+                }
+            ],
+        )
+        return response.content[0].text
+
+    # ── Public API (unchanged signatures) ─────────────────────
+
     def analyze_page(
         self, screenshot: Image.Image, question: str | None = None, *, max_tokens: int = 1024
     ) -> str:
@@ -72,35 +148,14 @@ class VisionLLM:
             "4. What interactive elements (buttons, inputs, links) are available?\n"
             "Be concise and structured."
         )
-
-        response = self.client.messages.create(
-            model=self.model,
-            max_tokens=max_tokens,
-            messages=[
-                {
-                    "role": "user",
-                    "content": [
-                        {
-                            "type": "image",
-                            "source": {
-                                "type": "base64",
-                                "media_type": "image/png",
-                                "data": self._image_to_base64(screenshot),
-                            },
-                        },
-                        {"type": "text", "text": prompt},
-                    ],
-                }
-            ],
-        )
-        return response.content[0].text
+        return self._call_vision(screenshot, prompt, max_tokens=max_tokens)
 
     def locate_element(
         self,
         screenshot: Image.Image,
         element_description: str,
     ) -> dict | None:
-        """Ask Claude to locate a UI element and return its approximate position.
+        """Ask the model to locate a UI element and return its approximate position.
 
         Returns dict with keys: found (bool), x, y, width, height, confidence, description
         """
@@ -114,33 +169,11 @@ class VisionLLM:
             "If not found, respond: {\"found\": false, \"description\": \"<why not found>\"}"
         )
 
-        response = self.client.messages.create(
-            model=self.model,
-            max_tokens=256,
-            messages=[
-                {
-                    "role": "user",
-                    "content": [
-                        {
-                            "type": "image",
-                            "source": {
-                                "type": "base64",
-                                "media_type": "image/png",
-                                "data": self._image_to_base64(screenshot),
-                            },
-                        },
-                        {"type": "text", "text": prompt},
-                    ],
-                }
-            ],
-        )
-
-        import json
-
+        text = self._call_vision(screenshot, prompt, max_tokens=256)
         try:
-            return json.loads(response.content[0].text)
+            return json.loads(text)
         except json.JSONDecodeError:
-            return {"found": False, "description": f"Failed to parse response: {response.content[0].text}"}
+            return {"found": False, "description": f"Failed to parse response: {text}"}
 
     def decide_action(self, screenshot: Image.Image, goal: str, history: list[str]) -> str:
         """Given a goal and action history, decide what to do next.

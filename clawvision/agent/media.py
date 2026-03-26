@@ -2,29 +2,51 @@
 
 Provides LLM calls (text + vision), Apple OCR, whisper transcription,
 and image utilities. Reusable across platforms.
+
+LLM backend is selected via ``CLAWVISION_LLM_BACKEND`` env var or
+``MediaConfig.backend``:
+
+- ``"sonnet"`` (default) — Anthropic Claude Sonnet API
+- ``"qwen-local"`` — local Qwen3.5-9B-MLX-4bit via mlx-vlm
 """
 
 from __future__ import annotations
 
 import base64
 import json
+import logging
+import os
 import re
 import shutil
 import tempfile
 import urllib.request
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from pathlib import Path
 
 import anthropic
 
 from ..runtime import load_runtime_env
 
+logger = logging.getLogger(__name__)
+
 DEFAULT_MODEL = "claude-sonnet-4-6"
+BACKEND_SONNET = "sonnet"
+BACKEND_QWEN_LOCAL = "qwen-local"
+
+
+def _resolve_backend(explicit: str | None = None) -> str:
+    """Return the active LLM backend name."""
+    val = explicit or os.environ.get("CLAWVISION_LLM_BACKEND", "")
+    val = val.strip().lower()
+    if val in (BACKEND_QWEN_LOCAL, "qwen", "local"):
+        return BACKEND_QWEN_LOCAL
+    return BACKEND_SONNET
 
 
 @dataclass
 class MediaConfig:
     model: str = DEFAULT_MODEL
+    backend: str = ""  # "" = auto-detect from env
     use_apple_ocr: bool = True
     use_whisper: bool = True
     use_vision: bool = True
@@ -37,13 +59,33 @@ class MediaProcessor:
     def __init__(self, config: MediaConfig | None = None):
         load_runtime_env()
         self.config = config or MediaConfig()
-        self.client = anthropic.Anthropic()
+        self.backend = _resolve_backend(self.config.backend)
+        self._anthropic_client = None
+        self._local_llm = None
         self._ocr = None
         self._transcriber = None
+        logger.info("MediaProcessor using backend: %s", self.backend)
+
+    @property
+    def client(self):
+        """Lazy Anthropic client — only created when the sonnet backend is used."""
+        if self._anthropic_client is None:
+            self._anthropic_client = anthropic.Anthropic()
+        return self._anthropic_client
+
+    @property
+    def local_llm(self):
+        """Lazy local LLM — only loaded when the qwen-local backend is used."""
+        if self._local_llm is None:
+            from .local_llm import LocalLLM
+            self._local_llm = LocalLLM()
+        return self._local_llm
 
     # ── LLM Calls ───────────────────────────────────────────────
 
     def call_text(self, prompt: str, max_tokens: int = 2048) -> str:
+        if self.backend == BACKEND_QWEN_LOCAL:
+            return self.local_llm.call_text(prompt, max_tokens=max_tokens)
         resp = self.client.messages.create(
             model=self.config.model,
             max_tokens=max_tokens,
@@ -58,6 +100,10 @@ class MediaProcessor:
         media_type: str = "image/jpeg",
         max_tokens: int = 1024,
     ) -> str:
+        if self.backend == BACKEND_QWEN_LOCAL:
+            return self.local_llm.call_vision(
+                image_b64, prompt, media_type=media_type, max_tokens=max_tokens,
+            )
         if "," in image_b64:
             image_b64 = image_b64.split(",", 1)[1]
         resp = self.client.messages.create(

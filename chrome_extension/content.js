@@ -11,6 +11,54 @@
  * - Scroll within note detail panel (not page scroll)
  */
 
+// ── Watch Mode: Element Highlighting ──────────────────────────
+
+function watchHighlightElement(el) {
+  if (!el) return;
+  const rect = el.getBoundingClientRect();
+  const overlay = document.createElement('div');
+  overlay.className = 'clawvision-element-highlight';
+  overlay.style.cssText = [
+    'position: fixed',
+    `left: ${rect.left - 3}px`,
+    `top: ${rect.top - 3}px`,
+    `width: ${rect.width + 6}px`,
+    `height: ${rect.height + 6}px`,
+    'border: 2px solid #ff2442',
+    'border-radius: 4px',
+    'background: rgba(255, 36, 66, 0.08)',
+    'pointer-events: none',
+    'z-index: 2147483646',
+    'box-shadow: 0 0 12px rgba(255, 36, 66, 0.3), inset 0 0 12px rgba(255, 36, 66, 0.05)',
+    'transition: opacity 0.6s ease-out',
+    'opacity: 1',
+  ].join(';');
+
+  // Label showing what element was targeted
+  const label = document.createElement('div');
+  const tag = el.tagName.toLowerCase();
+  const cls = el.className ? '.' + String(el.className).split(' ')[0] : '';
+  label.textContent = tag + cls;
+  label.style.cssText = [
+    'position: absolute',
+    'top: -20px',
+    'left: 0',
+    'background: #ff2442',
+    'color: white',
+    'font-size: 10px',
+    'font-family: -apple-system, sans-serif',
+    'padding: 1px 6px',
+    'border-radius: 3px',
+    'white-space: nowrap',
+    'pointer-events: none',
+  ].join(';');
+  overlay.appendChild(label);
+  document.documentElement.appendChild(overlay);
+
+  setTimeout(() => { overlay.style.opacity = '0'; }, 1400);
+  setTimeout(() => { overlay.remove(); }, 2000);
+}
+
 // ── Utility ────────────────────────────────────────────────────
 
 function $(selector, root = document) {
@@ -410,6 +458,7 @@ async function clickSearchTab(label) {
     if (!(el instanceof HTMLElement)) continue;
     const rect = el.getBoundingClientRect();
     if (rect.width < 24 || rect.height < 18) continue;
+    watchHighlightElement(el);
     el.click();
     await wait(1500);
     return {
@@ -936,6 +985,7 @@ async function clickNoteCard(index) {
   // Clicking the <a> tag directly causes full navigation which XHS blocks (404).
   const clickTarget = card.querySelector('.cover, .cover-ld, img, .note-cover')
                       || card;
+  watchHighlightElement(clickTarget);
   clickTarget.click();
 
   await wait(2000);
@@ -964,6 +1014,7 @@ async function clickNoteByLink(url) {
       card.scrollIntoView({ behavior: 'instant', block: 'center' });
       await wait(500);
       const clickTarget = card.querySelector('.cover, .cover-ld, img, .note-cover') || card;
+      watchHighlightElement(clickTarget);
       clickTarget.click();
       await wait(2000);
 
@@ -976,6 +1027,7 @@ async function clickNoteByLink(url) {
       return { ok: true, method: 'card_click' };
     }
 
+    watchHighlightElement(links[0]);
     links[0].click();
     await wait(2000);
     return { ok: true, method: 'link_click' };
@@ -996,6 +1048,7 @@ async function clickNoteById(noteId) {
       await wait(500);
       // Click cover image (not <a> tag) to trigger React modal
       const clickTarget = card.querySelector('.cover, .cover-ld, img, .note-cover') || card;
+      watchHighlightElement(clickTarget);
       clickTarget.click();
       await wait(2000);
 

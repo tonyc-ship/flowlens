@@ -11,6 +11,11 @@
  *
  * Forwards to content script:
  *   - All DOM extraction and action commands
+ *
+ * Watch mode:
+ *   - Broadcasts all agent commands/responses to the injected watch panel
+ *   - Sends click highlights before CDP clicks
+ *   - Re-injects watch panel on navigation
  */
 
 const DEFAULT_PORT = 8765;
@@ -22,6 +27,12 @@ let contentReady = new Map(); // tabId -> true
 let reconnectTimer = null;
 let wsPort = DEFAULT_PORT;
 let debuggerQueue = Promise.resolve();
+
+// ── Watch Mode State ──────────────────────────────────────────
+let watchMode = false;
+let watchStartTime = Date.now();
+let watchLog = [];           // Buffered entries for re-injection
+const WATCH_LOG_MAX = 500;
 
 function targetTabId() {
   return pinnedTabId || activeTabId;
@@ -61,6 +72,58 @@ async function withTabDebugger(tabId, work, timeoutMs = 5000) {
       try { await chrome.debugger.detach(target); } catch {}
     }
   });
+}
+
+// ── Watch Mode Helpers ────────────────────────────────────────
+
+function watchElapsed() {
+  return Math.round((Date.now() - watchStartTime) / 100) / 10;
+}
+
+function broadcastWatch(data) {
+  if (!watchMode) return;
+  // Add timestamp if missing
+  if (data.timestamp === undefined) data.timestamp = watchElapsed();
+
+  watchLog.push(data);
+  if (watchLog.length > WATCH_LOG_MAX) watchLog.shift();
+
+  const tabId = targetTabId();
+  if (!tabId) return;
+  try {
+    chrome.tabs.sendMessage(tabId, { type: 'watch_event', data });
+  } catch {}
+}
+
+function broadcastHighlight(mode, opts) {
+  if (!watchMode) return;
+  const tabId = targetTabId();
+  if (!tabId) return;
+  try {
+    chrome.tabs.sendMessage(tabId, { type: 'watch_highlight', mode, ...opts });
+  } catch {}
+}
+
+async function injectWatchPanel(tabId) {
+  if (!tabId) return;
+  try {
+    await chrome.scripting.executeScript({
+      target: { tabId },
+      files: ['watch_panel.js'],
+    });
+    // Send history after a short delay for panel to initialize
+    setTimeout(() => {
+      try {
+        chrome.tabs.sendMessage(tabId, {
+          type: 'watch_load_history',
+          entries: watchLog,
+          startTime: watchStartTime,
+        });
+      } catch {}
+    }, 300);
+  } catch (err) {
+    console.log('[BG] Failed to inject watch panel:', err.message);
+  }
 }
 
 // ── WebSocket Connection ───────────────────────────────────────
@@ -104,12 +167,43 @@ function connect(port) {
 
     if (msg.type !== 'command') return;
 
+    // ── Watch mode: broadcast incoming command ──
+    if (watchMode && msg.action !== 'watch_log' && msg.action !== 'capture_screenshot') {
+      const kind = categorizeAction(msg.action);
+      broadcastWatch({
+        kind,
+        action: msg.action,
+        params: sanitizeParams(msg.params),
+        message: describeCommand(msg.action, msg.params),
+      });
+    }
+
+    const cmdStart = Date.now();
     let response;
     try {
       const result = await handleCommand(msg);
       response = { id: msg.id, type: 'response', data: result };
+
+      // ── Watch mode: broadcast result ──
+      if (watchMode && msg.action !== 'watch_log' && msg.action !== 'capture_screenshot') {
+        broadcastWatch({
+          kind: 'result',
+          action: msg.action,
+          message: describeResult(msg.action, result),
+          duration: (Date.now() - cmdStart) / 1000,
+        });
+      }
     } catch (err) {
       response = { id: msg.id, type: 'response', error: err.message };
+
+      // ── Watch mode: broadcast error ──
+      if (watchMode) {
+        broadcastWatch({
+          kind: 'error',
+          action: msg.action,
+          message: `${msg.action} failed: ${err.message}`,
+        });
+      }
     }
 
     try {
@@ -140,6 +234,89 @@ function disconnect() {
   if (ws) {
     ws.close();
     ws = null;
+  }
+}
+
+// ── Watch Mode: Command Categorization ────────────────────────
+
+function categorizeAction(action) {
+  if (['click_at', 'click_card', 'click_note_by_id', 'click_note_link', 'click_search_tab'].includes(action)) return 'click';
+  if (['extract_search_cards', 'extract_note_content', 'extract_comments', 'extract_profile_info', 'extract_profile_notes', 'extract_search_tabs', 'get_search_page_state', 'collect_carousel_images'].includes(action)) return 'extract';
+  if (['navigate', 'scroll_page', 'scroll_note', 'press_key', 'mouse_move', 'run_js'].includes(action)) return 'action';
+  if (['create_background_window', 'create_watch_window', 'create_tab', 'close_window', 'lock_active_tab', 'release_active_tab', 'set_active_tab', 'get_tab_info'].includes(action)) return 'action';
+  if (['detect_state'].includes(action)) return 'info';
+  return 'command';
+}
+
+function sanitizeParams(params) {
+  if (!params) return {};
+  const clean = { ...params };
+  // Don't send large code blocks or binary data to watch panel
+  if (clean.code && clean.code.length > 200) clean.code = clean.code.slice(0, 200) + '…';
+  delete clean.screenshot;
+  return clean;
+}
+
+function describeCommand(action, params) {
+  if (!params) params = {};
+  switch (action) {
+    case 'navigate': return `Navigate → ${params.url || ''}`.slice(0, 120);
+    case 'click_at': return `CDP click at (${params.x}, ${params.y})`;
+    case 'click_card': return `Click card #${params.index}`;
+    case 'click_note_by_id': return `Click note ${params.note_id || params.noteId || ''}`;
+    case 'click_note_link': return `Click note link: ${params.url || ''}`.slice(0, 100);
+    case 'click_search_tab': return `Switch tab → ${params.label || ''}`;
+    case 'extract_search_cards': return 'Extract search cards from DOM';
+    case 'extract_note_content': return 'Extract note content';
+    case 'extract_comments': return `Extract comments (max: ${params.max_comments || 'all'})`;
+    case 'extract_profile_info': return 'Extract profile info';
+    case 'extract_profile_notes': return 'Extract profile notes';
+    case 'collect_carousel_images': return 'Collecting carousel images';
+    case 'detect_state': return 'Detect page state';
+    case 'scroll_page': return `Scroll page ${params.pixels || 600}px`;
+    case 'scroll_note': return `Scroll note ${params.pixels || 400}px`;
+    case 'press_key': return `Press key: ${params.key || '?'}`;
+    case 'run_js': return 'Execute JavaScript';
+    case 'get_tab_info': return 'Get tab info';
+    case 'create_background_window': return 'Create background window';
+    case 'create_watch_window': return 'Create watch window';
+    default: return action;
+  }
+}
+
+function describeResult(action, result) {
+  if (!result) return 'OK';
+  switch (action) {
+    case 'navigate': return `Navigated to ${result.url || 'page'}`.slice(0, 100);
+    case 'detect_state': return `State: ${result.state || '?'}${result.antiBotState ? ' ⚠ ' + result.antiBotState : ''}`;
+    case 'extract_search_cards': {
+      const cards = result.cards || [];
+      return `Found ${cards.length} card${cards.length !== 1 ? 's' : ''}`;
+    }
+    case 'extract_note_content': {
+      const note = result.note || {};
+      return note.title ? `"${note.title}"`.slice(0, 100) : 'Note extracted';
+    }
+    case 'extract_comments': {
+      const comments = result.comments || [];
+      return `${comments.length} comment${comments.length !== 1 ? 's' : ''}`;
+    }
+    case 'extract_profile_info': {
+      const p = result.profile || {};
+      return p.name ? `Profile: ${p.name}` : 'Profile extracted';
+    }
+    case 'extract_profile_notes': {
+      const notes = result.notes || [];
+      return `${notes.length} note${notes.length !== 1 ? 's' : ''}`;
+    }
+    case 'collect_carousel_images': {
+      const urls = result.image_urls || [];
+      return `${urls.length} image${urls.length !== 1 ? 's' : ''}`;
+    }
+    case 'click_at': return `Clicked at (${result.x}, ${result.y})`;
+    case 'get_tab_info': return `${result.title || result.url || ''}`.slice(0, 100);
+    case 'get_search_page_state': return `${result.card_count || 0} cards${result.has_no_results ? ' (no results)' : ''}`;
+    default: return result.ok ? 'OK' : JSON.stringify(result).slice(0, 100);
   }
 }
 
@@ -199,6 +376,10 @@ async function handleCommand(msg) {
       await chrome.tabs.update(tabId, { url: params.url });
       // Wait for page load + content script injection
       await waitForContentScript(tabId, params.wait || 5000);
+      // Re-inject watch panel after navigation
+      if (watchMode) {
+        await injectWatchPanel(tabId);
+      }
       return { ok: true, url: params.url };
     }
 
@@ -255,10 +436,102 @@ async function handleCommand(msg) {
       return { ok: true, windowId: win.id, tabId: tab.id, locked: params.lock !== false };
     }
 
+    // ── Watch Mode: Foreground window with activity sidebar ──
+
+    case 'create_watch_window': {
+      // Create a focused window (foreground) and enable watch mode
+      const win = await chrome.windows.create({
+        url: params.url || 'about:blank',
+        focused: true,   // Foreground — user watches the agent
+        state: 'normal',
+        width: params.width || 1400,   // Wider to accommodate sidebar
+        height: params.height || 900,
+      });
+      const tab = win.tabs[0];
+      activeTabId = tab.id;
+      if (params.lock !== false) {
+        pinTab(tab.id, win.id);
+      }
+
+      // Enable watch mode
+      watchMode = true;
+      watchStartTime = Date.now();
+      watchLog = [];
+
+      // Inject watch panel after page loads
+      await waitForContentScript(tab.id, params.wait || 5000).catch(() => {});
+      await injectWatchPanel(tab.id);
+
+      broadcastWatch({
+        kind: 'session',
+        message: `Watch window created — monitoring agent on tab ${tab.id}`,
+        timestamp: 0,
+      });
+
+      return { ok: true, windowId: win.id, tabId: tab.id, locked: params.lock !== false, watchMode: true };
+    }
+
+    case 'enable_watch_mode': {
+      watchMode = true;
+      watchStartTime = Date.now();
+      watchLog = [];
+      const tabId = targetTabId();
+      if (tabId) {
+        await injectWatchPanel(tabId);
+      }
+      broadcastWatch({ kind: 'session', message: 'Watch mode enabled', timestamp: 0 });
+      return { ok: true };
+    }
+
+    case 'disable_watch_mode': {
+      watchMode = false;
+      const tabId = targetTabId();
+      if (tabId) {
+        try {
+          chrome.tabs.sendMessage(tabId, { type: 'watch_panel_hide' });
+        } catch {}
+      }
+      return { ok: true };
+    }
+
+    case 'watch_log': {
+      // Agent sends reasoning / action log entries to the watch panel
+      if (watchMode) {
+        broadcastWatch({
+          kind: params.level || params.kind || 'info',
+          phase: params.phase || '',
+          message: params.message || '',
+          detail: params.detail || '',
+          observation: params.observation || '',
+          reasoning: params.reasoning || '',
+          decision: params.decision || '',
+          evidence: params.evidence || '',
+          action: params.action_name || '',
+          duration: params.duration,
+          x: params.x,
+          y: params.y,
+          target: params.target || '',
+        });
+      }
+      return { ok: true };
+    }
+
+    case 'watch_highlight': {
+      // Direct highlight command from Python agent
+      if (watchMode) {
+        broadcastHighlight(params.mode || 'coords', params);
+      }
+      return { ok: true };
+    }
+
     case 'close_window': {
       if (params.windowId) {
         if (pinnedWindowId === params.windowId) {
           releasePinnedTab();
+        }
+        // Disable watch mode if closing the watch window
+        if (watchMode) {
+          watchMode = false;
         }
         await chrome.windows.remove(params.windowId);
       }
@@ -300,6 +573,12 @@ async function handleCommand(msg) {
       if (!tabId) throw new Error('No active tab');
       const x = params.x || 0;
       const y = params.y || 0;
+
+      // Watch mode: highlight before click
+      if (watchMode) {
+        broadcastHighlight('coords', { x, y });
+      }
+
       return await withTabDebugger(tabId, async (target) => {
         // mousePressed + mouseReleased = a complete click
         await chrome.debugger.sendCommand(target, 'Input.dispatchMouseEvent', {
@@ -463,6 +742,22 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
   if (msg.type === 'content_ready' && sender.tab) {
     contentReady.set(sender.tab.id, true);
     console.log(`[BG] Content script ready on tab ${sender.tab.id}: ${msg.url}`);
+    // Re-inject watch panel when content script loads on the automated tab
+    if (watchMode && sender.tab.id === targetTabId()) {
+      injectWatchPanel(sender.tab.id);
+    }
+    return;
+  }
+
+  // Watch panel signals
+  if (msg.action === 'watch_panel_ready') {
+    console.log('[BG] Watch panel ready');
+    return;
+  }
+  if (msg.action === 'watch_panel_closed') {
+    console.log('[BG] Watch panel closed by user');
+    // Don't disable watch mode — just the panel UI was closed
+    // User can re-open by sending enable_watch_mode
     return;
   }
 
@@ -486,6 +781,7 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
       activeTabId,
       pinnedTabId,
       pinnedWindowId,
+      watchMode,
     });
     return;
   }
