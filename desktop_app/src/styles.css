@@ -1,0 +1,252 @@
+:root {
+  font-family: "SF Pro Display", "Avenir Next", "Segoe UI Variable", sans-serif;
+  color: #f5f2ea;
+  background:
+    radial-gradient(circle at top, rgba(255, 126, 92, 0.14), transparent 34%),
+    linear-gradient(180deg, #13100f 0%, #191413 100%);
+  color-scheme: dark;
+  font-synthesis: none;
+  text-rendering: optimizeLegibility;
+  -webkit-font-smoothing: antialiased;
+  --line: rgba(255, 255, 255, 0.08);
+  --panel: rgba(255, 255, 255, 0.04);
+  --panel-strong: rgba(255, 255, 255, 0.06);
+  --text-soft: rgba(245, 242, 234, 0.62);
+  --accent: #ff7e5c;
+  --accent-strong: #ff6b45;
+  --ok: #41d89b;
+}
+
+* {
+  box-sizing: border-box;
+}
+
+html,
+body {
+  margin: 0;
+  min-height: 100vh;
+}
+
+body {
+  min-height: 100vh;
+}
+
+button,
+textarea {
+  font: inherit;
+}
+
+.shell {
+  min-height: 100vh;
+  padding: 24px 28px 36px;
+}
+
+.topbar {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 16px;
+}
+
+.brand {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  font-size: 0.98rem;
+  font-weight: 620;
+}
+
+.brand-mark {
+  width: 34px;
+  height: 34px;
+  display: block;
+  object-fit: contain;
+  background: transparent;
+}
+
+.status-pill {
+  border: 1px solid var(--line);
+  background: transparent;
+  color: var(--text-soft);
+  border-radius: 999px;
+  padding: 8px 12px;
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  cursor: pointer;
+}
+
+.status-pill.ready {
+  color: #eefdf6;
+  border-color: rgba(65, 216, 155, 0.34);
+  background: rgba(65, 216, 155, 0.08);
+}
+
+.status-dot {
+  width: 8px;
+  height: 8px;
+  border-radius: 999px;
+  background: #f0b74b;
+}
+
+.status-pill.ready .status-dot {
+  background: var(--ok);
+  box-shadow: 0 0 12px rgba(65, 216, 155, 0.58);
+}
+
+.hero {
+  min-height: calc(100vh - 120px);
+  display: grid;
+  place-items: center;
+}
+
+.composer-wrap {
+  width: min(860px, 100%);
+}
+
+.composer-wrap h1 {
+  margin: 0 0 20px;
+  text-align: center;
+  font-size: clamp(2rem, 4vw, 3.8rem);
+  line-height: 1.05;
+  letter-spacing: -0.04em;
+  font-weight: 680;
+}
+
+.composer {
+  border: 1px solid var(--line);
+  background: var(--panel);
+  border-radius: 28px;
+  padding: 16px;
+  backdrop-filter: blur(20px);
+  box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.04);
+}
+
+#task-input {
+  width: 100%;
+  resize: none;
+  border: 0;
+  outline: none;
+  background: transparent;
+  color: inherit;
+  font-size: 1.02rem;
+  line-height: 1.6;
+  min-height: 148px;
+}
+
+#task-input::placeholder {
+  color: var(--text-soft);
+}
+
+.composer-actions {
+  display: flex;
+  align-items: flex-end;
+  justify-content: space-between;
+  gap: 14px;
+  margin-top: 10px;
+}
+
+.preset-row {
+  display: flex;
+  gap: 10px;
+  flex-wrap: wrap;
+}
+
+.preset,
+.start-button {
+  border-radius: 999px;
+  border: 1px solid var(--line);
+  transition: 160ms ease;
+}
+
+.preset {
+  padding: 10px 12px;
+  background: rgba(255, 255, 255, 0.03);
+  color: var(--text-soft);
+  cursor: pointer;
+}
+
+.preset:hover,
+.start-button:hover {
+  border-color: rgba(255, 126, 92, 0.42);
+  background: rgba(255, 126, 92, 0.12);
+  color: inherit;
+}
+
+.start-button {
+  min-width: 112px;
+  padding: 11px 18px;
+  background: linear-gradient(135deg, var(--accent-strong), #ff9b61);
+  color: #23120f;
+  font-weight: 700;
+  cursor: pointer;
+}
+
+.start-button:disabled {
+  opacity: 0.45;
+  cursor: not-allowed;
+}
+
+.inline-error {
+  margin: 12px 4px 0;
+  text-align: center;
+  color: #ff9b9b;
+}
+
+.recent {
+  width: min(860px, 100%);
+  margin: -90px auto 0;
+  display: grid;
+  gap: 10px;
+}
+
+.task-card {
+  border: 1px solid var(--line);
+  background: var(--panel-strong);
+  border-radius: 18px;
+  padding: 14px 16px;
+}
+
+.task-card p {
+  margin: 8px 0 0;
+  color: var(--text-soft);
+}
+
+.task-meta {
+  display: flex;
+  justify-content: space-between;
+  gap: 12px;
+  font-size: 0.8rem;
+  color: rgba(245, 242, 234, 0.5);
+  text-transform: uppercase;
+  letter-spacing: 0.08em;
+}
+
+@media (max-width: 720px) {
+  .shell {
+    padding: 18px 16px 24px;
+  }
+
+  .topbar {
+    align-items: flex-start;
+    flex-direction: column;
+  }
+
+  .composer-wrap h1 {
+    font-size: 2.2rem;
+    text-align: left;
+  }
+
+  .composer-actions {
+    align-items: stretch;
+    flex-direction: column;
+  }
+
+  .start-button {
+    width: 100%;
+  }
+
+  .recent {
+    margin-top: -42px;
+  }
+}
