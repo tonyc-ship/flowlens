@@ -14,9 +14,11 @@ The old screen-level MCP route has been archived under `archive/legacy_mcp/`.
 ```
 clawvision/
 ├── chrome_extension/                 # MV3 extension: websocket, CDP, DOM extraction, watch mode
+├── desktop_app/                      # Minimal Tauri desktop shell / future desktop control plane
 ├── clawvision/
 │   ├── cli.py                        # Primary CLI entry
 │   ├── __main__.py                   # `python -m clawvision`
+│   ├── desktop_cli.py                # Desktop shell -> Python task bridge
 │   ├── extension_cli.py              # `python -m clawvision extension ...`
 │   ├── extension_ops.py              # Generic extension operational reports / commands
 │   ├── server.py                     # Archived-route compatibility stub
@@ -177,6 +179,24 @@ pip install -e ".[local-llm]" # optional local MLX backend
 2. Enable Developer Mode
 3. Load `chrome_extension/` as an unpacked extension
 4. Open the extension popup and connect it to the agent port when running scripts
+
+### Desktop Shell (Spike)
+
+`desktop_app/` is a standalone Tauri 2.x shell used to explore a future local
+desktop companion app.
+
+Current scope:
+
+- Basic navigation shell
+- One Rust health-check command invoked from the frontend
+- Placeholder views for tasks, live runs, and settings
+
+This path is intentionally separate from the Python runtime for now; treat it as
+an app-shell spike, not the final packaging architecture.
+
+The current bridge path is:
+
+`desktop_app` -> Tauri command `start_task` -> `python -m clawvision desktop run ...`
 
 ### Local Config
 

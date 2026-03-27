@@ -1,0 +1,212 @@
+import { invoke } from "@tauri-apps/api/core";
+import appIcon from "./app-icon.png";
+
+type HealthStatus = {
+  appName: string;
+  version: string;
+  os: string;
+  arch: string;
+  backendMode: string;
+  ready: boolean;
+};
+
+type TaskStub = {
+  id: string;
+  prompt: string;
+  status: string;
+  createdAt: string;
+};
+
+type State = {
+  health: HealthStatus | null;
+  healthError: string;
+  loadingHealth: boolean;
+  launchingTask: boolean;
+  prompt: string;
+  recentTasks: TaskStub[];
+  launchError: string;
+};
+
+const state: State = {
+  health: null,
+  healthError: "",
+  loadingHealth: false,
+  launchingTask: false,
+  prompt: "",
+  recentTasks: [],
+  launchError: "",
+};
+
+const presets = [
+  "研究护肤干货",
+  "研究露营",
+  "拆解 https://www.xiaohongshu.com/user/profile/665e81660000000003033638",
+];
+
+function render() {
+  const app = document.querySelector("#app");
+  if (!(app instanceof HTMLElement)) return;
+
+  const healthy = state.health?.ready && !state.healthError;
+  const launchDisabled = state.launchingTask || !state.prompt.trim();
+
+  app.innerHTML = `
+    <main class="shell">
+      <header class="topbar">
+        <div class="brand">
+          <img class="brand-mark" src="${appIcon}" alt="ClawVision app icon" />
+          <span>ClawVision</span>
+        </div>
+
+        <button id="status-pill" class="status-pill ${healthy ? "ready" : "idle"}">
+          <span class="status-dot"></span>
+          ${healthy ? "Ready" : "Check runtime"}
+        </button>
+      </header>
+
+      <section class="hero">
+        <div class="composer-wrap">
+          <h1>What should ClawVision do?</h1>
+
+          <div class="composer">
+            <textarea
+              id="task-input"
+              rows="5"
+              placeholder="Describe a task..."
+            >${escapeHtml(state.prompt)}</textarea>
+
+            <div class="composer-actions">
+              <div class="preset-row">
+                ${presets
+                  .map(
+                    (preset) =>
+                      `<button class="preset" data-preset="${escapeHtmlAttr(preset)}">${escapeHtml(
+                        preset,
+                      )}</button>`,
+                  )
+                  .join("")}
+              </div>
+
+              <button id="start-task" class="start-button" ${launchDisabled ? "disabled" : ""}>
+                ${state.launchingTask ? "Starting..." : "Start"}
+              </button>
+            </div>
+          </div>
+
+          ${
+            state.launchError
+              ? `<p class="inline-error">${escapeHtml(state.launchError)}</p>`
+              : ""
+          }
+        </div>
+      </section>
+
+      ${
+        state.recentTasks.length
+          ? `
+            <section class="recent">
+              ${state.recentTasks
+                .map(
+                  (task) => `
+                    <article class="task-card">
+                      <div class="task-meta">
+                        <span>${escapeHtml(task.status)}</span>
+                        <span>${escapeHtml(task.id)}</span>
+                      </div>
+                      <p>${escapeHtml(task.prompt)}</p>
+                    </article>
+                  `,
+                )
+                .join("")}
+            </section>
+          `
+          : ""
+      }
+    </main>
+  `;
+
+  const input = app.querySelector<HTMLTextAreaElement>("#task-input");
+  input?.addEventListener("input", (event) => {
+    state.prompt = (event.target as HTMLTextAreaElement).value;
+    syncStartButton();
+  });
+  input?.addEventListener("keydown", (event) => {
+    if ((event.metaKey || event.ctrlKey) && event.key === "Enter") {
+      event.preventDefault();
+      void startTask();
+    }
+  });
+
+  app.querySelector<HTMLButtonElement>("#start-task")?.addEventListener("click", () => {
+    void startTask();
+  });
+
+  app.querySelector<HTMLButtonElement>("#status-pill")?.addEventListener("click", () => {
+    void refreshHealth();
+  });
+
+  for (const button of app.querySelectorAll<HTMLButtonElement>("[data-preset]")) {
+    button.addEventListener("click", () => {
+      state.prompt = button.dataset.preset || "";
+      render();
+      app.querySelector<HTMLTextAreaElement>("#task-input")?.focus();
+    });
+  }
+}
+
+function syncStartButton() {
+  const button = document.querySelector<HTMLButtonElement>("#start-task");
+  if (!button) return;
+  button.disabled = state.launchingTask || !state.prompt.trim();
+}
+
+async function refreshHealth() {
+  state.loadingHealth = true;
+  state.healthError = "";
+  render();
+
+  try {
+    state.health = await invoke<HealthStatus>("app_health");
+  } catch (error) {
+    state.healthError = String(error);
+  } finally {
+    state.loadingHealth = false;
+    render();
+  }
+}
+
+async function startTask() {
+  if (!state.prompt.trim() || state.launchingTask) return;
+
+  state.launchingTask = true;
+  state.launchError = "";
+  render();
+
+  try {
+    const task = await invoke<TaskStub>("start_task", { prompt: state.prompt.trim() });
+    state.recentTasks = [task, ...state.recentTasks].slice(0, 4);
+    state.prompt = "";
+  } catch (error) {
+    state.launchError = String(error);
+  } finally {
+    state.launchingTask = false;
+    render();
+  }
+}
+
+function escapeHtml(text: string) {
+  return text
+    .replace(/&/g, "&amp;")
+    .replace(/</g, "&lt;")
+    .replace(/>/g, "&gt;")
+    .replace(/"/g, "&quot;");
+}
+
+function escapeHtmlAttr(text: string) {
+  return escapeHtml(text).replace(/'/g, "&#39;");
+}
+
+window.addEventListener("DOMContentLoaded", () => {
+  render();
+  void refreshHealth();
+});
