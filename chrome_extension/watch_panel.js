@@ -15,8 +15,15 @@
 (function () {
   'use strict';
 
-  // Prevent double injection
-  if (document.getElementById('clawvision-watch-root')) return;
+  // Prevent double injection, but make a previously hidden panel visible again.
+  const existingRoot = document.getElementById('clawvision-watch-root');
+  if (existingRoot) {
+    existingRoot.style.display = '';
+    try {
+      chrome.runtime.sendMessage({ action: 'watch_panel_ready' });
+    } catch {}
+    return;
+  }
 
   // ── Constants ──────────────────────────────────────────────────
 
@@ -54,6 +61,7 @@
 
   const host = document.createElement('div');
   host.id = 'clawvision-watch-root';
+  host.dataset.clawvision = 'watch-panel';
   host.style.cssText = [
     'position: fixed',
     'top: 0',

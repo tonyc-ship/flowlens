@@ -167,7 +167,13 @@ class XHSUserAnalyzer:
         else:
             self._log_step("bridge_ready", f"Using external bridge on port {self.browser.bridge.port}")
         print("\n  >>> Waiting for Chrome Extension to connect. <<<\n")
-        await self.browser.bridge.wait_for_connection(timeout=120)
+        await self.browser.bridge.wait_for_connection(timeout=120, require_watch=getattr(self, '_watch', False))
+
+        # Watch mode: create foreground window with sidebar
+        if getattr(self, '_watch', False):
+            await self.browser.bridge.create_watch_window(url="https://www.xiaohongshu.com")
+            await asyncio.sleep(4)
+            self._log_step("watch_mode", "Foreground window with watch sidebar created")
 
         # Navigate to profile
         profile_url = await self.browser.navigate_to_profile(user_url)
@@ -794,9 +800,12 @@ async def run_user_analysis(
     output_dir: str = "user_analysis",
     port: int = 8765,
     config: UserAnalysisConfig | None = None,
+    watch: bool = False,
 ) -> dict:
     """Convenience function to run user analysis."""
     analyzer = XHSUserAnalyzer(config=config, output_dir=output_dir, port=port)
+    if watch:
+        analyzer._watch = True
     report = await analyzer.analyze(user_url)
 
     print(f"\n{'='*60}")

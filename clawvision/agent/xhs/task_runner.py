@@ -33,11 +33,16 @@ SITE_CONTEXT = (
 
 
 class ReasoningLog:
-    """Captures agent observations and decisions for auditability."""
+    """Captures agent observations and decisions for auditability.
 
-    def __init__(self):
+    When a bridge is provided and watch mode is active, entries are also
+    sent to the Chrome extension's watch panel sidebar in real-time.
+    """
+
+    def __init__(self, bridge: "ExtensionBridge | None" = None):
         self._entries: list[dict] = []
         self._t0 = time.time()
+        self._bridge = bridge
 
     def think(self, phase: str, observation: str, reasoning: str, decision: str, evidence: str = ""):
         entry = {
@@ -51,17 +56,34 @@ class ReasoningLog:
         self._entries.append(entry)
         print(f"  [{entry['timestamp']:6.1f}s] [{phase}] {decision[:120]}")
 
+        # Pipe to watch panel if active
+        if self._bridge and self._bridge.watch_mode:
+            asyncio.ensure_future(self._bridge.watch_log(
+                "think",
+                decision[:300],
+                phase=phase,
+                observation=observation[:300],
+                reasoning=reasoning[:500],
+                decision=decision[:300],
+                evidence=evidence[:600],
+            ))
+
     @property
     def entries(self) -> list[dict]:
         return self._entries
 
 
 class ActionLog:
-    """Low-level execution log."""
+    """Low-level execution log.
 
-    def __init__(self):
+    When a bridge is provided and watch mode is active, entries are also
+    sent to the Chrome extension's watch panel sidebar in real-time.
+    """
+
+    def __init__(self, bridge: "ExtensionBridge | None" = None):
         self._entries: list[dict] = []
         self._t0 = time.time()
+        self._bridge = bridge
 
     def log(self, action: str, detail: str = "", duration: float | None = None):
         elapsed = round(time.time() - self._t0, 1)
@@ -73,6 +95,16 @@ class ActionLog:
             "detail": detail[:500],
             "duration_s": round(duration, 2) if duration is not None else None,
         })
+
+        # Pipe to watch panel if active
+        if self._bridge and self._bridge.watch_mode:
+            asyncio.ensure_future(self._bridge.watch_log(
+                "action",
+                detail[:200],
+                action_name=action,
+                detail=detail[:500],
+                duration=duration,
+            ))
 
     @property
     def entries(self) -> list[dict]:
@@ -334,10 +366,11 @@ pre.json{{background:#f6f8fa;color:#222;padding:14px;border-radius:8px;font-size
 class XHSTaskRunner:
     """Runs structured XHS tasks via generic task planning + XHS workflows."""
 
-    def __init__(self, output_root: str = "task_runs", port: int = 8765, record_interval: float = 1.0):
+    def __init__(self, output_root: str = "task_runs", port: int = 8765, record_interval: float = 1.0, watch: bool = False):
         self.output_root = Path(output_root)
         self.port = port
         self.record_interval = record_interval
+        self.watch = watch
 
     async def run(self, task: StructuredTask) -> dict:
         task_dir = self.output_root / f"{task.slug()}_{_task_now_slug()}"
@@ -345,11 +378,11 @@ class XHSTaskRunner:
         task_dir.mkdir(parents=True, exist_ok=True)
         workflow_dir.mkdir(parents=True, exist_ok=True)
 
-        action = ActionLog()
-        reasoning = ReasoningLog()
+        bridge = ExtensionBridge(port=self.port)
+        action = ActionLog(bridge=bridge)
+        reasoning = ReasoningLog(bridge=bridge)
         media = MediaProcessor()
         task_agent = TaskAgent(media, site_context=SITE_CONTEXT)
-        bridge = ExtensionBridge(port=self.port)
         bridge.on_log(lambda a, d="": action.log(f"bridge:{a}", d))
         browser = XHSBrowser(bridge)
         recorder = SessionRecorder(bridge, interval=self.record_interval)
@@ -401,15 +434,22 @@ class XHSTaskRunner:
             await bridge.start()
             action.log("bridge_started", f"ws://localhost:{self.port}")
             print("\n  >>> Waiting for Chrome Extension to connect. <<<\n")
-            await bridge.wait_for_connection(timeout=120)
-            await bridge.reload_extension()
-            bg_window = await bridge.create_background_window(url="https://www.xiaohongshu.com", minimized=False)
+            await bridge.wait_for_connection(timeout=120, require_watch=self.watch)
+            action.log("extension_reload_skipped", "using the currently loaded extension runtime")
+            if self.watch:
+                bg_window = await bridge.create_watch_window(url="https://www.xiaohongshu.com")
+                action.log(
+                    "watch_window",
+                    f"window={bg_window.get('windowId')} tab={bg_window.get('tabId')} watch=true",
+                )
+            else:
+                bg_window = await bridge.create_background_window(url="https://www.xiaohongshu.com", minimized=False)
+                action.log(
+                    "background_window",
+                    f"window={bg_window.get('windowId')} tab={bg_window.get('tabId')}",
+                )
             automation_window_id = bg_window.get("windowId")
             await bridge.lock_active_tab(bg_window.get("tabId"))
-            action.log(
-                "background_window",
-                f"window={bg_window.get('windowId')} tab={bg_window.get('tabId')}",
-            )
 
             await browser.navigate("https://www.xiaohongshu.com")
             await asyncio.sleep(4)

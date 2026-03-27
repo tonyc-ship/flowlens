@@ -13,9 +13,8 @@
  *   - All DOM extraction and action commands
  *
  * Watch mode:
- *   - Broadcasts all agent commands/responses to the injected watch panel
- *   - Sends click highlights before CDP clicks
- *   - Re-injects watch panel on navigation
+ *   - Broadcasts all agent commands/responses to the extension side panel
+ *   - Sends click highlights in the active page before CDP clicks
  */
 
 const DEFAULT_PORT = 8765;
@@ -27,11 +26,12 @@ let contentReady = new Map(); // tabId -> true
 let reconnectTimer = null;
 let wsPort = DEFAULT_PORT;
 let debuggerQueue = Promise.resolve();
+const sidePanelPorts = new Set();
 
 // ── Watch Mode State ──────────────────────────────────────────
 let watchMode = false;
 let watchStartTime = Date.now();
-let watchLog = [];           // Buffered entries for re-injection
+let watchLog = [];
 const WATCH_LOG_MAX = 500;
 
 function targetTabId() {
@@ -80,19 +80,46 @@ function watchElapsed() {
   return Math.round((Date.now() - watchStartTime) / 100) / 10;
 }
 
+function statusSnapshot() {
+  return {
+    connected: ws?.readyState === WebSocket.OPEN,
+    port: wsPort,
+    activeTabId,
+    pinnedTabId,
+    pinnedWindowId,
+    watchMode,
+  };
+}
+
+function broadcastSidePanel(message) {
+  for (const port of [...sidePanelPorts]) {
+    try {
+      port.postMessage(message);
+    } catch {}
+  }
+}
+
+function broadcastStatus() {
+  broadcastSidePanel({ type: 'status', data: statusSnapshot() });
+}
+
+function currentWatchState() {
+  return {
+    type: 'watch_state',
+    status: statusSnapshot(),
+    startTime: watchStartTime,
+    entries: watchLog,
+  };
+}
+
 function broadcastWatch(data) {
   if (!watchMode) return;
-  // Add timestamp if missing
   if (data.timestamp === undefined) data.timestamp = watchElapsed();
 
   watchLog.push(data);
   if (watchLog.length > WATCH_LOG_MAX) watchLog.shift();
-
-  const tabId = targetTabId();
-  if (!tabId) return;
-  try {
-    chrome.tabs.sendMessage(tabId, { type: 'watch_event', data });
-  } catch {}
+  broadcastSidePanel({ type: 'watch_event', data });
+  broadcastStatus();
 }
 
 function broadcastHighlight(mode, opts) {
@@ -104,59 +131,149 @@ function broadcastHighlight(mode, opts) {
   } catch {}
 }
 
-async function injectWatchPanel(tabId) {
-  if (!tabId) return;
+async function openSidePanelForWindow(windowId) {
+  if (!windowId || !chrome.sidePanel?.open) return false;
   try {
-    await chrome.scripting.executeScript({
-      target: { tabId },
-      files: ['watch_panel.js'],
-    });
-    // Send history after a short delay for panel to initialize
-    setTimeout(() => {
-      try {
-        chrome.tabs.sendMessage(tabId, {
-          type: 'watch_load_history',
-          entries: watchLog,
-          startTime: watchStartTime,
-        });
-      } catch {}
-    }, 300);
+    if (chrome.sidePanel?.setOptions) {
+      await chrome.sidePanel.setOptions({
+        path: 'sidepanel.html',
+        enabled: true,
+      });
+    }
+    await chrome.sidePanel.open({ windowId });
+    broadcastStatus();
+    return true;
   } catch (err) {
-    console.log('[BG] Failed to inject watch panel:', err.message);
+    console.log('[BG] Failed to open side panel:', err.message);
+    return false;
   }
+}
+
+async function prepareWatchModeOnCurrentTab(params = {}) {
+  let tab = null;
+  if (params.tabId) {
+    tab = await chrome.tabs.get(params.tabId);
+  } else {
+    [tab] = await chrome.tabs.query({ active: true, lastFocusedWindow: true });
+  }
+  if (!tab?.id) throw new Error('No active tab');
+
+  activeTabId = tab.id;
+  if (tab.windowId) {
+    try {
+      await chrome.windows.update(tab.windowId, { focused: true });
+    } catch {}
+  }
+  if (params.url && tab.url !== params.url) {
+    tab = await chrome.tabs.update(tab.id, { url: params.url });
+    await waitForContentScript(tab.id, params.wait || 5000).catch(() => {});
+  }
+  if (params.lock !== false) {
+    pinTab(tab.id, tab.windowId);
+  }
+
+  watchMode = true;
+  watchStartTime = Date.now();
+  watchLog = [];
+  broadcastStatus();
+  openSidePanelForWindow(tab.windowId);
+
+  broadcastWatch({
+    kind: 'session',
+    message: `Watch mode attached to current tab ${tab.id}`,
+    timestamp: 0,
+  });
+
+  return {
+    ok: true,
+    windowId: tab.windowId,
+    tabId: tab.id,
+    locked: params.lock !== false,
+    watchMode: true,
+    sidePanel: true,
+  };
+}
+
+async function createWatchTabInCurrentWindow(params = {}) {
+  let currentWindow = null;
+  try {
+    currentWindow = await chrome.windows.getLastFocused();
+  } catch {}
+
+  let tab = null;
+  if (currentWindow?.id) {
+    await chrome.windows.update(currentWindow.id, { focused: true });
+    tab = await chrome.tabs.create({
+      windowId: currentWindow.id,
+      url: params.url || 'https://www.xiaohongshu.com/explore',
+      active: true,
+    });
+  } else {
+    const win = await chrome.windows.create({
+      url: params.url || 'https://www.xiaohongshu.com/explore',
+      focused: true,
+      state: 'normal',
+    });
+    tab = win.tabs?.[0] || null;
+  }
+  if (!tab?.id) throw new Error('Failed to create watch tab');
+  await chrome.tabs.update(tab.id, { active: true });
+
+  return await prepareWatchModeOnCurrentTab({
+    tabId: tab.id,
+    lock: params.lock !== false,
+    wait: params.wait,
+  });
 }
 
 // ── WebSocket Connection ───────────────────────────────────────
 
 function connect(port) {
   wsPort = port || wsPort;
-  if (ws && ws.readyState === WebSocket.OPEN) {
-    console.log('[BG] Already connected');
+  if (ws && (ws.readyState === WebSocket.OPEN || ws.readyState === WebSocket.CONNECTING)) {
+    console.log(ws.readyState === WebSocket.OPEN ? '[BG] Already connected' : '[BG] Connection already in progress');
     return;
   }
 
+  clearTimeout(reconnectTimer);
   console.log(`[BG] Connecting to ws://localhost:${wsPort}...`);
-  ws = new WebSocket(`ws://localhost:${wsPort}`);
+  const socket = new WebSocket(`ws://localhost:${wsPort}`);
+  ws = socket;
 
-  ws.onopen = () => {
+  socket.onopen = () => {
+    if (ws !== socket) {
+      try { socket.close(); } catch {}
+      return;
+    }
     console.log('[BG] Connected to agent');
     clearTimeout(reconnectTimer);
+    broadcastStatus();
     // Send initial state (guard against race condition in MV3)
     chrome.tabs.query({ active: true, currentWindow: true }, (tabs) => {
       if (tabs[0]) {
         activeTabId = tabs[0].id;
-        if (ws && ws.readyState === WebSocket.OPEN) {
+        if (ws === socket && ws.readyState === WebSocket.OPEN) {
           ws.send(JSON.stringify({
             type: 'event',
             event: 'connected',
-            data: { tabId: activeTabId, url: tabs[0].url }
+            data: {
+              tabId: activeTabId,
+              url: tabs[0].url,
+              capabilities: {
+                watch_mode: true,
+                create_watch_window: true,
+                side_panel: true,
+                protocol_version: 2,
+              },
+            }
           }));
         }
       }
     });
   };
 
-  ws.onmessage = async (event) => {
+  socket.onmessage = async (event) => {
+    if (ws !== socket) return;
     let msg;
     try {
       msg = JSON.parse(event.data);
@@ -207,7 +324,7 @@ function connect(port) {
     }
 
     try {
-      if (ws && ws.readyState === WebSocket.OPEN) {
+      if (ws === socket && ws.readyState === WebSocket.OPEN) {
         ws.send(JSON.stringify(response));
       } else {
         console.error('[BG] WebSocket not open, cannot send response');
@@ -217,14 +334,17 @@ function connect(port) {
     }
   };
 
-  ws.onclose = () => {
+  socket.onclose = () => {
+    if (ws !== socket) return;
     console.log('[BG] Disconnected from agent');
     ws = null;
+    broadcastStatus();
     // Auto-reconnect after 3s
     reconnectTimer = setTimeout(() => connect(wsPort), 3000);
   };
 
-  ws.onerror = (err) => {
+  socket.onerror = (err) => {
+    if (ws !== socket) return;
     console.error('[BG] WebSocket error');
   };
 }
@@ -235,6 +355,7 @@ function disconnect() {
     ws.close();
     ws = null;
   }
+  broadcastStatus();
 }
 
 // ── Watch Mode: Command Categorization ────────────────────────
@@ -279,7 +400,7 @@ function describeCommand(action, params) {
     case 'run_js': return 'Execute JavaScript';
     case 'get_tab_info': return 'Get tab info';
     case 'create_background_window': return 'Create background window';
-    case 'create_watch_window': return 'Create watch window';
+    case 'create_watch_window': return 'Open watch side panel';
     default: return action;
   }
 }
@@ -376,10 +497,6 @@ async function handleCommand(msg) {
       await chrome.tabs.update(tabId, { url: params.url });
       // Wait for page load + content script injection
       await waitForContentScript(tabId, params.wait || 5000);
-      // Re-inject watch panel after navigation
-      if (watchMode) {
-        await injectWatchPanel(tabId);
-      }
       return { ok: true, url: params.url };
     }
 
@@ -436,61 +553,23 @@ async function handleCommand(msg) {
       return { ok: true, windowId: win.id, tabId: tab.id, locked: params.lock !== false };
     }
 
-    // ── Watch Mode: Foreground window with activity sidebar ──
+    // ── Watch Mode: current window + native side panel ──
 
     case 'create_watch_window': {
-      // Create a focused window (foreground) and enable watch mode
-      const win = await chrome.windows.create({
-        url: params.url || 'about:blank',
-        focused: true,   // Foreground — user watches the agent
-        state: 'normal',
-        width: params.width || 1400,   // Wider to accommodate sidebar
-        height: params.height || 900,
-      });
-      const tab = win.tabs[0];
-      activeTabId = tab.id;
-      if (params.lock !== false) {
-        pinTab(tab.id, win.id);
-      }
-
-      // Enable watch mode
-      watchMode = true;
-      watchStartTime = Date.now();
-      watchLog = [];
-
-      // Inject watch panel after page loads
-      await waitForContentScript(tab.id, params.wait || 5000).catch(() => {});
-      await injectWatchPanel(tab.id);
-
-      broadcastWatch({
-        kind: 'session',
-        message: `Watch window created — monitoring agent on tab ${tab.id}`,
-        timestamp: 0,
-      });
-
-      return { ok: true, windowId: win.id, tabId: tab.id, locked: params.lock !== false, watchMode: true };
+      return await createWatchTabInCurrentWindow(params);
     }
 
     case 'enable_watch_mode': {
-      watchMode = true;
-      watchStartTime = Date.now();
-      watchLog = [];
-      const tabId = targetTabId();
-      if (tabId) {
-        await injectWatchPanel(tabId);
-      }
-      broadcastWatch({ kind: 'session', message: 'Watch mode enabled', timestamp: 0 });
-      return { ok: true };
+      return await prepareWatchModeOnCurrentTab({
+        tabId: targetTabId(),
+        lock: true,
+      });
     }
 
     case 'disable_watch_mode': {
       watchMode = false;
-      const tabId = targetTabId();
-      if (tabId) {
-        try {
-          chrome.tabs.sendMessage(tabId, { type: 'watch_panel_hide' });
-        } catch {}
-      }
+      broadcastStatus();
+      broadcastSidePanel({ type: 'watch_state', status: statusSnapshot(), startTime: watchStartTime, entries: watchLog });
       return { ok: true };
     }
 
@@ -529,9 +608,9 @@ async function handleCommand(msg) {
         if (pinnedWindowId === params.windowId) {
           releasePinnedTab();
         }
-        // Disable watch mode if closing the watch window
         if (watchMode) {
           watchMode = false;
+          broadcastStatus();
         }
         await chrome.windows.remove(params.windowId);
       }
@@ -721,12 +800,23 @@ chrome.runtime.onConnect.addListener((port) => {
     if (!ws || ws.readyState !== WebSocket.OPEN) {
       connect(wsPort);
     }
+    return;
+  }
+
+  if (port.name === 'sidepanel') {
+    sidePanelPorts.add(port);
+    try {
+      port.postMessage(currentWatchState());
+    } catch {}
+    port.onDisconnect.addListener(() => sidePanelPorts.delete(port));
+    return;
   }
 });
 
 chrome.tabs.onActivated.addListener(({ tabId }) => {
   if (pinnedTabId && pinnedTabId !== tabId) return;
   activeTabId = tabId;
+  broadcastStatus();
 });
 
 chrome.tabs.onRemoved.addListener((tabId) => {
@@ -735,6 +825,7 @@ chrome.tabs.onRemoved.addListener((tabId) => {
   if (pinnedTabId === tabId) {
     releasePinnedTab();
   }
+  broadcastStatus();
 });
 
 chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
@@ -742,22 +833,6 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
   if (msg.type === 'content_ready' && sender.tab) {
     contentReady.set(sender.tab.id, true);
     console.log(`[BG] Content script ready on tab ${sender.tab.id}: ${msg.url}`);
-    // Re-inject watch panel when content script loads on the automated tab
-    if (watchMode && sender.tab.id === targetTabId()) {
-      injectWatchPanel(sender.tab.id);
-    }
-    return;
-  }
-
-  // Watch panel signals
-  if (msg.action === 'watch_panel_ready') {
-    console.log('[BG] Watch panel ready');
-    return;
-  }
-  if (msg.action === 'watch_panel_closed') {
-    console.log('[BG] Watch panel closed by user');
-    // Don't disable watch mode — just the panel UI was closed
-    // User can re-open by sending enable_watch_mode
     return;
   }
 
@@ -775,20 +850,40 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
   }
 
   if (msg.action === 'get_status') {
-    sendResponse({
-      connected: ws?.readyState === WebSocket.OPEN,
-      port: wsPort,
-      activeTabId,
-      pinnedTabId,
-      pinnedWindowId,
-      watchMode,
-    });
+    sendResponse(statusSnapshot());
     return;
   }
 });
 
 // Auto-connect on startup and use alarms to keep service worker alive
 connect(DEFAULT_PORT);
+
+if (chrome.sidePanel?.setPanelBehavior) {
+  chrome.sidePanel.setPanelBehavior({ openPanelOnActionClick: true }).catch((err) => {
+    console.log('[BG] Failed to enable openPanelOnActionClick:', err.message);
+  });
+}
+
+if (chrome.action?.onClicked) {
+  chrome.action.onClicked.addListener(async (tab) => {
+    if (!tab?.windowId) return;
+    activeTabId = tab.id || activeTabId;
+    await openSidePanelForWindow(tab.windowId);
+  });
+}
+
+if (chrome.commands?.onCommand) {
+  chrome.commands.onCommand.addListener(async (command) => {
+    if (command !== 'open-watch-side-panel') return;
+    let tab = null;
+    try {
+      [tab] = await chrome.tabs.query({ active: true, lastFocusedWindow: true });
+    } catch {}
+    if (!tab?.windowId) return;
+    activeTabId = tab.id || activeTabId;
+    await openSidePanelForWindow(tab.windowId);
+  });
+}
 
 // Alarms keep the service worker from dying
 chrome.alarms.create('keepalive', { periodInMinutes: 0.5 });

@@ -54,6 +54,7 @@ async def main():
     parser.add_argument("--user-url", help="Override and run a creator growth breakdown task.")
     parser.add_argument("--creator-name", default="", help="Optional creator display name.")
     parser.add_argument("--output-root", default="task_runs", help="Root directory for task reports.")
+    parser.add_argument("--watch", action="store_true", help="Watch mode: foreground window with real-time activity sidebar.")
     args = parser.parse_args()
 
     if args.topic:
@@ -63,7 +64,7 @@ async def main():
     else:
         task = build_preset_task(args.preset or "topic_research")
 
-    runner = XHSTaskRunner(output_root=args.output_root, port=8765, record_interval=1.5)
+    runner = XHSTaskRunner(output_root=args.output_root, port=8765, record_interval=1.5, watch=args.watch)
     result = await runner.run(task)
 
     print(f"\nTask report: {Path(result['workflow_report_dir']).parent / 'report.html'}")

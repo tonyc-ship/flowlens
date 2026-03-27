@@ -116,6 +116,11 @@ When running live browser tests, create and use a **new background Chrome window
 
 During testing, use Claude Vision to inspect screenshots and verify correctness, not just check for non-empty data.
 
+For UI / UX / window-management debugging, also verify that the screenshot itself is faithful to the intended target:
+- Confirm the dominant app/window in the image is actually the one you meant to capture.
+- Reject captures where another window is covering the target or where the image looks stitched across multiple Spaces/displays.
+- Do not use an unverified screenshot as evidence for page state, selector bugs, or interaction bugs.
+
 ### No pixel-heuristic CV
 
 Prefer semantic understanding over pixel math. Don't use pixel-level heuristics for UI understanding.
@@ -264,7 +269,8 @@ When implementation or tests hit a page-state bug and the DOM behavior is unclea
 
 1. Capture a screenshot first.
 2. Inspect the screenshot with the available LLM vision capability.
-3. Use that visual diagnosis to confirm what the page is actually showing before changing selectors, state detection, or action logic.
+3. First confirm that the screenshot faithfully shows the intended app/window and is not occluded or cross-Space corrupted.
+4. Then use that visual diagnosis to confirm what the page is actually showing before changing selectors, state detection, or action logic.
 
 Do not guess page state from code alone when a screenshot can disambiguate the issue quickly.
 

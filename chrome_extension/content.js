@@ -1131,14 +1131,27 @@ async function scrollPage(pixels = 600) {
 
 // Signal readiness and keep background service worker alive via long-lived port
 let keepalivePort = null;
+let keepalivePingInterval = null;
+let keepaliveReconnectTimer = null;
 function connectKeepalive() {
+  if (keepaliveReconnectTimer) {
+    clearTimeout(keepaliveReconnectTimer);
+    keepaliveReconnectTimer = null;
+  }
   keepalivePort = chrome.runtime.connect({ name: 'keepalive' });
   keepalivePort.onDisconnect.addListener(() => {
     // Reconnect after brief delay (service worker restarted)
-    setTimeout(connectKeepalive, 1000);
+    if (keepaliveReconnectTimer) return;
+    keepaliveReconnectTimer = setTimeout(() => {
+      keepaliveReconnectTimer = null;
+      connectKeepalive();
+    }, 1000);
   });
   // Ping every 20s to prevent port timeout
-  setInterval(() => {
+  if (keepalivePingInterval) {
+    clearInterval(keepalivePingInterval);
+  }
+  keepalivePingInterval = setInterval(() => {
     try { keepalivePort.postMessage({ type: 'ping' }); } catch {}
   }, 20000);
 }

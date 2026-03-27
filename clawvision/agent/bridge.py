@@ -32,6 +32,8 @@ class ExtensionBridge:
         self._connected = asyncio.Event()
         self._log_callback = None
         self._keepalive_task = None
+        self._watch_mode = False
+        self._capabilities: dict[str, object] = {}
 
     def on_log(self, callback):
         """Register a logging callback: callback(action, detail)"""
@@ -52,16 +54,36 @@ class ExtensionBridge:
         )
         self._log("server_started", f"Listening on ws://localhost:{self.port}")
 
-    async def wait_for_connection(self, timeout: float = 120):
+    async def wait_for_connection(self, timeout: float = 120, *, require_watch: bool = False):
         """Wait for the Chrome Extension to connect."""
         self._log("waiting", f"Waiting for extension to connect (timeout={timeout}s)...")
-        try:
-            await asyncio.wait_for(self._connected.wait(), timeout)
-        except asyncio.TimeoutError:
-            raise RuntimeError(
-                f"Extension did not connect within {timeout}s. "
-                "Make sure the extension is loaded and click 'Connect' in the popup."
-            )
+        deadline = asyncio.get_running_loop().time() + timeout
+        while True:
+            remaining = max(0.0, deadline - asyncio.get_running_loop().time())
+            if remaining <= 0:
+                raise RuntimeError(
+                    f"Extension did not connect within {timeout}s. "
+                    "Make sure the extension is loaded and click 'Connect' in the popup."
+                )
+            try:
+                await asyncio.wait_for(self._connected.wait(), remaining)
+            except asyncio.TimeoutError:
+                raise RuntimeError(
+                    f"Extension did not connect within {timeout}s. "
+                    "Make sure the extension is loaded and click 'Connect' in the popup."
+                )
+
+            if not require_watch or self._capabilities.get("watch_mode") is True:
+                break
+
+            self._log("incompatible_connection", "Connected extension missing watch-mode capabilities; waiting for newer runtime")
+            if self._ws is not None:
+                try:
+                    await self._ws.close()
+                except Exception:
+                    pass
+            self._connected.clear()
+
         self._log("extension_connected", "Chrome Extension connected")
 
         # Warmup: wait for extension to set activeTabId (async in onopen callback)
@@ -75,16 +97,37 @@ class ExtensionBridge:
 
     async def _handle_connection(self, ws):
         """Handle incoming WebSocket connection from extension."""
-        # If we already have a connection, the old one is stale — replace it
         old_ws = self._ws
-        self._ws = ws
-        self._connected.set()
 
-        # Cancel any pending futures from old connection (they'll never resolve)
-        for msg_id, future in list(self._pending.items()):
-            if not future.done():
-                future.cancel()
-        self._pending.clear()
+        # Chrome MV3 may briefly establish overlapping websocket sessions during
+        # service worker restarts. Keep the current primary connection whenever
+        # it is already established to avoid a self-inflicted reconnect loop.
+        if old_ws and old_ws is not ws:
+            if self._pending:
+                self._log("duplicate_connection", "Ignoring duplicate extension websocket during in-flight command")
+                try:
+                    await ws.close()
+                except Exception:
+                    pass
+                return
+
+            if self._connected.is_set():
+                self._log("duplicate_connection", "Keeping existing primary extension websocket")
+                try:
+                    await ws.close()
+                except Exception:
+                    pass
+                return
+
+            self._log("duplicate_connection", "Replacing stale extension websocket before handshake")
+            try:
+                await old_ws.close()
+            except Exception:
+                pass
+
+        self._ws = ws
+        self._connected.clear()
+        self._capabilities = {}
 
         # Start keepalive pings to prevent MV3 service worker from sleeping
         if self._keepalive_task:
@@ -96,6 +139,14 @@ class ExtensionBridge:
                 msg = json.loads(raw)
 
                 if msg.get("type") == "event":
+                    if msg.get("event") == "connected":
+                        data = msg.get("data", {}) or {}
+                        caps = data.get("capabilities", {}) or {}
+                        if isinstance(caps, dict):
+                            self._capabilities = caps
+                        else:
+                            self._capabilities = {}
+                        self._connected.set()
                     self._log("event", f"{msg.get('event')}: {json.dumps(msg.get('data', {}))}")
                     continue
 
@@ -112,6 +163,11 @@ class ExtensionBridge:
             if self._ws is ws:
                 self._ws = None
                 self._connected.clear()
+                self._capabilities = {}
+                for msg_id, future in list(self._pending.items()):
+                    if not future.done():
+                        future.cancel()
+                self._pending.clear()
                 self._log("disconnected", "Extension disconnected")
 
     async def _keepalive(self, ws):
@@ -129,7 +185,7 @@ class ExtensionBridge:
 
     async def _ensure_connected(self, timeout: float = 10):
         """Wait for connection if not currently connected."""
-        if self._ws:
+        if self._ws and self._connected.is_set():
             return
         self._log("reconnecting", f"Waiting for extension reconnect ({timeout}s)...")
         try:
@@ -279,6 +335,122 @@ class ExtensionBridge:
     async def scroll_page(self, pixels: int = 600) -> dict:
         """Scroll the page."""
         return await self.send_command("scroll_page", {"pixels": pixels})
+
+    # ── Watch Mode ─────────────────────────────────────────────
+
+    @property
+    def watch_mode(self) -> bool:
+        return self._watch_mode
+
+    async def create_watch_window(self, url: str = "about:blank") -> dict:
+        """Enable watch mode on the current browser window and open the side panel."""
+        result = await self.send_command("create_watch_window", {
+            "url": url,
+            "lock": True,
+        })
+        self._watch_mode = True
+        self._log("watch_mode", "Watch side panel attached to current tab")
+        return result
+
+    async def enable_watch_mode(self) -> dict:
+        """Enable watch mode on the current tab and open the side panel."""
+        result = await self.send_command("enable_watch_mode")
+        self._watch_mode = True
+        return result
+
+    async def disable_watch_mode(self) -> dict:
+        """Disable watch mode and hide the activity sidebar."""
+        result = await self.send_command("disable_watch_mode")
+        self._watch_mode = False
+        return result
+
+    async def watch_log(
+        self,
+        level: str,
+        message: str,
+        *,
+        phase: str = "",
+        detail: str = "",
+        observation: str = "",
+        reasoning: str = "",
+        decision: str = "",
+        evidence: str = "",
+        action_name: str = "",
+        duration: float | None = None,
+        x: int | None = None,
+        y: int | None = None,
+        target: str = "",
+    ) -> None:
+        """Send a log entry to the watch panel sidebar.
+
+        Only sends if watch mode is active. Safe to call unconditionally.
+
+        Args:
+            level: Entry type — 'think', 'action', 'result', 'click', 'extract',
+                   'warning', 'error', 'info', 'session'
+            message: Primary message shown in the panel
+            phase: Agent phase (e.g. 'keyword_generation', 'note_extraction')
+            detail: Extended detail text
+            observation: What the agent observed (for 'think' entries)
+            reasoning: Agent reasoning (for 'think' entries)
+            decision: What the agent decided (for 'think' entries)
+            evidence: Supporting evidence (for 'think' entries)
+            action_name: Name of the action (for 'action' entries)
+            duration: Duration in seconds (for 'result' entries)
+            x, y: Coordinates (for 'click' entries)
+            target: Description of click target
+        """
+        if not self._watch_mode:
+            return
+        params: dict = {"level": level, "message": message}
+        if phase:
+            params["phase"] = phase
+        if detail:
+            params["detail"] = detail
+        if observation:
+            params["observation"] = observation
+        if reasoning:
+            params["reasoning"] = reasoning
+        if decision:
+            params["decision"] = decision
+        if evidence:
+            params["evidence"] = evidence
+        if action_name:
+            params["action_name"] = action_name
+        if duration is not None:
+            params["duration"] = duration
+        if x is not None:
+            params["x"] = x
+        if y is not None:
+            params["y"] = y
+        if target:
+            params["target"] = target
+        try:
+            await self.send_command("watch_log", params, timeout=5, _retries=1)
+        except Exception:
+            pass  # Non-critical — don't let watch logging break the workflow
+
+    async def watch_highlight(
+        self, *, x: int | None = None, y: int | None = None, selector: str = "",
+    ) -> None:
+        """Send a highlight command to the watch panel.
+
+        Either provide (x, y) for coordinate highlight or selector for element highlight.
+        """
+        if not self._watch_mode:
+            return
+        params: dict = {}
+        if x is not None and y is not None:
+            params["mode"] = "coords"
+            params["x"] = x
+            params["y"] = y
+        elif selector:
+            params["mode"] = "selector"
+            params["selector"] = selector
+        try:
+            await self.send_command("watch_highlight", params, timeout=5, _retries=1)
+        except Exception:
+            pass
 
     async def stop(self):
         """Stop the WebSocket server."""

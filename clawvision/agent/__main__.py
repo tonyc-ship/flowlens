@@ -23,6 +23,7 @@ def main():
     parser.add_argument("--user", "-u", default=None, help="User profile URL or ID for user analysis")
     parser.add_argument("--output", "-o", default=None, help="Output directory")
     parser.add_argument("--port", "-p", type=int, default=8765, help="WebSocket port")
+    parser.add_argument("--watch", "-w", action="store_true", help="Watch mode: foreground window with real-time activity sidebar")
     args = parser.parse_args()
 
     if args.user:
@@ -31,6 +32,7 @@ def main():
             user_url=args.user,
             output_dir=output,
             port=args.port,
+            watch=args.watch,
         ))
     else:
         topic = args.topic
@@ -50,6 +52,7 @@ def main():
             keywords=keywords,
             output_dir=output,
             port=args.port,
+            watch=args.watch,
         ))
 
 

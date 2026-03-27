@@ -105,6 +105,7 @@ class XHSResearchAgent:
         self._log: list[dict] = []
         self._t0 = 0
         self._screenshots: list[str] = []
+        self._watch = False
 
     @property
     def timing(self) -> TimingRecord:
@@ -359,13 +360,19 @@ class XHSResearchAgent:
             "\n  >>> Waiting for Chrome Extension to connect. <<<\n"
             "  >>> Open extension popup and click 'Connect'. <<<\n"
         )
-        await self.browser.bridge.wait_for_connection(timeout=120)
+        await self.browser.bridge.wait_for_connection(timeout=120, require_watch=getattr(self, '_watch', False))
 
-        tab_info = await self.browser.get_tab_info()
-        if "xiaohongshu.com" not in tab_info.get("url", ""):
-            self._log_step("navigate", "Going to xiaohongshu.com")
-            await self.browser.navigate("https://www.xiaohongshu.com")
-            await asyncio.sleep(3)
+        # Watch mode: create foreground window with sidebar
+        if getattr(self, '_watch', False):
+            await self.browser.bridge.create_watch_window(url="https://www.xiaohongshu.com")
+            await asyncio.sleep(4)
+            self._log_step("watch_mode", "Foreground window with watch sidebar created")
+        else:
+            tab_info = await self.browser.get_tab_info()
+            if "xiaohongshu.com" not in tab_info.get("url", ""):
+                self._log_step("navigate", "Going to xiaohongshu.com")
+                await self.browser.navigate("https://www.xiaohongshu.com")
+                await asyncio.sleep(3)
 
         if keywords is None:
             keywords = self.generate_keywords(topic)
@@ -868,9 +875,12 @@ async def run_research(
     keywords: list[str] | None = None,
     output_dir: str = "research_output",
     port: int = 8765,
+    watch: bool = False,
 ):
     """Convenience function to run a research session."""
     agent = XHSResearchAgent(output_dir=output_dir, port=port)
+    if watch:
+        agent._watch = True
     report = await agent.research(topic=topic, keywords=keywords)
 
     print(f"\n{'='*60}")
