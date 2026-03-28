@@ -267,6 +267,21 @@ class ExtensionBridge:
         """Execute JavaScript in the page's MAIN world context."""
         return await self.send_command("run_js", {"code": code})
 
+    async def find_chat_input(self, selectors: list[str]) -> dict:
+        """Find the best visible chatbot input candidate in the current tab."""
+        return await self.send_command("find_chat_input", {"selectors": selectors})
+
+    async def set_chat_input_text(self, selectors: list[str], text: str) -> dict:
+        """Set chatbot input text directly through DOM-safe execution."""
+        return await self.send_command("set_chat_input_text", {
+            "selectors": selectors,
+            "text": text,
+        })
+
+    async def click_chat_submit(self, selectors: list[str]) -> dict:
+        """Click the best visible chatbot submit button in the current tab."""
+        return await self.send_command("click_chat_submit", {"selectors": selectors})
+
     async def click_at(self, x: int, y: int) -> dict:
         """CDP-based real mouse click at viewport coordinates."""
         return await self.send_command("click_at", {"x": x, "y": y})
@@ -275,14 +290,29 @@ class ExtensionBridge:
         """CDP-based mouse move to viewport coordinates."""
         return await self.send_command("mouse_move", {"x": x, "y": y})
 
-    async def create_background_window(self, url: str = "about:blank", minimized: bool = False) -> dict:
+    async def create_background_window(
+        self,
+        url: str = "about:blank",
+        minimized: bool = False,
+        *,
+        width: int | None = None,
+        height: int | None = None,
+        left: int | None = None,
+        top: int | None = None,
+        lock: bool = True,
+        focused: bool = False,
+    ) -> dict:
         """Create a new browser window in the background (same profile, shares login state)."""
-        result = await self.send_command("create_background_window", {
-            "url": url,
-            "minimized": minimized,
-            "lock": True,
-        })
-        return result
+        params: dict = {"url": url, "minimized": minimized, "lock": lock, "focused": focused}
+        if width is not None:
+            params["width"] = width
+        if height is not None:
+            params["height"] = height
+        if left is not None:
+            params["left"] = left
+        if top is not None:
+            params["top"] = top
+        return await self.send_command("create_background_window", params)
 
     async def close_window(self, window_id: int) -> None:
         """Close a browser window by ID."""
@@ -307,6 +337,14 @@ class ExtensionBridge:
         if windows_virtual_key_code is not None:
             params["windowsVirtualKeyCode"] = windows_virtual_key_code
         return await self.send_command("press_key", params)
+
+    async def type_text(self, text: str) -> dict:
+        """Insert text at the current cursor position via CDP Input.insertText.
+
+        Works with textareas, contenteditable, ProseMirror, etc.
+        Handles Unicode/CJK without IME simulation.
+        """
+        return await self.send_command("type_text", {"text": text})
 
     async def reload_extension(self) -> None:
         """Reload the Chrome Extension to pick up code changes.

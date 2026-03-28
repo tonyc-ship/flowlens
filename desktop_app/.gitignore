@@ -10,6 +10,8 @@ lerna-debug.log*
 node_modules
 dist
 dist-ssr
+runtime_bundle/*
+!runtime_bundle/.gitkeep
 *.local
 
 # Editor directories and files

@@ -1,9 +1,14 @@
 use serde::Serialize;
 use std::env;
+use std::ffi::OsString;
 use std::fs::{self, File};
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
+use std::sync::Mutex;
 use std::time::{SystemTime, UNIX_EPOCH};
+use tauri::{AppHandle, Emitter, Manager, State};
+use tauri_plugin_deep_link::DeepLinkExt;
+use url::Url;
 
 #[derive(Serialize)]
 #[serde(rename_all = "camelCase")]
@@ -16,7 +21,7 @@ struct HealthStatus {
     ready: bool,
 }
 
-#[derive(Serialize)]
+#[derive(Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
 struct TaskStub {
     id: String,
@@ -27,6 +32,21 @@ struct TaskStub {
     log_path: String,
     output_root: String,
     pid: u32,
+}
+
+#[derive(Default)]
+struct LatestChatbotsTask(Mutex<Option<TaskStub>>);
+
+enum LauncherKind {
+    Binary,
+    Python,
+}
+
+struct RuntimePaths {
+    workdir: PathBuf,
+    output_root: PathBuf,
+    launcher: OsString,
+    launcher_kind: LauncherKind,
 }
 
 #[tauri::command]
@@ -46,6 +66,325 @@ fn repo_root() -> Result<PathBuf, String> {
         .join("../..")
         .canonicalize()
         .map_err(|err| format!("Failed to resolve repo root: {err}"))
+}
+
+fn dev_runtime_root() -> Option<PathBuf> {
+    let candidate = Path::new(env!("CARGO_MANIFEST_DIR")).join("../runtime_bundle");
+    if candidate.join("clawvision").exists() {
+        return candidate.canonicalize().ok();
+    }
+    None
+}
+
+fn env_nonempty(name: &str) -> Option<OsString> {
+    env::var_os(name).filter(|value| !value.is_empty())
+}
+
+fn resolve_python(primary_root: &Path, fallback_root: Option<&Path>) -> OsString {
+    if let Some(python) = env_nonempty("CLAWVISION_PYTHON") {
+        return python;
+    }
+
+    let primary_venv = primary_root.join(".venv").join("bin").join("python");
+    if primary_venv.exists() {
+        return primary_venv.into_os_string();
+    }
+
+    if let Some(root) = fallback_root {
+        let fallback_venv = root.join(".venv").join("bin").join("python");
+        if fallback_venv.exists() {
+            return fallback_venv.into_os_string();
+        }
+    }
+
+    OsString::from("python3")
+}
+
+fn resolve_runtime(app: &AppHandle) -> Result<RuntimePaths, String> {
+    let dev_repo = repo_root().ok();
+
+    if let Ok(resource_dir) = app.path().resource_dir() {
+        let bundled_root = if resource_dir.join("runtime_bundle").join("clawvision").exists() {
+            Some(resource_dir.join("runtime_bundle"))
+        } else if resource_dir.join("_up_").join("runtime_bundle").join("clawvision").exists() {
+            Some(resource_dir.join("_up_").join("runtime_bundle"))
+        } else {
+            None
+        };
+
+        if let Some(bundled_root) = bundled_root {
+            let bundled_binary = bundled_root.join("bin").join("clawvision");
+            let (launcher, launcher_kind) = if let Some(executable) = env_nonempty("CLAWVISION_EXECUTABLE") {
+                (executable, LauncherKind::Binary)
+            } else if bundled_binary.exists() {
+                (bundled_binary.into_os_string(), LauncherKind::Binary)
+            } else {
+                (
+                    resolve_python(&bundled_root, dev_repo.as_deref()),
+                    LauncherKind::Python,
+                )
+            };
+            let output_root = app
+                .path()
+                .app_data_dir()
+                .map_err(|err| format!("Failed to resolve app data dir: {err}"))?
+                .join("task_runs");
+            return Ok(RuntimePaths {
+                workdir: bundled_root,
+                output_root,
+                launcher,
+                launcher_kind,
+            });
+        }
+    }
+
+    if let Some(runtime_root) = dev_runtime_root() {
+        let runtime_binary = runtime_root.join("bin").join("clawvision");
+        let (launcher, launcher_kind) = if let Some(executable) = env_nonempty("CLAWVISION_EXECUTABLE") {
+            (executable, LauncherKind::Binary)
+        } else if runtime_binary.exists() {
+            (runtime_binary.into_os_string(), LauncherKind::Binary)
+        } else {
+            (
+                resolve_python(&runtime_root, dev_repo.as_deref()),
+                LauncherKind::Python,
+            )
+        };
+        let output_root = dev_repo
+            .clone()
+            .unwrap_or(runtime_root.clone())
+            .join("task_runs");
+        return Ok(RuntimePaths {
+            workdir: runtime_root,
+            output_root,
+            launcher,
+            launcher_kind,
+        });
+    }
+
+    let repo_root = dev_repo.ok_or_else(|| {
+        "Could not resolve a ClawVision runtime. Expected either bundled runtime resources or the repo checkout.".to_string()
+    })?;
+
+    Ok(RuntimePaths {
+        workdir: repo_root.clone(),
+        output_root: repo_root.join("task_runs"),
+        launcher: resolve_python(&repo_root, None),
+        launcher_kind: LauncherKind::Python,
+    })
+}
+
+fn build_pythonpath(root: &Path) -> Result<OsString, String> {
+    let mut paths = vec![root.to_path_buf()];
+    if let Some(existing) = env::var_os("PYTHONPATH") {
+        paths.extend(env::split_paths(&existing));
+    }
+    env::join_paths(paths).map_err(|err| format!("Failed to build PYTHONPATH: {err}"))
+}
+
+fn make_task_stub(
+    id: String,
+    kind: &str,
+    prompt: &str,
+    created_at: String,
+    log_path: PathBuf,
+    output_root: PathBuf,
+    pid: u32,
+) -> TaskStub {
+    TaskStub {
+        id,
+        kind: kind.to_string(),
+        prompt: prompt.to_string(),
+        status: "running",
+        created_at,
+        log_path: log_path.to_string_lossy().into_owned(),
+        output_root: output_root.to_string_lossy().into_owned(),
+        pid,
+    }
+}
+
+fn spawn_clawvision(
+    app: &AppHandle,
+    id_prefix: &str,
+    kind: &str,
+    prompt: &str,
+    output_segment: &str,
+    args: &[OsString],
+    output_flag: &str,
+) -> Result<TaskStub, String> {
+    let runtime = resolve_runtime(app)?;
+    let now = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map_err(|err| err.to_string())?;
+    let millis = now.as_millis();
+    let id = format!("{id_prefix}-{millis}");
+    let output_root = runtime.output_root.join(output_segment).join(&id);
+    fs::create_dir_all(&output_root).map_err(|err| format!("Failed to create output dir: {err}"))?;
+    let log_path = output_root.join("desktop.log");
+    let stdout = File::create(&log_path).map_err(|err| format!("Failed to create log file: {err}"))?;
+    let stderr = stdout
+        .try_clone()
+        .map_err(|err| format!("Failed to clone log file handle: {err}"))?;
+
+    let mut child = Command::new(&runtime.launcher);
+    child
+        .current_dir(&runtime.workdir)
+        .env("PYTHONUNBUFFERED", "1")
+        .stdout(Stdio::from(stdout))
+        .stderr(Stdio::from(stderr));
+
+    match runtime.launcher_kind {
+        LauncherKind::Binary => {}
+        LauncherKind::Python => {
+            child
+                .env("PYTHONPATH", build_pythonpath(&runtime.workdir)?)
+                .arg("-m")
+                .arg("clawvision");
+        }
+    }
+
+    for arg in args {
+        child.arg(arg);
+    }
+    child.arg(output_flag).arg(&output_root);
+
+    let child = child.spawn().map_err(|err| {
+        format!(
+            "Failed to start ClawVision runtime with {:?}: {err}",
+            runtime.launcher
+        )
+    })?;
+
+    Ok(make_task_stub(
+        id,
+        kind,
+        prompt,
+        millis.to_string(),
+        log_path,
+        output_root,
+        child.id(),
+    ))
+}
+
+fn store_chatbots_task(app: &AppHandle, task: &TaskStub) {
+    if let Ok(mut slot) = app.state::<LatestChatbotsTask>().0.lock() {
+        *slot = Some(task.clone());
+    }
+    let _ = app.emit("chatbots-launch-requested", task);
+}
+
+fn process_is_alive(pid: u32) -> bool {
+    Command::new("kill")
+        .arg("-0")
+        .arg(pid.to_string())
+        .status()
+        .map(|status| status.success())
+        .unwrap_or(false)
+}
+
+fn active_chatbots_task(app: &AppHandle) -> Option<TaskStub> {
+    let state = app.state::<LatestChatbotsTask>();
+    let mut guard = state.0.lock().ok()?;
+    match guard.clone() {
+        Some(task) if process_is_alive(task.pid) => Some(task),
+        Some(_) => {
+            *guard = None;
+            None
+        }
+        None => None,
+    }
+}
+
+fn spawn_chatbots_task(
+    app: &AppHandle,
+    question: &str,
+    launch_source: &str,
+) -> Result<TaskStub, String> {
+    let trimmed = question.trim();
+    if trimmed.is_empty() {
+        return Err("Question is empty".to_string());
+    }
+
+    if let Some(existing) = active_chatbots_task(app) {
+        if let Some(window) = app.get_webview_window("main") {
+            let _ = window.show();
+            let _ = window.unminimize();
+            let _ = window.set_focus();
+        }
+        return Err(format!(
+            "A chatbot fan-out run is already active (pid {}). Wait for it to finish before starting another.",
+            existing.pid
+        ));
+    }
+
+    let task = spawn_clawvision(
+        app,
+        "chatbots",
+        "multi_chatbot",
+        trimmed,
+        "multi_chat",
+        &[
+            OsString::from("chatbots"),
+            OsString::from(trimmed),
+        ],
+        "--output",
+    )?;
+
+    store_chatbots_task(app, &task);
+
+    if let Some(window) = app.get_webview_window("main") {
+        let _ = window.show();
+        let _ = window.unminimize();
+        let _ = window.set_focus();
+    }
+
+    let _ = app.emit(
+        "chatbots-launch-source",
+        serde_json::json!({
+            "source": launch_source,
+            "taskId": task.id,
+        }),
+    );
+
+    Ok(task)
+}
+
+fn extract_question_from_deep_link(url: &Url) -> Option<String> {
+    let host = url.host_str().unwrap_or_default();
+    let path = url.path().trim_matches('/');
+    let target = host.eq_ignore_ascii_case("ask")
+        || host.eq_ignore_ascii_case("chatbots")
+        || path.eq_ignore_ascii_case("ask")
+        || path.eq_ignore_ascii_case("chatbots");
+    if !target {
+        return None;
+    }
+
+    let question = url
+        .query_pairs()
+        .find_map(|(key, value)| (key == "question").then(|| value.into_owned()))?;
+    let trimmed = question.trim();
+    if trimmed.is_empty() {
+        return None;
+    }
+    Some(trimmed.to_string())
+}
+
+fn handle_deep_links(app: &AppHandle, urls: &[Url]) {
+    for url in urls {
+        if let Some(question) = extract_question_from_deep_link(url) {
+            let _ = spawn_chatbots_task(app, &question, "deep_link");
+        }
+    }
+}
+
+#[tauri::command]
+fn latest_chatbots_task(state: State<'_, LatestChatbotsTask>) -> Result<Option<TaskStub>, String> {
+    let guard = state
+        .0
+        .lock()
+        .map_err(|_| "Latest chatbots task state is poisoned".to_string())?;
+    Ok(guard.clone())
 }
 
 fn extract_profile_url(prompt: &str) -> Option<String> {
@@ -72,67 +411,70 @@ fn infer_kind(prompt: &str) -> Result<&'static str, String> {
 }
 
 #[tauri::command]
-fn start_task(prompt: String) -> Result<TaskStub, String> {
+fn start_task(app: AppHandle, prompt: String) -> Result<TaskStub, String> {
     let trimmed = prompt.trim();
     if trimmed.is_empty() {
         return Err("Task prompt is empty".to_string());
     }
 
     let kind = infer_kind(trimmed)?.to_string();
-    let now = SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .map_err(|err| err.to_string())?;
-    let millis = now.as_millis();
-    let id = format!("task-{}", millis);
-    let repo_root = repo_root()?;
-    let output_root = repo_root.join("task_runs").join("desktop_app").join(&id);
-    fs::create_dir_all(&output_root).map_err(|err| format!("Failed to create output dir: {err}"))?;
-    let log_path = output_root.join("desktop.log");
-    let stdout = File::create(&log_path).map_err(|err| format!("Failed to create log file: {err}"))?;
-    let stderr = stdout
-        .try_clone()
-        .map_err(|err| format!("Failed to clone log file handle: {err}"))?;
+    spawn_clawvision(
+        &app,
+        "task",
+        &kind,
+        trimmed,
+        "desktop_app",
+        &[
+            OsString::from("desktop"),
+            OsString::from("run"),
+            OsString::from("--prompt"),
+            OsString::from(trimmed),
+        ],
+        "--output-root",
+    )
+}
 
-    let python = env::var("CLAWVISION_PYTHON").unwrap_or_else(|_| "python".to_string());
-    let child = Command::new(&python)
-        .current_dir(&repo_root)
-        .env("PYTHONUNBUFFERED", "1")
-        .arg("-m")
-        .arg("clawvision")
-        .arg("desktop")
-        .arg("run")
-        .arg("--prompt")
-        .arg(trimmed)
-        .arg("--output-root")
-        .arg(&output_root)
-        .stdout(Stdio::from(stdout))
-        .stderr(Stdio::from(stderr))
-        .spawn()
-        .map_err(|err| format!("Failed to start Python task with {python}: {err}"))?;
-
-    Ok(TaskStub {
-        id,
-        kind,
-        prompt: trimmed.to_string(),
-        status: "running",
-        created_at: millis.to_string(),
-        log_path: log_path.to_string_lossy().into_owned(),
-        output_root: output_root.to_string_lossy().into_owned(),
-        pid: child.id(),
-    })
+#[tauri::command]
+fn ask_chatbots(app: AppHandle, question: String) -> Result<TaskStub, String> {
+    spawn_chatbots_task(&app, &question, "desktop_ui")
 }
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
-    tauri::Builder::default()
-        .invoke_handler(tauri::generate_handler![app_health, start_task])
+    let builder = tauri::Builder::default()
+        .manage(LatestChatbotsTask::default())
+        .plugin(tauri_plugin_deep_link::init())
+        .setup(|app| {
+            let app_handle = app.handle().clone();
+
+            if let Some(urls) = app.deep_link().get_current()? {
+                handle_deep_links(&app_handle, &urls);
+            }
+
+            let app_handle_for_events = app_handle.clone();
+            app.deep_link().on_open_url(move |event| {
+                let urls = event.urls();
+                handle_deep_links(&app_handle_for_events, &urls);
+            });
+
+            Ok(())
+        });
+
+    builder
+        .invoke_handler(tauri::generate_handler![
+            app_health,
+            start_task,
+            ask_chatbots,
+            latest_chatbots_task
+        ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");
 }
 
 #[cfg(test)]
 mod tests {
-    use super::{extract_profile_url, infer_kind};
+    use super::{extract_profile_url, extract_question_from_deep_link, infer_kind};
+    use url::Url;
 
     #[test]
     fn extracts_profile_url_from_prompt() {
@@ -144,5 +486,20 @@ mod tests {
     #[test]
     fn infers_topic_task_without_creator_url() {
         assert_eq!(infer_kind("研究护肤干货").unwrap(), "topic_research");
+    }
+
+    #[test]
+    fn extracts_question_from_chatbots_deep_link() {
+        let url = Url::parse("clawvision://ask?question=Reply%20READY").expect("url");
+        assert_eq!(
+            extract_question_from_deep_link(&url).as_deref(),
+            Some("Reply READY")
+        );
+    }
+
+    #[test]
+    fn ignores_unrelated_deep_link() {
+        let url = Url::parse("clawvision://settings?question=ignored").expect("url");
+        assert!(extract_question_from_deep_link(&url).is_none());
     }
 }

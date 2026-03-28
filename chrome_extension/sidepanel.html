@@ -2,7 +2,7 @@
 <html>
 <head>
   <meta charset="utf-8">
-  <title>XHS Research Agent</title>
+  <title>ClawVision</title>
   <style>
     :root {
       color-scheme: dark;
@@ -12,7 +12,7 @@
       --border: #2a3348;
       --text: #e5e7eb;
       --muted: #94a3b8;
-      --accent: #ff2442;
+      --accent: #ff7e5c;
       --ok: #34d399;
       --warn: #f59e0b;
       --err: #f87171;
@@ -113,6 +113,71 @@
       background: #334155;
     }
 
+    .composer {
+      padding: 12px 14px 14px;
+      border-bottom: 1px solid var(--border);
+      background: rgba(21, 25, 37, 0.92);
+    }
+
+    .composer-title {
+      font-size: 12px;
+      font-weight: 700;
+      margin-bottom: 8px;
+      color: var(--text);
+    }
+
+    .composer-subtitle {
+      color: var(--muted);
+      margin-bottom: 10px;
+    }
+
+    .composer textarea {
+      width: 100%;
+      min-height: 92px;
+      resize: vertical;
+      border-radius: 12px;
+      border: 1px solid var(--border);
+      background: var(--panel);
+      color: var(--text);
+      padding: 10px 12px;
+      font: inherit;
+    }
+
+    .composer-actions {
+      display: flex;
+      gap: 8px;
+      margin-top: 10px;
+      flex-wrap: wrap;
+    }
+
+    .composer-actions button {
+      border: 0;
+      border-radius: 10px;
+      padding: 8px 12px;
+      cursor: pointer;
+      color: white;
+      background: var(--accent);
+      font-weight: 700;
+    }
+
+    .composer-actions button.secondary {
+      background: #334155;
+    }
+
+    .composer-status {
+      margin-top: 10px;
+      color: var(--muted);
+      min-height: 18px;
+    }
+
+    .composer-status.ok {
+      color: #d1fae5;
+    }
+
+    .composer-status.error {
+      color: #fecaca;
+    }
+
     .filters {
       display: flex;
       gap: 6px;
@@ -209,7 +274,7 @@
 <body>
   <div class="topbar">
     <div class="title-row">
-      <div class="title"><span class="dot">⊙</span>XHS Research Agent</div>
+      <div class="title"><span class="dot">⊙</span>ClawVision</div>
       <div id="statusBadge" class="status-badge disconnected">Disconnected</div>
     </div>
     <div id="metaRow" class="meta">
@@ -223,6 +288,17 @@
       <button id="disconnectBtn" class="secondary">Disconnect</button>
       <button id="observerBtn" class="secondary">Observations</button>
     </div>
+  </div>
+
+  <div class="composer">
+    <div class="composer-title">Ask ChatGPT, Gemini, Claude</div>
+    <div class="composer-subtitle">This sends your question to the installed ClawVision Desktop app, which opens the three visible Chrome windows for you.</div>
+    <textarea id="askQuestion" placeholder="Type a question once."></textarea>
+    <div class="composer-actions">
+      <button id="askAllBtn">Ask All</button>
+      <button id="openDesktopBtn" class="secondary">Open Desktop App</button>
+    </div>
+    <div id="askStatus" class="composer-status"></div>
   </div>
 
   <div class="filters" id="filters">

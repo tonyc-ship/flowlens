@@ -74,6 +74,14 @@ When a change materially affects architecture, runtime flow, testing entry point
 - If the change is operational rather than architectural, add the rule to local memory as well when it is likely to matter in future turns.
 - Generated outputs and local run artifacts should stay out of git unless explicitly requested.
 
+### Always bundle the desktop app after Tauri changes
+
+Whenever you modify the Tauri app under `desktop_app/`, also produce a fresh macOS `.app` bundle in the same working session.
+
+- Do not stop at `cargo check` / `npm run build` alone for Tauri changes.
+- Run the repo packaging path so the real desktop artifact exists after the change.
+- Prefer `bash scripts/build_desktop_app.sh` unless the user explicitly asks for a different packaging flow.
+
 ### Test → Evaluate → Fix → Present
 
 After every significant change, follow this mandatory workflow:
@@ -113,6 +121,10 @@ When running live browser tests, create and use a **new background Chrome window
 - Do **not** take over or overwrite the user's current foreground browsing tab/window.
 - Keep automation in the background window unless the user explicitly asks to watch or interact with it.
 - Treat the user's foreground browsing as independent from the automation target.
+
+Exception:
+- The desktop multi-chat fan-out flow intentionally opens **three visible Chrome windows** for ChatGPT, Gemini, and Claude because that product mode is explicitly user-facing and must be confirmed on-screen.
+- That flow still reuses the user's existing Chrome profile, pre-cleans stale temp-profile Chrome helpers, and uses the local visual-debug stack to verify the real visible windows.
 
 ### Use Claude Vision to verify screenshots
 
@@ -189,7 +201,9 @@ Current scope:
 
 - Basic navigation shell
 - One Rust health-check command invoked from the frontend
-- Placeholder views for tasks, live runs, and settings
+- A multi-chat input that launches visible Chrome windows for ChatGPT, Gemini, and Claude via the Python runtime
+- A `clawvision://ask?question=...` deep-link entry so the installed desktop app can be opened directly from the Chrome side panel
+- Placeholder views for XHS tasks, live runs, and settings
 
 This path is intentionally separate from the Python runtime for now; treat it as
 an app-shell spike, not the final packaging architecture.
@@ -197,6 +211,22 @@ an app-shell spike, not the final packaging architecture.
 The current bridge path is:
 
 `desktop_app` -> Tauri command `start_task` -> `python -m clawvision desktop run ...`
+
+The multi-chat bridge path is:
+
+`desktop_app` -> Tauri command `ask_chatbots` -> `python -m clawvision chatbots ...`
+
+The Chrome side-panel shortcut path is:
+
+`chrome sidepanel` -> `clawvision://ask?...` -> installed `ClawVision Desktop.app` -> Tauri deep-link handler -> `ask_chatbots`
+
+Packaging helper:
+
+`bash scripts/build_desktop_app.sh`
+
+- stages `desktop_app/runtime_bundle/`
+- runs `npm run tauri build`
+- copies the finished `.app` into `/Applications/`
 
 ### Local Config
 

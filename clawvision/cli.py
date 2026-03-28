@@ -5,6 +5,7 @@ from __future__ import annotations
 import sys
 
 from .agent.__main__ import main as agent_main
+from .chatbots.cli import main as chatbots_main
 from .debug_cli import main as debug_main
 from .desktop_cli import main as desktop_main
 from .extension_cli import main as extension_main
@@ -13,6 +14,8 @@ from .extension_cli import main as extension_main
 def main() -> None:
     if len(sys.argv) > 1 and sys.argv[1] == "extension":
         raise SystemExit(extension_main(sys.argv[2:]))
+    if len(sys.argv) > 1 and sys.argv[1] == "chatbots":
+        raise SystemExit(chatbots_main(sys.argv[2:]))
     if len(sys.argv) > 1 and sys.argv[1] == "debug":
         raise SystemExit(debug_main(sys.argv[2:]))
     if len(sys.argv) > 1 and sys.argv[1] == "desktop":
