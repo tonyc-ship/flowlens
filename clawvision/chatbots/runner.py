@@ -7,6 +7,8 @@ import base64
 import io
 import json
 import logging
+import re
+import subprocess
 import time
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -14,13 +16,92 @@ from pathlib import Path
 from PIL import Image
 
 from ..agent.bridge import ExtensionBridge
+from ..vision.llm import VisionRequestConfig
 from .cleanup import cleanup_orphaned_chrome_processes
 from .sites import CHATBOT_SITES, ChatbotSite
+from .vision_diff import build_transition_composite
+from .vision_profiles import (
+    CHATBOT_COMPLEX_FALLBACK_CHECK,
+    CHATBOT_INPUT_SIMPLE_CHECK,
+    CHATBOT_PAGE_SIMPLE_CHECK,
+)
 
 logger = logging.getLogger(__name__)
 
 DEFAULT_CONNECT_TIMEOUT_S = 12.0
 DEFAULT_PAGE_LOAD_TIMEOUT_S = 45.0
+FAST_CONNECT_TIMEOUT_S = 0.75
+INPUT_READY_POLL_INTERVAL_S = 0.25
+TEXT_SETTLE_S = 0.12
+POST_SUBMIT_SETTLE_S = 0.75
+SUBMIT_TRANSITION_CROP = (0.0, 0.42, 1.0, 1.0)
+
+
+def _yes_no_prompt(text: str) -> str:
+    return f"{text} Answer YES or NO only."
+
+
+def _compact_text(text: str) -> str:
+    return re.sub(r"\s+", "", str(text or "")).strip().lower()
+
+
+def _composer_still_contains_prompt(state_text: str, question: str) -> bool:
+    state_compact = _compact_text(state_text)
+    question_compact = _compact_text(question)
+    if not state_compact or not question_compact:
+        return False
+    if question_compact in state_compact:
+        return True
+    if len(state_compact) >= max(8, int(len(question_compact) * 0.6)) and state_compact in question_compact:
+        return True
+    return False
+
+
+READY_CHECK_PROMPT = _yes_no_prompt("Is the prompt box visible and usable?")
+TYPED_CHECK_PROMPT = _yes_no_prompt("Is typed text visible in the prompt box?")
+SENT_CHECK_PROMPT = (
+    "Answer YES only if the prompt has already been sent and is visible above the input box. "
+    "If the text is only inside the input box, answer NO. Answer YES or NO only."
+)
+
+
+def _visible_submit_prompt(site_name: str, question: str) -> str:
+    trimmed = question.strip().replace("\n", " ")[:180]
+    return (
+        f"Intended site: {site_name}. User prompt: {trimmed}\n"
+        "Look at this visible browser window and answer with exactly one label:\n"
+        "GENERATING = correct site, and the prompt has already been sent. Any of these count as GENERATING: "
+        "the prompt appears as a sent chat bubble above the composer; the composer is mostly empty after sending; "
+        "a stop button or stop square replaced the normal send arrow; a typing dot/spinner is visible; or any assistant reply text is visible.\n"
+        "READY = correct site, but the full prompt is still sitting inside the composer waiting to be sent. "
+        "A menu or popup is still READY only if the prompt remains unsent in the composer.\n"
+        "BLOCKED = correct site, but there is a usage/login/paywall/blocker.\n"
+        "WRONG_SITE = not the intended site.\n"
+        "If a popup or dropdown is open but the prompt is already sent or a reply is generating, answer GENERATING.\n"
+        "Focus on the newest message area and the composer near the bottom. Ignore old history above.\n"
+        "If any distinctive excerpt of the user prompt moved above the composer, that counts as GENERATING.\n"
+        "Answer with one label only."
+    )
+
+
+def _submit_transition_prompt(site_name: str, question: str) -> str:
+    trimmed = question.strip().replace("\n", " ")[:180]
+    return (
+        f"Intended site: {site_name}. User prompt: {trimmed}\n"
+        "This image has three panels of the same tab:\n"
+        "LEFT = before pressing send.\n"
+        "CENTER = after pressing send.\n"
+        "RIGHT = pixel changes between them.\n"
+        "Answer with exactly one label:\n"
+        "GENERATING = the CENTER panel shows the prompt was sent or the assistant is responding.\n"
+        "READY = the CENTER panel still shows the full prompt sitting in the composer unsent.\n"
+        "BLOCKED = the correct site is open but a login, usage limit, or paywall blocks sending.\n"
+        "WRONG_SITE = not the intended site.\n"
+        "Count as GENERATING if the prompt moved above the composer, the composer mostly emptied, "
+        "a stop button replaced send, a typing indicator is visible, or any assistant reply text is visible.\n"
+        "Count as READY if the prompt still sits in the composer even if menus or popups are open.\n"
+        "Focus on the composer and newest content near the bottom. Answer with one label only."
+    )
 
 
 # ── Window state tracking ─────────────────────────────────────
@@ -40,6 +121,7 @@ class ChatbotWindow:
     vision_logs: list[str] = field(default_factory=list)
     visible_screenshots: list[Path] = field(default_factory=list)
     visible_logs: list[str] = field(default_factory=list)
+    timeline: list[dict[str, object]] = field(default_factory=list)
 
 
 # ── Orchestrator ──────────────────────────────────────────────
@@ -57,6 +139,7 @@ class MultiChatRunner:
         output_dir: Path | None = None,
         cleanup_orphaned: bool = True,
         verify_visible_windows: bool = True,
+        close_windows_on_finish: bool = False,
     ):
         self.bridge = bridge or ExtensionBridge(port=port)
         self._owns_bridge = bridge is None
@@ -64,6 +147,7 @@ class MultiChatRunner:
         self.windows: list[ChatbotWindow] = [ChatbotWindow(site=site) for site in CHATBOT_SITES]
         self.cleanup_orphaned = cleanup_orphaned
         self.verify_visible_windows = verify_visible_windows
+        self.close_windows_on_finish = close_windows_on_finish
         self.preflight_cleanup: dict | None = None
 
         # Resolve vision backend: prefer local if available
@@ -78,6 +162,9 @@ class MultiChatRunner:
         self._vision = None  # lazy
         self._macos = None
         self._visual_debugger = None
+        self._simple_vision_ready_task = None
+        self._run_started_at = 0.0
+        self._timeline: list[dict[str, object]] = []
 
     @property
     def vision(self):
@@ -110,50 +197,154 @@ class MultiChatRunner:
         b64 = data_url.split(",", 1)[1] if "," in data_url else data_url
         return Image.open(io.BytesIO(base64.b64decode(b64)))
 
-    async def _save_screenshot(self, cw: ChatbotWindow, label: str) -> Image.Image:
+    async def _save_screenshot(self, cw: ChatbotWindow, label: str, *, tab) -> Image.Image:
         """Capture, save, and return a screenshot for a chatbot window."""
-        data_url = await self.bridge.capture_screenshot()
+        data_url = await tab.capture_screenshot()
+        if not data_url:
+            raise RuntimeError(f"Screenshot capture failed for {cw.site.name} ({label})")
         img = self._screenshot_to_pil(data_url)
         path = self.output_dir / f"{cw.site.name.lower()}_{label}.png"
         img.save(path)
         cw.screenshots.append(path)
         return img
 
-    async def _verify_with_vision(self, cw: ChatbotWindow, img: Image.Image, question: str) -> str:
+    def _elapsed_s(self) -> float:
+        if not self._run_started_at:
+            return 0.0
+        return time.perf_counter() - self._run_started_at
+
+    def _record_global_event(self, event: str, **fields: object) -> None:
+        self._timeline.append({"t": round(self._elapsed_s(), 3), "event": event, **fields})
+
+    def _record_window_event(self, cw: ChatbotWindow, event: str, **fields: object) -> None:
+        cw.timeline.append({"t": round(self._elapsed_s(), 3), "event": event, **fields})
+
+    async def _close_created_windows(self) -> None:
+        for cw in self.windows:
+            if not cw.window_id:
+                continue
+            try:
+                await self.bridge.close_window(cw.window_id)
+                self._record_window_event(cw, "window_closed")
+            except Exception as exc:
+                self._record_window_event(cw, "window_close_failed", error=str(exc))
+                logger.warning("[%s] Failed to close window %s: %s", cw.site.name, cw.window_id, exc)
+
+    async def _verify_with_vision(
+        self,
+        cw: ChatbotWindow,
+        img: Image.Image,
+        question: str,
+        *,
+        config: VisionRequestConfig | None = None,
+    ) -> tuple[str, float, str]:
         """Run a vision check and log the result."""
         logger.info("[%s] Vision check: %s", cw.site.name, question)
         t0 = time.perf_counter()
-        result = self.vision.analyze_page(img, question)
+        result = self.vision.analyze_page(img, question, config=config)
         elapsed = time.perf_counter() - t0
-        log_entry = f"[{elapsed:.1f}s] {question} -> {result[:200]}"
+        profile_label = config.name if config else "default"
+        log_entry = f"[{elapsed:.1f}s][{profile_label}] {question} -> {result[:200]}"
         cw.vision_logs.append(log_entry)
         logger.info("[%s] Vision result (%.1fs): %s", cw.site.name, elapsed, result[:200])
-        return result
+        return result, elapsed, profile_label
+
+    async def _verify_submit_transition(
+        self,
+        cw: ChatbotWindow,
+        before_img: Image.Image,
+        after_img: Image.Image,
+        question: str,
+        *,
+        attempt: str,
+    ) -> str:
+        """Verify that a submit attempt changed the tab from composer-filled to sent."""
+        composite = build_transition_composite(
+            before_img,
+            after_img,
+            crop_bounds=SUBMIT_TRANSITION_CROP,
+            include_diff=True,
+        )
+        path = self.output_dir / f"{cw.site.name.lower()}_{attempt}_submit_transition.png"
+        composite.save(path)
+        cw.screenshots.append(path)
+
+        prompt = _submit_transition_prompt(cw.site.name, question)
+        t0 = time.perf_counter()
+        result = self.vision.analyze_page(
+            composite,
+            prompt,
+            config=CHATBOT_INPUT_SIMPLE_CHECK,
+        )
+        elapsed = time.perf_counter() - t0
+        label = self._parse_status_label(result)
+        cw.vision_logs.append(
+            f"[{elapsed:.1f}s][{CHATBOT_INPUT_SIMPLE_CHECK.name}][{attempt}] {prompt[:160]} -> {result[:200]}"
+        )
+
+        if label not in ("GENERATING", "BLOCKED", "WRONG_SITE"):
+            t1 = time.perf_counter()
+            fallback_result = self.vision.analyze_page(
+                composite,
+                prompt,
+                config=CHATBOT_COMPLEX_FALLBACK_CHECK,
+            )
+            fallback_elapsed = time.perf_counter() - t1
+            fallback_label = self._parse_status_label(fallback_result)
+            cw.vision_logs.append(
+                f"[{fallback_elapsed:.1f}s][{CHATBOT_COMPLEX_FALLBACK_CHECK.name}][{attempt}] "
+                f"{prompt[:160]} -> {fallback_result[:200]}"
+            )
+            if fallback_label != "UNKNOWN":
+                label = fallback_label
+                elapsed += fallback_elapsed
+
+        self._record_window_event(
+            cw,
+            "submit_transition_check_finished",
+            attempt=attempt,
+            label=label,
+            seconds=round(elapsed, 3),
+        )
+        return label
+
+    async def _focus_chat_input(self, tab, input_result: dict) -> None:
+        click_x = input_result.get("inputX") or input_result.get("x")
+        click_y = input_result.get("inputY") or input_result.get("y")
+        if click_x and click_y:
+            await tab.click_at(click_x, click_y)
+            await asyncio.sleep(TEXT_SETTLE_S)
 
     async def _wait_for_extension(self) -> None:
         """Wait for the extension connection, waking Chrome if needed."""
         logger.info("Bridge started, waiting for extension connection...")
+        self._record_global_event("extension_wait_started")
         try:
-            await self.bridge.wait_for_connection(timeout=DEFAULT_CONNECT_TIMEOUT_S)
+            await self.bridge.wait_for_connection(
+                timeout=FAST_CONNECT_TIMEOUT_S,
+                warmup_active_tab=False,
+            )
             logger.info("Extension connected")
+            self._record_global_event("extension_connected", wake_chrome=False)
             return
         except RuntimeError:
             logger.info("Extension not connected yet; launching Google Chrome to wake the runtime")
+            self._record_global_event("extension_wait_retry", reason="fast_timeout")
 
         subprocess.run(["open", "-a", "Google Chrome"], check=True)
-        self.macos.activate_app("Google Chrome")
-        await asyncio.sleep(2)
-        await self.bridge.wait_for_connection(timeout=45)
+        self._record_global_event("chrome_wake_requested")
+        await self.bridge.wait_for_connection(timeout=DEFAULT_CONNECT_TIMEOUT_S, warmup_active_tab=False)
         logger.info("Extension connected after waking Chrome")
+        self._record_global_event("extension_connected", wake_chrome=True)
 
-    async def _wait_for_input_ready(self, cw: ChatbotWindow, timeout_s: float = DEFAULT_PAGE_LOAD_TIMEOUT_S) -> dict:
+    async def _wait_for_input_ready(self, cw: ChatbotWindow, tab, timeout_s: float = DEFAULT_PAGE_LOAD_TIMEOUT_S) -> dict:
         """Poll until a chatbot input field becomes available."""
         deadline = time.perf_counter() + timeout_s
         while time.perf_counter() < deadline:
-            result = await self.bridge.find_chat_input(cw.site.input_selectors)
+            result = await tab.find_chat_input(cw.site.input_selectors)
             if result and result.get("found"):
                 return result
-            await asyncio.sleep(2)
+            await asyncio.sleep(INPUT_READY_POLL_INTERVAL_S)
         return {"found": False}
 
     @staticmethod
@@ -195,64 +386,41 @@ class MultiChatRunner:
             matches.append((cw, best))
         return matches
 
-    def _record_visible_verification(self, cw: ChatbotWindow, stage: str, inspection: dict) -> None:
-        artifacts = inspection.get("artifacts", {})
-        raw_image = artifacts.get("raw_image")
-        if raw_image:
-            cw.visible_screenshots.append(Path(raw_image))
-
-        capture_verification = (inspection.get("capture_verification") or {}).get("parsed") or {}
-        analysis = (inspection.get("analysis") or {}).get("parsed") or {}
-        if capture_verification:
-            cw.visible_logs.append(
-                f"[{stage}] capture_verification={json.dumps(capture_verification, ensure_ascii=False)}"
-            )
-        if analysis:
-            cw.visible_logs.append(
-                f"[{stage}] analysis={json.dumps(analysis, ensure_ascii=False)}"
-            )
-        else:
-            raw = (inspection.get("analysis") or {}).get("raw", "")
-            if raw:
-                cw.visible_logs.append(f"[{stage}] analysis_raw={raw[:240]}")
-
-        if stage == "after_submit":
-            self._apply_after_submit_verdict(cw, inspection)
-
     @staticmethod
-    def _apply_after_submit_verdict(cw: ChatbotWindow, inspection: dict) -> None:
-        analysis = inspection.get("analysis") or {}
-        parsed = analysis.get("parsed") or {}
-        notable = parsed.get("notable_elements") or []
-        text_parts = [
-            parsed.get("state_summary", ""),
-            parsed.get("possible_blocker", ""),
-            *[item for item in notable if isinstance(item, str)],
-            analysis.get("raw", ""),
-        ]
-        combined = " ".join(part for part in text_parts if part).lower()
+    def _parse_status_label(result: str) -> str:
+        normalized = result.strip().upper()
+        for label in ("GENERATING", "READY", "BLOCKED", "WRONG_SITE"):
+            if label in normalized:
+                return label
+        if normalized.startswith("YES"):
+            return "GENERATING"
+        if normalized.startswith("NO"):
+            return "READY"
+        return "UNKNOWN"
 
-        if any(term in combined for term in ("usage limit", "message limit", "upgrade", "pay per message", "wait until it resets")):
-            cw.status = "error"
-            cw.error = "Claude usage limit / upgrade wall"
-            return
-
-        if any(term in combined for term in ("response displayed", "response generating", "ai response generating", "prompt sent")):
+    def _apply_visible_status_label(self, cw: ChatbotWindow, label: str) -> None:
+        if label == "GENERATING":
             cw.status = "generating"
             cw.error = ""
             return
-
-        if any(term in combined for term in ("awaiting user input", "ready for user input", "idle", "welcome screen", "type a prompt")):
+        if label == "BLOCKED":
             cw.status = "error"
-            cw.error = "Prompt did not submit"
+            cw.error = "Blocked by login / usage / paywall"
+            return
+        if label == "WRONG_SITE":
+            cw.status = "error"
+            cw.error = "Visible window did not match intended chatbot site"
+            return
+        if label in ("READY", "UNKNOWN"):
+            cw.status = "error"
+            cw.error = "Prompt appears unsent or page stayed in ready state"
 
     def _verify_visible_windows(self, question: str, *, stage: str) -> None:
-        """Use the local visual-debug stack to verify real visible Chrome windows."""
+        """Verify the actual visible Chrome windows with a lightweight local vision pass."""
         if not self.verify_visible_windows:
             return
 
         from ..agent.local_llm import LocalLLM
-        from ..debug.visual_debug import CaptureTarget
 
         if not LocalLLM.is_available():
             logger.warning("Skipping visible-window verification: local Qwen vision model not available")
@@ -266,38 +434,51 @@ class MultiChatRunner:
         for cw, window in self._match_visible_windows():
             if window is None:
                 cw.visible_logs.append(f"[{stage}] no visible Chrome window matched planned bounds")
+                if stage == "after_submit":
+                    cw.status = "error"
+                    cw.error = "No visible Chrome window matched planned bounds"
                 continue
 
             image = self.macos.capture_window_info(window)
-            target = CaptureTarget(
-                kind="window",
-                target_id=window.window_id,
-                label=f"{cw.site.name.lower()}_{stage}",
-                x=window.x,
-                y=window.y,
-                width=window.width,
-                height=window.height,
-                owner=window.owner,
-                title=window.title,
-                capture_backend=window.capture_backend,
-            )
-            inspect_dir = self.output_dir / "visible_verification" / f"{cw.site.name.lower()}_{stage}"
+            inspect_dir = self.output_dir / "visible_verification"
             inspect_dir.mkdir(parents=True, exist_ok=True)
-            inspection = self.visual_debugger.inspect_image(
+            path = inspect_dir / f"{cw.site.name.lower()}_{stage}_visible.png"
+            image.save(path)
+            cw.visible_screenshots.append(path)
+            t0 = time.perf_counter()
+            result = self.vision.analyze_page(
                 image,
-                target=target,
-                mode="general",
-                question=(
-                    f"This must be a real visible Google Chrome window for {cw.site.name}. "
-                    f"Verify the correct site is open, the page is working, and whether the prompt "
-                    f"'{question[:220]}' is visible or a response is generating."
-                ),
-                max_dim=768,
-                max_tokens=128,
-                save_dir=inspect_dir,
-                verify_capture=True,
+                _visible_submit_prompt(cw.site.name, question),
+                config=CHATBOT_PAGE_SIMPLE_CHECK,
             )
-            self._record_visible_verification(cw, stage, inspection)
+            elapsed = time.perf_counter() - t0
+            label = self._parse_status_label(result)
+            cw.visible_logs.append(
+                f"[{stage}][{elapsed:.1f}s][{CHATBOT_PAGE_SIMPLE_CHECK.name}] {result[:200]}"
+            )
+            if label not in ("GENERATING", "BLOCKED", "WRONG_SITE"):
+                t1 = time.perf_counter()
+                fallback_result = self.vision.analyze_page(
+                    image,
+                    _visible_submit_prompt(cw.site.name, question),
+                    config=CHATBOT_COMPLEX_FALLBACK_CHECK,
+                )
+                fallback_elapsed = time.perf_counter() - t1
+                fallback_label = self._parse_status_label(fallback_result)
+                cw.visible_logs.append(
+                    f"[{stage}][{fallback_elapsed:.1f}s][{CHATBOT_COMPLEX_FALLBACK_CHECK.name}] {fallback_result[:200]}"
+                )
+                if fallback_label != "UNKNOWN":
+                    label = fallback_label
+            self._record_window_event(
+                cw,
+                "visible_verification_finished",
+                stage=stage,
+                seconds=round(elapsed, 3),
+                label=label,
+            )
+            if stage == "after_submit":
+                self._apply_visible_status_label(cw, label)
 
     # ── Screen geometry ───────────────────────────────────────
 
@@ -344,6 +525,9 @@ class MultiChatRunner:
         """
         self.output_dir.mkdir(parents=True, exist_ok=True)
         t0 = time.perf_counter()
+        self._run_started_at = t0
+        self._timeline = []
+        self._record_global_event("run_started", question_len=len(question))
 
         if self.cleanup_orphaned:
             self.preflight_cleanup = cleanup_orphaned_chrome_processes()
@@ -355,9 +539,29 @@ class MultiChatRunner:
                 "force_killed": [],
                 "remaining": [],
             }
+        self._record_global_event(
+            "preflight_cleanup_done",
+            matched=self.preflight_cleanup.get("matched", 0),
+            remaining=len(self.preflight_cleanup.get("remaining", [])),
+        )
+
+        if self._vision_backend == "qwen-local":
+            self._record_global_event(
+                "simple_model_preload_started",
+                model=CHATBOT_PAGE_SIMPLE_CHECK.local_model_name,
+            )
+            self._simple_vision_ready_task = asyncio.create_task(
+                asyncio.to_thread(
+                    self.vision.preload_local_model,
+                    CHATBOT_PAGE_SIMPLE_CHECK.local_model_name,
+                )
+            )
+        else:
+            self._simple_vision_ready_task = None
 
         # Start bridge if we own it
         if self._owns_bridge:
+            self._record_global_event("bridge_starting")
             await self.bridge.start()
             await self._wait_for_extension()
 
@@ -365,6 +569,7 @@ class MultiChatRunner:
 
         # 1. Open all windows
         logger.info("Opening %d chatbot windows...", len(self.windows))
+        self._record_global_event("window_opening_started", count=len(self.windows))
         for cw, pos in zip(self.windows, positions):
             cw.planned_bounds = pos
             try:
@@ -381,31 +586,63 @@ class MultiChatRunner:
                 cw.window_id = result["windowId"]
                 cw.status = "loading"
                 logger.info("[%s] Window created: tab=%d win=%d", cw.site.name, cw.tab_id, cw.window_id)
+                self._record_window_event(
+                    cw,
+                    "window_created",
+                    tab_id=cw.tab_id,
+                    window_id=cw.window_id,
+                    left=pos["left"],
+                    top=pos["top"],
+                    width=pos["width"],
+                    height=pos["height"],
+                )
             except Exception as exc:
                 cw.status = "error"
                 cw.error = str(exc)
                 logger.error("[%s] Failed to create window: %s", cw.site.name, exc)
+                self._record_window_event(cw, "window_create_failed", error=str(exc))
+        self._record_global_event("window_opening_finished")
 
-        # 2. Wait for initial page load and verify real visible windows.
-        logger.info("Waiting for pages to load in visible Chrome windows...")
-        await asyncio.sleep(10)
-        self._verify_visible_windows(question, stage="after_open")
-
-        # 3. For each chatbot: verify, enter question, submit
+        # 2. Launch per-chatbot work in parallel.
+        logger.info("Bootstrapping chatbot tabs...")
+        # 3. For each chatbot: enter question and submit in parallel.
+        tasks = []
+        scheduled_windows = []
+        self._record_global_event("chatbot_tasks_starting")
         for cw in self.windows:
             if cw.status == "error":
                 continue
-            try:
-                await self._handle_chatbot(cw, question)
-            except Exception as exc:
-                cw.status = "error"
-                cw.error = str(exc)
-                logger.error("[%s] Error: %s", cw.site.name, exc)
+            scheduled_windows.append(cw)
+            tasks.append(asyncio.create_task(self._handle_chatbot(cw, question)))
 
-        self._verify_visible_windows(question, stage="after_submit")
-        self.macos.activate_app("Google Chrome")
+        results = await asyncio.gather(*tasks, return_exceptions=True)
+        self._record_global_event("chatbot_tasks_finished")
+        for cw, result in zip(scheduled_windows, results):
+            if isinstance(result, Exception):
+                cw.status = "error"
+                cw.error = str(result)
+                logger.error("[%s] Error: %s", cw.site.name, result)
+                self._record_window_event(cw, "task_failed", error=str(result))
+
+        if self._simple_vision_ready_task is not None:
+            await self._simple_vision_ready_task
+
+        if self.verify_visible_windows:
+            self._record_global_event("visible_verification_started", stage="after_submit")
+            self._verify_visible_windows(question, stage="after_submit")
+            self._record_global_event("visible_verification_finished", stage="after_submit")
+        else:
+            self._record_global_event("visible_verification_skipped", reason="disabled")
+
+        if self.close_windows_on_finish:
+            self._record_global_event("window_cleanup_started")
+            await self._close_created_windows()
+            self._record_global_event("window_cleanup_finished")
+        else:
+            self.macos.activate_app("Google Chrome")
 
         elapsed = time.perf_counter() - t0
+        self._record_global_event("run_finished", elapsed_s=round(elapsed, 3))
 
         # 4. Build summary
         summary = {
@@ -414,6 +651,7 @@ class MultiChatRunner:
             "vision_backend": self._vision_backend,
             "preflight_cleanup": self.preflight_cleanup,
             "visible_verification": self.verify_visible_windows,
+            "timeline": self._timeline,
             "chatbots": [],
         }
         for cw in self.windows:
@@ -428,11 +666,13 @@ class MultiChatRunner:
                 "vision_logs": cw.vision_logs,
                 "visible_screenshots": [str(p) for p in cw.visible_screenshots],
                 "visible_logs": cw.visible_logs,
+                "timeline": cw.timeline,
             })
         # Save summary
         summary_path = self.output_dir / "summary.json"
         summary_path.write_text(json.dumps(summary, indent=2, ensure_ascii=False))
         logger.info("Done in %.1fs. Summary: %s", elapsed, summary_path)
+        self._write_timing_breakdown(summary)
 
         # Generate report
         self._write_report(summary)
@@ -442,93 +682,186 @@ class MultiChatRunner:
     async def _handle_chatbot(self, cw: ChatbotWindow, question: str) -> None:
         """Process a single chatbot: verify page, enter text, submit."""
         logger.info("[%s] Starting interaction...", cw.site.name)
+        self._record_window_event(cw, "interaction_started")
+        tab = self.bridge.tab(cw.tab_id, window_id=cw.window_id)
 
-        # Lock to this chatbot's tab
-        await self.bridge.lock_active_tab(cw.tab_id)
-        try:
-            await asyncio.sleep(0.5)
-
-            ready_result = await self._wait_for_input_ready(cw)
-            if not ready_result.get("found"):
-                logger.warning("[%s] Input selectors not ready after wait; falling back to screenshot + vision", cw.site.name)
-
-            # Screenshot and verify page loaded
-            img = await self._save_screenshot(cw, "01_loaded")
-            vision_result = await self._verify_with_vision(
-                cw, img,
-                f"Is this the {cw.site.name} chatbot website? Is it loaded and ready for input? "
-                f"Is the user logged in? Respond briefly.",
+        ready_result = await self._wait_for_input_ready(cw, tab)
+        if not ready_result.get("found"):
+            logger.warning("[%s] Input selectors not ready after wait; falling back to screenshot + vision", cw.site.name)
+            self._record_window_event(cw, "input_ready_timeout")
+        else:
+            self._record_window_event(
+                cw,
+                "input_ready",
+                selector=ready_result.get("selector", ""),
             )
-            cw.status = "ready"
-            cw.vision_logs.append(f"Ready check: {vision_result[:200]}")
+        cw.status = "ready"
 
-            # Find and click the input field
-            input_result = ready_result if ready_result.get("found") else {"found": False}
-            if input_result.get("found"):
-                logger.info("[%s] Input became ready via selector polling", cw.site.name)
-            else:
-                input_result = await self.bridge.find_chat_input(cw.site.input_selectors)
-            if not input_result.get("found"):
-                # Fallback: use vision to locate input
-                logger.info("[%s] Selectors failed, trying vision to find input...", cw.site.name)
-                location = self.vision.locate_element(img, "text input field or message box where I can type a question")
-                if location and location.get("found"):
-                    w, h = img.size
-                    click_x = int(location["x"] * w / 100)
-                    click_y = int(location["y"] * h / 100)
-                    await self.bridge.click_at(click_x, click_y)
-                    cw.vision_logs.append(f"Vision-located input at ({click_x}, {click_y})")
-                else:
-                    cw.status = "error"
-                    cw.error = "Could not find input field"
-                    return
-
-            await asyncio.sleep(0.3)
-
-            set_result = await self.bridge.set_chat_input_text(cw.site.input_selectors, question)
-            if not set_result.get("ok"):
-                click_x = input_result.get("inputX") or input_result.get("x")
-                click_y = input_result.get("inputY") or input_result.get("y")
-                if click_x and click_y:
-                    await self.bridge.click_at(click_x, click_y)
-                    await asyncio.sleep(0.2)
-                await self.bridge.type_text(question)
-            cw.status = "input_done"
-            logger.info("[%s] Question entered", cw.site.name)
-
-            await asyncio.sleep(0.5)
-
-            # Screenshot and verify text was entered
-            img = await self._save_screenshot(cw, "02_text_entered")
-            await self._verify_with_vision(
-                cw, img,
-                f"Has the question been entered in the {cw.site.name} input field? "
-                f"Can you see the text in the input area? Respond briefly.",
+        # Find and click the input field
+        input_result = ready_result if ready_result.get("found") else {"found": False}
+        if input_result.get("found"):
+            logger.info("[%s] Input became ready via selector polling", cw.site.name)
+            self._record_window_event(cw, "input_selector_confirmed")
+        else:
+            input_result = await tab.find_chat_input(cw.site.input_selectors)
+        if not input_result.get("found"):
+            # Fallback: use vision to locate input
+            logger.info("[%s] Selectors failed, trying vision to find input...", cw.site.name)
+            self._record_window_event(cw, "input_fallback_vision_started")
+            if self._simple_vision_ready_task is not None:
+                await self._simple_vision_ready_task
+                self._record_window_event(cw, "simple_model_ready")
+            img = await self._save_screenshot(cw, "01_loaded", tab=tab)
+            self._record_window_event(cw, "loaded_screenshot_saved")
+            ready_result_text, ready_elapsed, ready_profile = await self._verify_with_vision(
+                cw,
+                img,
+                READY_CHECK_PROMPT,
+                config=CHATBOT_PAGE_SIMPLE_CHECK,
             )
-
-            submit_result = await self.bridge.click_chat_submit(cw.site.submit_selectors)
-            if submit_result.get("clicked"):
-                logger.info("[%s] Submitted via visible send button", cw.site.name)
+            self._record_window_event(
+                cw,
+                "ready_check_finished",
+                seconds=round(ready_elapsed, 3),
+                profile=ready_profile,
+                result=ready_result_text[:32],
+            )
+            cw.vision_logs.append(f"Ready check: {ready_result_text[:200]}")
+            location = self.vision.locate_element(
+                img,
+                "text input field or message box where I can type a question",
+                config=CHATBOT_COMPLEX_FALLBACK_CHECK,
+            )
+            if location and location.get("found"):
+                w, h = img.size
+                click_x = int(location["x"] * w / 100)
+                click_y = int(location["y"] * h / 100)
+                await tab.click_at(click_x, click_y)
+                cw.vision_logs.append(f"Vision-located input at ({click_x}, {click_y})")
+                self._record_window_event(cw, "input_fallback_vision_succeeded", x=click_x, y=click_y)
             else:
-                logger.info("[%s] Send button not found, submitting via Enter key", cw.site.name)
-                await self.bridge.press_key("Enter", code="Enter")
+                cw.status = "error"
+                cw.error = "Could not find input field"
+                self._record_window_event(cw, "input_fallback_vision_failed")
+                return
+
+        set_result = await tab.set_chat_input_text(cw.site.input_selectors, question)
+        if not set_result.get("ok"):
+            await self._focus_chat_input(tab, input_result)
+            await tab.type_text(question)
+            self._record_window_event(cw, "question_typed_via_keyboard")
+        else:
+            self._record_window_event(
+                cw,
+                "question_set_via_dom",
+                applied_text_length=set_result.get("appliedTextLength", 0),
+                has_text=bool(set_result.get("hasText", False)),
+            )
+        cw.status = "input_done"
+        logger.info("[%s] Question entered", cw.site.name)
+        self._record_window_event(cw, "question_entered")
+
+        await asyncio.sleep(TEXT_SETTLE_S)
+        await self._save_screenshot(cw, "02_text_entered", tab=tab)
+        self._record_window_event(cw, "text_entered_screenshot_saved")
+
+        primary_strategy = "enter" if cw.site.submit_mode == "enter" else "button"
+        attempt_order = [primary_strategy]
+        if primary_strategy == "enter":
+            attempt_order.append("button")
+        else:
+            attempt_order.append("enter")
+
+        final_label = "UNKNOWN"
+        for attempt_index, strategy in enumerate(attempt_order, start=1):
+            attempt_name = f"{strategy}_{attempt_index}"
+
+            if strategy == "enter":
+                await self._focus_chat_input(tab, input_result)
+                await tab.press_key("Enter", code="Enter")
+                self._record_window_event(cw, "submitted_via_enter", attempt=attempt_name)
+            else:
+                submit_result = await tab.click_chat_submit(cw.site.submit_selectors, anchor=input_result)
+                self._record_window_event(
+                    cw,
+                    "submitted_via_button",
+                    attempt=attempt_name,
+                    clicked=bool(submit_result.get("clicked")),
+                    hint=submit_result.get("hint", ""),
+                    input_emptied=bool(submit_result.get("inputEmptied", False)),
+                )
+                if not submit_result.get("clicked"):
+                    self._record_window_event(cw, "submit_button_not_found", attempt=attempt_name)
+                    continue
+
             cw.status = "submitted"
-            logger.info("[%s] Question submitted", cw.site.name)
+            self._record_window_event(cw, "question_submitted", attempt=attempt_name)
+            await asyncio.sleep(POST_SUBMIT_SETTLE_S)
+            after_img = await self._save_screenshot(cw, f"03_after_submit_{attempt_name}", tab=tab)
+            self._record_window_event(cw, "post_submit_screenshot_saved", attempt=attempt_name)
 
-            # Wait and verify generation started
-            await asyncio.sleep(3)
-            img = await self._save_screenshot(cw, "03_generating")
-            await self._verify_with_vision(
-                cw, img,
-                f"Is {cw.site.name} generating a response? Can you see any output text appearing? "
-                f"Respond briefly.",
+            post_state = await tab.get_chat_input_state(cw.site.input_selectors)
+            self._record_window_event(
+                cw,
+                "post_submit_dom_state",
+                attempt=attempt_name,
+                found=bool(post_state.get("found", False)),
+                empty=bool(post_state.get("empty", False)),
+                text_length=int(post_state.get("textLength", 0) or 0),
             )
-            cw.status = "generating"
-        finally:
-            try:
-                await self.bridge.release_active_tab()
-            except Exception:
-                logger.debug("[%s] Failed to release active tab", cw.site.name, exc_info=True)
+            post_text = str(post_state.get("text", ""))
+            if post_state.get("found") and _composer_still_contains_prompt(post_text, question):
+                final_label = "READY"
+                logger.warning("[%s] Submit attempt %s left the prompt in the composer", cw.site.name, attempt_name)
+                self._record_window_event(cw, "submit_retry_needed", attempt=attempt_name, label=final_label)
+                continue
+
+            if post_state.get("found") and post_state.get("empty"):
+                final_label = "GENERATING"
+                cw.status = "generating"
+                cw.error = ""
+                self._record_window_event(cw, "submit_dom_confirmed_sent", attempt=attempt_name)
+                break
+
+            final_label = "UNKNOWN"
+            self._record_window_event(cw, "submit_dom_state_ambiguous", attempt=attempt_name)
+            break
+
+        if cw.status != "generating" and not cw.error:
+            if self.verify_visible_windows:
+                cw.status = "submitted"
+            else:
+                cw.status = "error"
+                cw.error = f"Prompt state stayed ambiguous after submit attempts ({final_label})"
+        self._record_window_event(cw, "interaction_finished", status=cw.status)
+
+    def _write_timing_breakdown(self, summary: dict) -> None:
+        """Write a readable markdown timing breakdown beside the summary."""
+        lines = ["# Timing Breakdown", "", f"Total elapsed: `{summary['elapsed_s']}s`", ""]
+
+        lines.append("## Global Timeline")
+        prev_t = None
+        for item in summary.get("timeline", []):
+            t = float(item.get("t", 0.0))
+            delta = "" if prev_t is None else f" (+{t - prev_t:.3f}s)"
+            detail = ", ".join(f"{k}={v}" for k, v in item.items() if k not in {"t", "event"})
+            suffix = f" | {detail}" if detail else ""
+            lines.append(f"- `{t:7.3f}s` {item.get('event')}{delta}{suffix}")
+            prev_t = t
+
+        for cb in summary.get("chatbots", []):
+            lines.extend(["", f"## {cb['name']}", ""])
+            prev_t = None
+            for item in cb.get("timeline", []):
+                t = float(item.get("t", 0.0))
+                delta = "" if prev_t is None else f" (+{t - prev_t:.3f}s)"
+                detail = ", ".join(f"{k}={v}" for k, v in item.items() if k not in {"t", "event"})
+                suffix = f" | {detail}" if detail else ""
+                lines.append(f"- `{t:7.3f}s` {item.get('event')}{delta}{suffix}")
+                prev_t = t
+
+        path = self.output_dir / "timing_breakdown.md"
+        path.write_text("\n".join(lines) + "\n", encoding="utf-8")
 
     # ── Report ────────────────────────────────────────────────
 
@@ -617,6 +950,7 @@ def run_multi_chat_sync(
     vision_backend: str | None = None,
     cleanup_orphaned: bool = True,
     verify_visible_windows: bool = True,
+    close_windows_on_finish: bool = False,
 ) -> dict:
     """Blocking entry point for CLI / Tauri integration."""
     async def _run():
@@ -626,6 +960,7 @@ def run_multi_chat_sync(
             vision_backend=vision_backend,
             cleanup_orphaned=cleanup_orphaned,
             verify_visible_windows=verify_visible_windows,
+            close_windows_on_finish=close_windows_on_finish,
         )
         return await runner.run(question)
 

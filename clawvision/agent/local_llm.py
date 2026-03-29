@@ -29,11 +29,43 @@ DEFAULT_LOCAL_MODEL = "Qwen3.5-9B-MLX-4bit"
 _cache: dict[str, object] = {}
 
 
+def _local_model_candidates(name: str) -> list[str]:
+    candidates = [name]
+    if "/" in name:
+        candidates.append(name.rsplit("/", 1)[-1])
+    return candidates
+
+
+def _local_model_is_complete(local: Path) -> bool:
+    safetensors = list(local.glob("*.safetensors"))
+    if not safetensors:
+        return False
+
+    index_path = local / "model.safetensors.index.json"
+    if not index_path.exists():
+        return True
+
+    try:
+        import json
+
+        index = json.loads(index_path.read_text())
+        expected_total = int((index.get("metadata") or {}).get("total_size") or 0)
+    except Exception:
+        expected_total = 0
+
+    if expected_total <= 0:
+        return True
+
+    actual_total = sum(path.stat().st_size for path in safetensors)
+    return actual_total >= int(expected_total * 0.98)
+
+
 def _resolve_model_path(name: str) -> str:
     """Return a local path if the model exists in WEIGHTS_DIR, else return name as-is."""
-    local = WEIGHTS_DIR / name
-    if local.is_dir() and any(local.glob("*.safetensors")):
-        return str(local)
+    for candidate in _local_model_candidates(name):
+        local = WEIGHTS_DIR / candidate
+        if local.is_dir() and _local_model_is_complete(local):
+            return str(local)
     return name
 
 
@@ -211,8 +243,11 @@ class LocalLLM:
     @staticmethod
     def is_available(model_name: str = DEFAULT_LOCAL_MODEL) -> bool:
         """Check whether the local model weights are downloaded."""
-        local = WEIGHTS_DIR / model_name
-        return local.is_dir() and any(local.glob("*.safetensors"))
+        for candidate in _local_model_candidates(model_name):
+            local = WEIGHTS_DIR / candidate
+            if local.is_dir() and _local_model_is_complete(local):
+                return True
+        return False
 
 
 def _strip_think_tags(text: str) -> str:

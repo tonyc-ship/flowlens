@@ -21,6 +21,62 @@ import websockets
 from websockets.asyncio.server import serve
 
 
+class TabBridge:
+    """Tab-scoped automation view over a shared ExtensionBridge."""
+
+    def __init__(self, bridge: "ExtensionBridge", tab_id: int, *, window_id: int | None = None):
+        self.bridge = bridge
+        self.tab_id = tab_id
+        self.window_id = window_id
+
+    async def navigate(self, url: str, wait_ms: int = 5000) -> dict:
+        return await self.bridge.navigate(url, wait_ms=wait_ms, tab_id=self.tab_id)
+
+    async def capture_screenshot(self) -> str:
+        return await self.bridge.capture_screenshot(tab_id=self.tab_id)
+
+    async def save_screenshot(self, path: str | Path) -> str:
+        return await self.bridge.save_screenshot(path, tab_id=self.tab_id)
+
+    async def get_tab_info(self) -> dict:
+        return await self.bridge.get_tab_info(tab_id=self.tab_id)
+
+    async def run_js(self, code: str) -> dict:
+        return await self.bridge.run_js(code, tab_id=self.tab_id)
+
+    async def find_chat_input(self, selectors: list[str]) -> dict:
+        return await self.bridge.find_chat_input(selectors, tab_id=self.tab_id)
+
+    async def set_chat_input_text(self, selectors: list[str], text: str) -> dict:
+        return await self.bridge.set_chat_input_text(selectors, text, tab_id=self.tab_id)
+
+    async def get_chat_input_state(self, selectors: list[str]) -> dict:
+        return await self.bridge.get_chat_input_state(selectors, tab_id=self.tab_id)
+
+    async def click_chat_submit(self, selectors: list[str], *, anchor: dict | None = None) -> dict:
+        return await self.bridge.click_chat_submit(selectors, tab_id=self.tab_id, anchor=anchor)
+
+    async def click_at(self, x: int, y: int) -> dict:
+        return await self.bridge.click_at(x, y, tab_id=self.tab_id)
+
+    async def mouse_move(self, x: int, y: int) -> dict:
+        return await self.bridge.mouse_move(x, y, tab_id=self.tab_id)
+
+    async def press_key(self, key: str, *, code: str | None = None, windows_virtual_key_code: int | None = None) -> dict:
+        return await self.bridge.press_key(
+            key,
+            code=code,
+            windows_virtual_key_code=windows_virtual_key_code,
+            tab_id=self.tab_id,
+        )
+
+    async def type_text(self, text: str) -> dict:
+        return await self.bridge.type_text(text, tab_id=self.tab_id)
+
+    async def scroll_page(self, pixels: int = 600) -> dict:
+        return await self.bridge.scroll_page(pixels, tab_id=self.tab_id)
+
+
 class ExtensionBridge:
     """WebSocket server that communicates with the Chrome Extension."""
 
@@ -54,7 +110,13 @@ class ExtensionBridge:
         )
         self._log("server_started", f"Listening on ws://localhost:{self.port}")
 
-    async def wait_for_connection(self, timeout: float = 120, *, require_watch: bool = False):
+    async def wait_for_connection(
+        self,
+        timeout: float = 120,
+        *,
+        require_watch: bool = False,
+        warmup_active_tab: bool = True,
+    ):
         """Wait for the Chrome Extension to connect."""
         self._log("waiting", f"Waiting for extension to connect (timeout={timeout}s)...")
         deadline = asyncio.get_running_loop().time() + timeout
@@ -86,14 +148,15 @@ class ExtensionBridge:
 
         self._log("extension_connected", "Chrome Extension connected")
 
-        # Warmup: wait for extension to set activeTabId (async in onopen callback)
-        await asyncio.sleep(1)
-        for _ in range(3):
-            try:
-                await self.get_tab_info()
-                break
-            except Exception:
-                await asyncio.sleep(1)
+        if warmup_active_tab:
+            # Warmup: wait for extension to set activeTabId (async in onopen callback)
+            await asyncio.sleep(1)
+            for _ in range(3):
+                try:
+                    await self.get_tab_info()
+                    break
+                except Exception:
+                    await asyncio.sleep(1)
 
     async def _handle_connection(self, ws):
         """Handle incoming WebSocket connection from extension."""
@@ -236,20 +299,31 @@ class ExtensionBridge:
 
         raise RuntimeError(f"Command '{action}' failed after {_retries} attempts: {last_error}")
 
+    @staticmethod
+    def _with_tab(params: dict | None = None, tab_id: int | None = None) -> dict:
+        merged = dict(params or {})
+        if tab_id is not None:
+            merged["tabId"] = tab_id
+        return merged
+
+    def tab(self, tab_id: int, *, window_id: int | None = None) -> TabBridge:
+        """Bind bridge commands to one specific Chrome tab."""
+        return TabBridge(self, tab_id, window_id=window_id)
+
     # ── Generic Browser Operations ─────────────────────────────
 
-    async def navigate(self, url: str, wait_ms: int = 5000) -> dict:
+    async def navigate(self, url: str, wait_ms: int = 5000, *, tab_id: int | None = None) -> dict:
         """Navigate the active tab to a URL."""
-        return await self.send_command("navigate", {"url": url, "wait": wait_ms})
+        return await self.send_command("navigate", self._with_tab({"url": url, "wait": wait_ms}, tab_id))
 
-    async def capture_screenshot(self) -> str:
+    async def capture_screenshot(self, *, tab_id: int | None = None) -> str:
         """Capture screenshot of visible tab. Returns base64 data URL."""
-        result = await self.send_command("capture_screenshot")
+        result = await self.send_command("capture_screenshot", self._with_tab({}, tab_id))
         return result.get("screenshot", "")
 
-    async def save_screenshot(self, path: str | Path) -> str:
+    async def save_screenshot(self, path: str | Path, *, tab_id: int | None = None) -> str:
         """Capture and save screenshot to file. Returns the path."""
-        data_url = await self.capture_screenshot()
+        data_url = await self.capture_screenshot(tab_id=tab_id)
         if not data_url:
             return ""
         b64_data = data_url.split(",", 1)[1] if "," in data_url else data_url
@@ -259,36 +333,49 @@ class ExtensionBridge:
         path.write_bytes(img_bytes)
         return str(path)
 
-    async def get_tab_info(self) -> dict:
+    async def get_tab_info(self, *, tab_id: int | None = None) -> dict:
         """Get current tab URL and title."""
-        return await self.send_command("get_tab_info")
+        return await self.send_command("get_tab_info", self._with_tab({}, tab_id))
 
-    async def run_js(self, code: str) -> dict:
+    async def run_js(self, code: str, *, tab_id: int | None = None) -> dict:
         """Execute JavaScript in the page's MAIN world context."""
-        return await self.send_command("run_js", {"code": code})
+        return await self.send_command("run_js", self._with_tab({"code": code}, tab_id))
 
-    async def find_chat_input(self, selectors: list[str]) -> dict:
+    async def find_chat_input(self, selectors: list[str], *, tab_id: int | None = None) -> dict:
         """Find the best visible chatbot input candidate in the current tab."""
-        return await self.send_command("find_chat_input", {"selectors": selectors})
+        return await self.send_command("find_chat_input", self._with_tab({"selectors": selectors}, tab_id))
 
-    async def set_chat_input_text(self, selectors: list[str], text: str) -> dict:
+    async def set_chat_input_text(self, selectors: list[str], text: str, *, tab_id: int | None = None) -> dict:
         """Set chatbot input text directly through DOM-safe execution."""
-        return await self.send_command("set_chat_input_text", {
-            "selectors": selectors,
-            "text": text,
-        })
+        return await self.send_command(
+            "set_chat_input_text",
+            self._with_tab({"selectors": selectors, "text": text}, tab_id),
+        )
 
-    async def click_chat_submit(self, selectors: list[str]) -> dict:
+    async def get_chat_input_state(self, selectors: list[str], *, tab_id: int | None = None) -> dict:
+        """Inspect the current chat input value / focus state in a specific tab."""
+        return await self.send_command("get_chat_input_state", self._with_tab({"selectors": selectors}, tab_id))
+
+    async def click_chat_submit(
+        self,
+        selectors: list[str],
+        *,
+        tab_id: int | None = None,
+        anchor: dict | None = None,
+    ) -> dict:
         """Click the best visible chatbot submit button in the current tab."""
-        return await self.send_command("click_chat_submit", {"selectors": selectors})
+        params = {"selectors": selectors}
+        if anchor:
+            params["anchor"] = anchor
+        return await self.send_command("click_chat_submit", self._with_tab(params, tab_id))
 
-    async def click_at(self, x: int, y: int) -> dict:
+    async def click_at(self, x: int, y: int, *, tab_id: int | None = None) -> dict:
         """CDP-based real mouse click at viewport coordinates."""
-        return await self.send_command("click_at", {"x": x, "y": y})
+        return await self.send_command("click_at", self._with_tab({"x": x, "y": y}, tab_id))
 
-    async def mouse_move(self, x: int, y: int) -> dict:
+    async def mouse_move(self, x: int, y: int, *, tab_id: int | None = None) -> dict:
         """CDP-based mouse move to viewport coordinates."""
-        return await self.send_command("mouse_move", {"x": x, "y": y})
+        return await self.send_command("mouse_move", self._with_tab({"x": x, "y": y}, tab_id))
 
     async def create_background_window(
         self,
@@ -329,22 +416,29 @@ class ExtensionBridge:
         """Release the pinned automation tab."""
         return await self.send_command("release_active_tab")
 
-    async def press_key(self, key: str, *, code: str | None = None, windows_virtual_key_code: int | None = None) -> dict:
+    async def press_key(
+        self,
+        key: str,
+        *,
+        code: str | None = None,
+        windows_virtual_key_code: int | None = None,
+        tab_id: int | None = None,
+    ) -> dict:
         """Dispatch a real key press via CDP."""
         params = {"key": key}
         if code is not None:
             params["code"] = code
         if windows_virtual_key_code is not None:
             params["windowsVirtualKeyCode"] = windows_virtual_key_code
-        return await self.send_command("press_key", params)
+        return await self.send_command("press_key", self._with_tab(params, tab_id))
 
-    async def type_text(self, text: str) -> dict:
+    async def type_text(self, text: str, *, tab_id: int | None = None) -> dict:
         """Insert text at the current cursor position via CDP Input.insertText.
 
         Works with textareas, contenteditable, ProseMirror, etc.
         Handles Unicode/CJK without IME simulation.
         """
-        return await self.send_command("type_text", {"text": text})
+        return await self.send_command("type_text", self._with_tab({"text": text}, tab_id))
 
     async def reload_extension(self) -> None:
         """Reload the Chrome Extension to pick up code changes.
@@ -370,9 +464,9 @@ class ExtensionBridge:
             self._log("reload_failed", "Extension did not reconnect after reload")
             raise
 
-    async def scroll_page(self, pixels: int = 600) -> dict:
+    async def scroll_page(self, pixels: int = 600, *, tab_id: int | None = None) -> dict:
         """Scroll the page."""
-        return await self.send_command("scroll_page", {"pixels": pixels})
+        return await self.send_command("scroll_page", self._with_tab({"pixels": pixels}, tab_id))
 
     # ── Watch Mode ─────────────────────────────────────────────
 

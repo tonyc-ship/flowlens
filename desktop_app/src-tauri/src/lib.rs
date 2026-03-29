@@ -1,9 +1,11 @@
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
+use serde_json::Value;
 use std::env;
 use std::ffi::OsString;
 use std::fs::{self, File};
+use std::io::{BufRead, BufReader, Write};
 use std::path::{Path, PathBuf};
-use std::process::{Command, Stdio};
+use std::process::{Child, ChildStdin, ChildStdout, Command, Stdio};
 use std::sync::Mutex;
 use std::time::{SystemTime, UNIX_EPOCH};
 use tauri::{AppHandle, Emitter, Manager, State};
@@ -21,13 +23,13 @@ struct HealthStatus {
     ready: bool,
 }
 
-#[derive(Clone, Serialize)]
+#[derive(Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 struct TaskStub {
     id: String,
     kind: String,
     prompt: String,
-    status: &'static str,
+    status: String,
     created_at: String,
     log_path: String,
     output_root: String,
@@ -36,6 +38,15 @@ struct TaskStub {
 
 #[derive(Default)]
 struct LatestChatbotsTask(Mutex<Option<TaskStub>>);
+
+#[derive(Default)]
+struct ChatbotsCompanionState(Mutex<Option<ChatbotsCompanionHandle>>);
+
+struct ChatbotsCompanionHandle {
+    child: Child,
+    stdin: ChildStdin,
+    stdout: BufReader<ChildStdout>,
+}
 
 enum LauncherKind {
     Binary,
@@ -195,7 +206,7 @@ fn make_task_stub(
         id,
         kind: kind.to_string(),
         prompt: prompt.to_string(),
-        status: "running",
+        status: "running".to_string(),
         created_at,
         log_path: log_path.to_string_lossy().into_owned(),
         output_root: output_root.to_string_lossy().into_owned(),
@@ -266,33 +277,128 @@ fn spawn_clawvision(
     ))
 }
 
+fn companion_is_alive(handle: &mut ChatbotsCompanionHandle) -> bool {
+    matches!(handle.child.try_wait(), Ok(None))
+}
+
+fn parse_task_stub(value: &Value) -> Result<TaskStub, String> {
+    serde_json::from_value::<TaskStub>(value.clone())
+        .map_err(|err| format!("Failed to parse companion task payload: {err}"))
+}
+
+fn spawn_chatbots_companion(app: &AppHandle) -> Result<ChatbotsCompanionHandle, String> {
+    let runtime = resolve_runtime(app)?;
+    let companion_dir = app
+        .path()
+        .app_data_dir()
+        .map_err(|err| format!("Failed to resolve app data dir: {err}"))?
+        .join("companion");
+    fs::create_dir_all(&companion_dir).map_err(|err| format!("Failed to create companion dir: {err}"))?;
+    let log_path = companion_dir.join("chatbots-companion.log");
+    let stderr = File::create(&log_path).map_err(|err| format!("Failed to create companion log: {err}"))?;
+
+    let mut child = Command::new(&runtime.launcher);
+    child
+        .current_dir(&runtime.workdir)
+        .env("PYTHONUNBUFFERED", "1")
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::from(stderr));
+
+    match runtime.launcher_kind {
+        LauncherKind::Binary => {}
+        LauncherKind::Python => {
+            child
+                .env("PYTHONPATH", build_pythonpath(&runtime.workdir)?)
+                .arg("-m")
+                .arg("clawvision");
+        }
+    }
+
+    child
+        .arg("chatbots-companion")
+        .arg("--port")
+        .arg("8765")
+        .arg("--vision")
+        .arg("qwen-local")
+        .arg("--output-root-base")
+        .arg(runtime.output_root.join("multi_chat"));
+
+    let mut child = child.spawn().map_err(|err| format!("Failed to start chatbot companion: {err}"))?;
+    let stdin = child
+        .stdin
+        .take()
+        .ok_or_else(|| "Companion stdin not available".to_string())?;
+    let stdout = child
+        .stdout
+        .take()
+        .ok_or_else(|| "Companion stdout not available".to_string())?;
+    let mut stdout = BufReader::new(stdout);
+    let mut ready_line = String::new();
+    stdout
+        .read_line(&mut ready_line)
+        .map_err(|err| format!("Failed to read companion ready line: {err}"))?;
+    if ready_line.trim().is_empty() {
+        return Err("Chatbot companion exited before sending ready line".to_string());
+    }
+    let _: Value = serde_json::from_str(ready_line.trim())
+        .map_err(|err| format!("Invalid companion ready payload: {err}"))?;
+
+    Ok(ChatbotsCompanionHandle { child, stdin, stdout })
+}
+
+fn with_chatbots_companion<T>(
+    app: &AppHandle,
+    mut f: impl FnMut(&mut ChatbotsCompanionHandle) -> Result<T, String>,
+) -> Result<T, String> {
+    let state = app.state::<ChatbotsCompanionState>();
+    let mut guard = state
+        .0
+        .lock()
+        .map_err(|_| "Chatbots companion state is poisoned".to_string())?;
+
+    let needs_spawn = match guard.as_mut() {
+        Some(handle) => !companion_is_alive(handle),
+        None => true,
+    };
+    if needs_spawn {
+        *guard = Some(spawn_chatbots_companion(app)?);
+    }
+
+    f(guard
+        .as_mut()
+        .ok_or_else(|| "Chatbots companion unavailable".to_string())?)
+}
+
+fn request_chatbots_companion(app: &AppHandle, request: Value) -> Result<Value, String> {
+    with_chatbots_companion(app, |handle| {
+        let line = serde_json::to_string(&request)
+            .map_err(|err| format!("Failed to encode companion request: {err}"))?;
+        handle
+            .stdin
+            .write_all(line.as_bytes())
+            .and_then(|_| handle.stdin.write_all(b"\n"))
+            .and_then(|_| handle.stdin.flush())
+            .map_err(|err| format!("Failed to write companion request: {err}"))?;
+
+        let mut response_line = String::new();
+        handle
+            .stdout
+            .read_line(&mut response_line)
+            .map_err(|err| format!("Failed to read companion response: {err}"))?;
+        if response_line.trim().is_empty() {
+            return Err("Companion returned an empty response".to_string());
+        }
+        serde_json::from_str::<Value>(response_line.trim())
+            .map_err(|err| format!("Failed to decode companion response: {err}"))
+    })
+}
+
 fn store_chatbots_task(app: &AppHandle, task: &TaskStub) {
     if let Ok(mut slot) = app.state::<LatestChatbotsTask>().0.lock() {
         *slot = Some(task.clone());
     }
     let _ = app.emit("chatbots-launch-requested", task);
-}
-
-fn process_is_alive(pid: u32) -> bool {
-    Command::new("kill")
-        .arg("-0")
-        .arg(pid.to_string())
-        .status()
-        .map(|status| status.success())
-        .unwrap_or(false)
-}
-
-fn active_chatbots_task(app: &AppHandle) -> Option<TaskStub> {
-    let state = app.state::<LatestChatbotsTask>();
-    let mut guard = state.0.lock().ok()?;
-    match guard.clone() {
-        Some(task) if process_is_alive(task.pid) => Some(task),
-        Some(_) => {
-            *guard = None;
-            None
-        }
-        None => None,
-    }
 }
 
 fn spawn_chatbots_task(
@@ -305,29 +411,28 @@ fn spawn_chatbots_task(
         return Err("Question is empty".to_string());
     }
 
-    if let Some(existing) = active_chatbots_task(app) {
-        if let Some(window) = app.get_webview_window("main") {
-            let _ = window.show();
-            let _ = window.unminimize();
-            let _ = window.set_focus();
-        }
-        return Err(format!(
-            "A chatbot fan-out run is already active (pid {}). Wait for it to finish before starting another.",
-            existing.pid
-        ));
-    }
-
-    let task = spawn_clawvision(
+    let response = request_chatbots_companion(
         app,
-        "chatbots",
-        "multi_chatbot",
-        trimmed,
-        "multi_chat",
-        &[
-            OsString::from("chatbots"),
-            OsString::from(trimmed),
-        ],
-        "--output",
+        serde_json::json!({
+            "action": "ask_chatbots",
+            "question": trimmed,
+            "closeWindowsOnFinish": false,
+            "launchSource": launch_source,
+        }),
+    )?;
+    if response.get("ok").and_then(Value::as_bool) != Some(true) {
+        return Err(
+            response
+                .get("error")
+                .and_then(Value::as_str)
+                .unwrap_or("Chatbots companion request failed")
+                .to_string(),
+        );
+    }
+    let task = parse_task_stub(
+        response
+            .get("task")
+            .ok_or_else(|| "Chatbots companion response missing task".to_string())?,
     )?;
 
     store_chatbots_task(app, &task);
@@ -379,7 +484,20 @@ fn handle_deep_links(app: &AppHandle, urls: &[Url]) {
 }
 
 #[tauri::command]
-fn latest_chatbots_task(state: State<'_, LatestChatbotsTask>) -> Result<Option<TaskStub>, String> {
+fn latest_chatbots_task(app: AppHandle, state: State<'_, LatestChatbotsTask>) -> Result<Option<TaskStub>, String> {
+    if let Ok(response) = request_chatbots_companion(&app, serde_json::json!({ "action": "latest_task" })) {
+        if response.get("ok").and_then(Value::as_bool) == Some(true) {
+            let task = match response.get("task") {
+                Some(value) if !value.is_null() => Some(parse_task_stub(value)?),
+                _ => None,
+            };
+            if let Ok(mut slot) = state.0.lock() {
+                *slot = task.clone();
+            }
+            return Ok(task);
+        }
+    }
+
     let guard = state
         .0
         .lock()
@@ -443,9 +561,15 @@ fn ask_chatbots(app: AppHandle, question: String) -> Result<TaskStub, String> {
 pub fn run() {
     let builder = tauri::Builder::default()
         .manage(LatestChatbotsTask::default())
+        .manage(ChatbotsCompanionState::default())
         .plugin(tauri_plugin_deep_link::init())
         .setup(|app| {
             let app_handle = app.handle().clone();
+
+            let companion_handle = app_handle.clone();
+            tauri::async_runtime::spawn(async move {
+                let _ = request_chatbots_companion(&companion_handle, serde_json::json!({ "action": "status" }));
+            });
 
             if let Some(urls) = app.deep_link().get_current()? {
                 handle_deep_links(&app_handle, &urls);

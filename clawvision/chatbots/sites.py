@@ -13,6 +13,7 @@ class ChatbotSite:
     url: str
     input_selectors: list[str]
     submit_selectors: list[str]
+    submit_mode: str = "auto"
 
 
 CHATBOT_SITES = [
@@ -31,6 +32,7 @@ CHATBOT_SITES = [
             'button[aria-label*="Send"]',
             'button[aria-label*="send"]',
         ],
+        submit_mode="enter",
     ),
     ChatbotSite(
         name="Gemini",
@@ -47,6 +49,7 @@ CHATBOT_SITES = [
             'button.send-button',
             "button.send",
         ],
+        submit_mode="enter",
     ),
     ChatbotSite(
         name="Claude",
@@ -62,5 +65,6 @@ CHATBOT_SITES = [
             'button[aria-label*="send"]',
             'fieldset button:not([disabled])',
         ],
+        submit_mode="enter",
     ),
 ]

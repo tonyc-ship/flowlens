@@ -26,6 +26,8 @@ def build_parser() -> argparse.ArgumentParser:
                         help="Skip automatic cleanup of stale temp-profile Chrome processes")
     parser.add_argument("--skip-visible-verify", action="store_true",
                         help="Skip local visual verification of real visible Chrome windows")
+    parser.add_argument("--close-windows-on-exit", action="store_true",
+                        help="Close the Chrome windows created for this run before exiting")
     parser.add_argument("--verbose", action="store_true", help="Enable debug logging")
     return parser
 
@@ -56,6 +58,7 @@ def main(argv: list[str] | None = None) -> int:
         vision_backend=args.vision,
         cleanup_orphaned=not args.skip_preflight_cleanup,
         verify_visible_windows=not args.skip_visible_verify,
+        close_windows_on_finish=args.close_windows_on_exit,
     )
 
     # Print summary

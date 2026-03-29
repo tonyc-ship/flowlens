@@ -25,7 +25,7 @@ let pinnedWindowId = null;
 let contentReady = new Map(); // tabId -> true
 let reconnectTimer = null;
 let wsPort = DEFAULT_PORT;
-let debuggerQueue = Promise.resolve();
+const debuggerQueues = new Map();
 const sidePanelPorts = new Set();
 
 // ── Watch Mode State ──────────────────────────────────────────
@@ -36,6 +36,10 @@ const WATCH_LOG_MAX = 500;
 
 function targetTabId() {
   return pinnedTabId || activeTabId;
+}
+
+function commandTabId(params = {}) {
+  return params.tabId || targetTabId();
 }
 
 function pinTab(tabId, windowId = null) {
@@ -49,9 +53,11 @@ function releasePinnedTab() {
   pinnedWindowId = null;
 }
 
-function enqueueDebuggerTask(task) {
-  const run = debuggerQueue.then(() => task(), () => task());
-  debuggerQueue = run.catch(() => {});
+function enqueueDebuggerTask(tabId, task) {
+  const key = String(tabId || 'default');
+  const previous = debuggerQueues.get(key) || Promise.resolve();
+  const run = previous.then(() => task(), () => task());
+  debuggerQueues.set(key, run.catch(() => {}));
   return run;
 }
 
@@ -63,7 +69,7 @@ function withTimeout(promise, timeoutMs, label = 'debugger operation') {
 }
 
 async function withTabDebugger(tabId, work, timeoutMs = 5000) {
-  return enqueueDebuggerTask(async () => {
+  return enqueueDebuggerTask(tabId, async () => {
     const target = { tabId };
     await chrome.debugger.attach(target, '1.3');
     try {
@@ -481,7 +487,7 @@ function describeResult(action, result) {
 async function captureScreenshot(params = {}) {
   const quality = params.quality || 70;
   const format = params.format || 'jpeg';
-  const tabId = targetTabId();
+  const tabId = commandTabId(params);
 
   // Method 1: CDP via chrome.debugger (most reliable in MV3)
   if (tabId) {
@@ -501,6 +507,7 @@ async function captureScreenshot(params = {}) {
       if (debugResult) return debugResult;
     } catch (attachErr) {
       console.error('[BG] debugger.attach failed:', attachErr.message);
+      return { screenshot: '', error: `Debugger screenshot failed for tab ${tabId}: ${attachErr.message}` };
     }
   }
 
@@ -676,6 +683,11 @@ async function setChatInputText(tabId, selectors = [], text = '') {
       );
     };
     const editableSelector = 'textarea, input, [contenteditable="true"], [role="textbox"], .ProseMirror, .ql-editor';
+    const textFor = (editable) => {
+      if (!editable) return '';
+      if (editable.matches?.('textarea, input')) return String(editable.value || '').replace(/\s+/g, ' ').trim();
+      return String(editable.innerText || editable.textContent || '').replace(/\s+/g, ' ').trim();
+    };
     const editableFor = (source) => {
       if (!source) return null;
       if (source.matches?.(editableSelector)) return source;
@@ -772,6 +784,8 @@ async function setChatInputText(tabId, selectors = [], text = '') {
       }
     }
 
+    const appliedText = textFor(editable);
+
     return {
       ok: true,
       found: true,
@@ -779,12 +793,135 @@ async function setChatInputText(tabId, selectors = [], text = '') {
       tag: editable.tagName,
       contentEditable: editable.isContentEditable || editable.getAttribute('contenteditable') === 'true',
       textLength: text.length,
+      appliedTextLength: appliedText.length,
+      hasText: appliedText.length > 0,
     };
   }, [selectors, text]);
 }
 
-async function clickChatSubmit(tabId, selectors = []) {
+async function getChatInputState(tabId, selectors = []) {
   return await executeDomScript(tabId, (selectors) => {
+    const heuristicSelector = [
+      'textarea',
+      'input[type="text"]',
+      'input:not([type])',
+      '[contenteditable="true"]',
+      '[role="textbox"]',
+      '[placeholder]',
+      '[data-placeholder]',
+      '[aria-label]',
+      '.ProseMirror',
+      '.ql-editor',
+    ].join(',');
+
+    const normalize = (value) => String(value || '').replace(/\s+/g, ' ').trim();
+    const isVisible = (el) => {
+      if (!el) return false;
+      const style = getComputedStyle(el);
+      const rect = el.getBoundingClientRect();
+      return (
+        style.display !== 'none' &&
+        style.visibility !== 'hidden' &&
+        style.opacity !== '0' &&
+        rect.width > 0 &&
+        rect.height > 0
+      );
+    };
+    const editableSelector = 'textarea, input, [contenteditable="true"], [role="textbox"], .ProseMirror, .ql-editor';
+    const editableFor = (source) => {
+      if (!source) return null;
+      if (source.matches?.(editableSelector)) return source;
+      return source.querySelector?.(editableSelector) || null;
+    };
+    const targetFor = (editable) => {
+      let node = editable;
+      let best = editable;
+      while (node && node !== document.body) {
+        if (isVisible(node)) {
+          const rect = node.getBoundingClientRect();
+          if (rect.width >= 220 && rect.height >= 28 && rect.height <= 280) {
+            best = node;
+          }
+        }
+        node = node.parentElement;
+      }
+      return best;
+    };
+    const textFor = (editable) => {
+      if (!editable) return '';
+      if (editable.matches?.('textarea, input')) {
+        return normalize(editable.value);
+      }
+      return normalize(editable.innerText || editable.textContent);
+    };
+
+    let best = null;
+    let bestScore = -1;
+    const seen = new Set();
+    const consider = (source, selector = '') => {
+      const editable = editableFor(source);
+      if (!editable || seen.has(editable) || !isVisible(editable)) return;
+      seen.add(editable);
+      const target = targetFor(editable);
+      const rect = target.getBoundingClientRect();
+      const textHint = normalize(
+        editable.getAttribute('placeholder') ||
+        editable.getAttribute('data-placeholder') ||
+        editable.getAttribute('aria-label') ||
+        target.getAttribute?.('aria-label') ||
+        target.getAttribute?.('data-placeholder')
+      ).toLowerCase();
+      let score = 0;
+      if (selector) score += 40;
+      if (editable.matches('textarea')) score += 30;
+      if (editable.matches('input')) score += 18;
+      if (editable.isContentEditable || editable.getAttribute('contenteditable') === 'true') score += 26;
+      if (textHint.includes('ask') || textHint.includes('message') || textHint.includes('help') || textHint.includes('today')) score += 18;
+      if (rect.bottom > window.innerHeight - 320) score += 14;
+      if (rect.width > 220) score += 10;
+      if (score > bestScore) {
+        best = { editable, target, selector };
+        bestScore = score;
+      }
+    };
+
+    for (const selector of selectors || []) {
+      try {
+        document.querySelectorAll(selector).forEach((node) => consider(node, selector));
+      } catch {}
+    }
+    document.querySelectorAll(heuristicSelector).forEach((node) => consider(node));
+
+    if (!best?.editable) return { found: false };
+
+    const editable = best.editable;
+    const target = best.target || editable;
+    const rect = target.getBoundingClientRect();
+    const inputRect = editable.getBoundingClientRect();
+    const text = textFor(editable);
+    return {
+      found: true,
+      selector: best.selector || '',
+      tag: editable.tagName,
+      contentEditable: editable.isContentEditable || editable.getAttribute('contenteditable') === 'true',
+      text,
+      textLength: text.length,
+      empty: text.length === 0,
+      x: Math.round(rect.left + rect.width / 2),
+      y: Math.round(rect.top + rect.height / 2),
+      width: Math.round(rect.width),
+      height: Math.round(rect.height),
+      inputX: Math.round(inputRect.left + inputRect.width / 2),
+      inputY: Math.round(inputRect.top + inputRect.height / 2),
+      inputWidth: Math.round(inputRect.width),
+      inputHeight: Math.round(inputRect.height),
+      focused: document.activeElement === editable || editable.contains?.(document.activeElement),
+    };
+  }, [selectors]);
+}
+
+async function clickChatSubmit(tabId, selectors = [], anchor = null) {
+  return await executeDomScript(tabId, async (selectors, anchor) => {
     const normalize = (value) => String(value || '').trim().toLowerCase();
     const isVisible = (el) => {
       if (!el) return false;
@@ -798,6 +935,80 @@ async function clickChatSubmit(tabId, selectors = []) {
         rect.height > 0
       );
     };
+    const editableSelector = 'textarea, input, [contenteditable="true"], [role="textbox"], .ProseMirror, .ql-editor';
+    const editableFor = (source) => {
+      if (!source) return null;
+      if (source.matches?.(editableSelector)) return source;
+      return source.querySelector?.(editableSelector) || null;
+    };
+    const targetFor = (editable) => {
+      let node = editable;
+      let best = editable;
+      while (node && node !== document.body) {
+        if (isVisible(node)) {
+          const rect = node.getBoundingClientRect();
+          if (rect.width >= 220 && rect.height >= 28 && rect.height <= 280) {
+            best = node;
+          }
+        }
+        node = node.parentElement;
+      }
+      return best;
+    };
+    const textFor = (editable) => {
+      if (!editable) return '';
+      if (editable.matches?.('textarea, input')) {
+        return String(editable.value || '').replace(/\s+/g, ' ').trim();
+      }
+      return String(editable.innerText || editable.textContent || '').replace(/\s+/g, ' ').trim();
+    };
+
+    const heuristicSelector = [
+      'textarea',
+      'input[type="text"]',
+      'input:not([type])',
+      '[contenteditable="true"]',
+      '[role="textbox"]',
+      '.ProseMirror',
+      '.ql-editor',
+    ].join(',');
+
+    let bestInput = null;
+    let bestInputScore = -1;
+    const seenInputs = new Set();
+    const considerInput = (source, selector = '') => {
+      const editable = editableFor(source);
+      if (!editable || seenInputs.has(editable) || !isVisible(editable)) return;
+      seenInputs.add(editable);
+      const target = targetFor(editable);
+      const rect = target.getBoundingClientRect();
+      const textHint = normalize(
+        editable.getAttribute('placeholder') ||
+        editable.getAttribute('data-placeholder') ||
+        editable.getAttribute('aria-label') ||
+        target.getAttribute?.('aria-label') ||
+        target.getAttribute?.('data-placeholder')
+      );
+      let score = 0;
+      if (selector) score += 40;
+      if (editable.matches('textarea')) score += 30;
+      if (editable.matches('input')) score += 18;
+      if (editable.isContentEditable || editable.getAttribute('contenteditable') === 'true') score += 26;
+      if (textHint.includes('ask') || textHint.includes('message') || textHint.includes('help') || textHint.includes('today')) score += 18;
+      if (rect.bottom > window.innerHeight - 320) score += 14;
+      if (rect.width > 220) score += 10;
+      if (score > bestInputScore) {
+        bestInput = { editable, target, selector, rect };
+        bestInputScore = score;
+      }
+    };
+
+    for (const selector of selectors || []) {
+      try {
+        document.querySelectorAll(selector).forEach((node) => considerInput(node, selector));
+      } catch {}
+    }
+    document.querySelectorAll(heuristicSelector).forEach((node) => considerInput(node));
 
     const candidates = [];
     const seen = new Set();
@@ -816,13 +1027,39 @@ async function clickChatSubmit(tabId, selectors = []) {
         el.innerText ||
         el.className
       );
+      const textOnly = normalize(el.textContent || el.innerText);
+      const role = normalize(el.getAttribute('role'));
+      const hasPopup = el.getAttribute('aria-haspopup');
+      const inputRect = anchor && anchor.x && anchor.y
+        ? {
+            left: Number(anchor.x) - Number(anchor.width || 0) / 2,
+            right: Number(anchor.x) + Number(anchor.width || 0) / 2,
+            top: Number(anchor.y) - Number(anchor.height || 0) / 2,
+            bottom: Number(anchor.y) + Number(anchor.height || 0) / 2,
+            width: Number(anchor.width || 0),
+            height: Number(anchor.height || 0),
+          }
+        : bestInput?.rect;
+      const centerX = rect.left + rect.width / 2;
+      const centerY = rect.top + rect.height / 2;
       let score = 0;
-      if (selector) score += 22;
-      if (hint.includes('send') || hint.includes('submit') || hint.includes('up')) score += 20;
-      if (rect.right > window.innerWidth - 140) score += 12;
-      if (rect.bottom > window.innerHeight - 220) score += 10;
-      if (rect.width <= 80 && rect.height <= 80) score += 6;
+      if (selector) score += 40;
+      if (hint.includes('send') || hint.includes('submit') || hint.includes('up')) score += 30;
+      if (rect.right > window.innerWidth - 140) score += 16;
+      if (rect.bottom > window.innerHeight - 220) score += 12;
+      if (rect.width <= 64 && rect.height <= 64) score += 14;
+      if (rect.width > 96) score -= 22;
+      if (textOnly.length > 6) score -= 18;
+      if (hasPopup || role === 'combobox') score -= 40;
+      if (hint.includes('model') || hint.includes('opus') || hint.includes('sonnet') || hint.includes('haiku')) score -= 40;
+      if (el.closest('[role="menu"], [role="listbox"]')) score -= 30;
       if (el.closest('fieldset, form')) score += 8;
+      if (inputRect) {
+        const inputCenterY = inputRect.top + inputRect.height / 2;
+        if (centerX >= inputRect.right - 120) score += 30;
+        if (Math.abs(centerY - inputCenterY) <= Math.max(40, inputRect.height)) score += 16;
+        if (rect.left < inputRect.left + inputRect.width * 0.4) score -= 12;
+      }
 
       candidates.push({ el, rect, score, selector });
     };
@@ -838,21 +1075,34 @@ async function clickChatSubmit(tabId, selectors = []) {
     const best = candidates[0];
     if (!best?.el) return { ok: false, clicked: false };
 
+    const beforeText = textFor(bestInput?.editable);
     best.el.focus?.();
     try {
       best.el.click();
     } catch {
       best.el.dispatchEvent(new MouseEvent('click', { bubbles: true, cancelable: true, view: window }));
     }
+    await new Promise((resolve) => setTimeout(resolve, 80));
+    const afterText = textFor(bestInput?.editable);
 
     return {
       ok: true,
       clicked: true,
       selector: best.selector || '',
+      hint: normalize(
+        best.el.getAttribute('aria-label') ||
+        best.el.getAttribute('title') ||
+        best.el.getAttribute('data-testid') ||
+        best.el.textContent ||
+        best.el.innerText
+      ).slice(0, 80),
       x: Math.round(best.rect.left + best.rect.width / 2),
       y: Math.round(best.rect.top + best.rect.height / 2),
+      beforeTextLength: beforeText.length,
+      afterTextLength: afterText.length,
+      inputEmptied: beforeText.length > 0 && afterText.length === 0,
     };
-  }, [selectors]);
+  }, [selectors, anchor]);
 }
 
 // ── Command Handling ───────────────────────────────────────────
@@ -864,7 +1114,7 @@ async function handleCommand(msg) {
     // ── Background-handled commands ──
 
     case 'navigate': {
-      const tabId = targetTabId();
+      const tabId = commandTabId(params);
       if (!tabId) throw new Error('No active tab');
       await chrome.tabs.update(tabId, { url: params.url });
       // Wait for page load + content script injection
@@ -877,7 +1127,7 @@ async function handleCommand(msg) {
     }
 
     case 'get_tab_info': {
-      const tabId = targetTabId();
+      const tabId = commandTabId(params);
       const tab = await chrome.tabs.get(tabId);
       return { url: tab.url, title: tab.title, tabId };
     }
@@ -936,7 +1186,7 @@ async function handleCommand(msg) {
 
     case 'enable_watch_mode': {
       return await prepareWatchModeOnCurrentTab({
-        tabId: targetTabId(),
+        tabId: commandTabId(params),
         lock: true,
       });
     }
@@ -1002,7 +1252,7 @@ async function handleCommand(msg) {
     case 'run_js': {
       // Execute JS directly in the page context via chrome.scripting
       // Note: uses world: 'MAIN' to bypass extension CSP
-      const tabId = targetTabId();
+      const tabId = commandTabId(params);
       if (!tabId) throw new Error('No active tab');
       const [result] = await chrome.scripting.executeScript({
         target: { tabId },
@@ -1020,28 +1270,34 @@ async function handleCommand(msg) {
     }
 
     case 'find_chat_input': {
-      const tabId = targetTabId();
+      const tabId = commandTabId(params);
       if (!tabId) throw new Error('No active tab');
       return await findChatInput(tabId, params.selectors || []);
     }
 
     case 'set_chat_input_text': {
-      const tabId = targetTabId();
+      const tabId = commandTabId(params);
       if (!tabId) throw new Error('No active tab');
       return await setChatInputText(tabId, params.selectors || [], params.text || '');
     }
 
-    case 'click_chat_submit': {
-      const tabId = targetTabId();
+    case 'get_chat_input_state': {
+      const tabId = commandTabId(params);
       if (!tabId) throw new Error('No active tab');
-      return await clickChatSubmit(tabId, params.selectors || []);
+      return await getChatInputState(tabId, params.selectors || []);
+    }
+
+    case 'click_chat_submit': {
+      const tabId = commandTabId(params);
+      if (!tabId) throw new Error('No active tab');
+      return await clickChatSubmit(tabId, params.selectors || [], params.anchor || null);
     }
 
     case 'click_at': {
       // CDP-based real mouse click — indistinguishable from human clicks.
       // Uses chrome.debugger to dispatch Input.dispatchMouseEvent.
       // params: { x, y } — viewport coordinates to click at
-      const tabId = targetTabId();
+      const tabId = commandTabId(params);
       if (!tabId) throw new Error('No active tab');
       const x = params.x || 0;
       const y = params.y || 0;
@@ -1067,7 +1323,7 @@ async function handleCommand(msg) {
 
     case 'mouse_move': {
       // CDP-based mouse move for more realistic interaction
-      const tabId = targetTabId();
+      const tabId = commandTabId(params);
       if (!tabId) throw new Error('No active tab');
       return await withTabDebugger(tabId, async (target) => {
         await chrome.debugger.sendCommand(target, 'Input.dispatchMouseEvent', {
@@ -1078,7 +1334,7 @@ async function handleCommand(msg) {
     }
 
     case 'press_key': {
-      const tabId = targetTabId();
+      const tabId = commandTabId(params);
       if (!tabId) throw new Error('No active tab');
       const key = params.key || 'Escape';
       const code = params.code || key;
@@ -1106,7 +1362,7 @@ async function handleCommand(msg) {
       // Insert text at current cursor position via CDP Input.insertText
       // Works with textareas, contenteditable, ProseMirror, etc.
       // Handles Unicode/CJK without IME simulation.
-      const tabId = targetTabId();
+      const tabId = commandTabId(params);
       if (!tabId) throw new Error('No active tab');
       const text = params.text || '';
       return await withTabDebugger(tabId, async (target) => {
@@ -1134,7 +1390,7 @@ async function handleCommand(msg) {
     // ── Forwarded to content script ──
 
     default:
-      return await sendToContentScript(targetTabId(), msg);
+      return await sendToContentScript(commandTabId(params), msg);
   }
 }
 
