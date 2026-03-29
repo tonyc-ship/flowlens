@@ -2,7 +2,14 @@
 name = "clawvision"
 version = "0.1.0"
 description = "Xiaohongshu research agent with Chrome extension browser automation and media enrichment"
+license = "MIT"
 requires-python = ">=3.11"
+authors = [{ name = "Tony Chong" }]
+
+[project.urls]
+Homepage = "https://github.com/tonyc-ship/clawvision"
+Repository = "https://github.com/tonyc-ship/clawvision"
+Issues = "https://github.com/tonyc-ship/clawvision/issues"
 dependencies = [
     "anthropic>=0.40.0",
     "pyobjc-framework-Quartz>=10.0",

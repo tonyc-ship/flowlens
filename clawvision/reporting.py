@@ -55,7 +55,8 @@ def render_markdown(text: str) -> str:
                 i += 1
             if i < len(lines):
                 i += 1
-            parts.append(f"<pre><code>{escape('\n'.join(code_lines))}</code></pre>")
+            code_html = escape("\n".join(code_lines))
+            parts.append(f"<pre><code>{code_html}</code></pre>")
             continue
 
         if re.fullmatch(r"[-*_]{3,}", stripped):
@@ -80,7 +81,8 @@ def render_markdown(text: str) -> str:
             while i < len(lines) and lines[i].strip().startswith(">"):
                 quote_lines.append(lines[i].strip()[1:].lstrip())
                 i += 1
-            parts.append(f"<blockquote>{render_markdown('\n'.join(quote_lines))}</blockquote>")
+            quote_html = render_markdown("\n".join(quote_lines))
+            parts.append(f"<blockquote>{quote_html}</blockquote>")
             continue
 
         list_match = re.match(r"^([-+*]|\d+\.)\s+(.*)$", stripped)

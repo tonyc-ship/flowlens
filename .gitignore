@@ -17,6 +17,7 @@ research_output/
 user_analysis/
 task_runs/
 *_output/
+node_modules/
 .DS_Store
 knowledge_output/
 .claude/
