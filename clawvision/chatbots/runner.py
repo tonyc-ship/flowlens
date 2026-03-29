@@ -7,7 +7,6 @@ import base64
 import io
 import json
 import logging
-import re
 import subprocess
 import time
 from dataclasses import dataclass, field
@@ -16,6 +15,7 @@ from pathlib import Path
 from PIL import Image
 
 from ..agent.bridge import ExtensionBridge
+from ..agent.verification import assess_expected_text_state
 from ..vision.llm import VisionRequestConfig
 from .cleanup import cleanup_orphaned_chrome_processes
 from .sites import CHATBOT_SITES, ChatbotSite
@@ -39,23 +39,6 @@ SUBMIT_TRANSITION_CROP = (0.0, 0.42, 1.0, 1.0)
 
 def _yes_no_prompt(text: str) -> str:
     return f"{text} Answer YES or NO only."
-
-
-def _compact_text(text: str) -> str:
-    return re.sub(r"\s+", "", str(text or "")).strip().lower()
-
-
-def _composer_still_contains_prompt(state_text: str, question: str) -> bool:
-    state_compact = _compact_text(state_text)
-    question_compact = _compact_text(question)
-    if not state_compact or not question_compact:
-        return False
-    if question_compact in state_compact:
-        return True
-    if len(state_compact) >= max(8, int(len(question_compact) * 0.6)) and state_compact in question_compact:
-        return True
-    return False
-
 
 READY_CHECK_PROMPT = _yes_no_prompt("Is the prompt box visible and usable?")
 TYPED_CHECK_PROMPT = _yes_no_prompt("Is typed text visible in the prompt box?")
@@ -801,22 +784,23 @@ class MultiChatRunner:
             self._record_window_event(cw, "post_submit_screenshot_saved", attempt=attempt_name)
 
             post_state = await tab.get_chat_input_state(cw.site.input_selectors)
+            assessment = assess_expected_text_state(post_state, question)
             self._record_window_event(
                 cw,
                 "post_submit_dom_state",
                 attempt=attempt_name,
-                found=bool(post_state.get("found", False)),
-                empty=bool(post_state.get("empty", False)),
-                text_length=int(post_state.get("textLength", 0) or 0),
+                found=assessment.found,
+                empty=assessment.empty,
+                text_length=assessment.text_length,
+                status=assessment.status,
             )
-            post_text = str(post_state.get("text", ""))
-            if post_state.get("found") and _composer_still_contains_prompt(post_text, question):
+            if assessment.status == "contains_expected":
                 final_label = "READY"
                 logger.warning("[%s] Submit attempt %s left the prompt in the composer", cw.site.name, attempt_name)
                 self._record_window_event(cw, "submit_retry_needed", attempt=attempt_name, label=final_label)
                 continue
 
-            if post_state.get("found") and post_state.get("empty"):
+            if assessment.status == "empty":
                 final_label = "GENERATING"
                 cw.status = "generating"
                 cw.error = ""

@@ -334,15 +334,43 @@ fn spawn_chatbots_companion(app: &AppHandle) -> Result<ChatbotsCompanionHandle, 
         .take()
         .ok_or_else(|| "Companion stdout not available".to_string())?;
     let mut stdout = BufReader::new(stdout);
-    let mut ready_line = String::new();
-    stdout
-        .read_line(&mut ready_line)
-        .map_err(|err| format!("Failed to read companion ready line: {err}"))?;
-    if ready_line.trim().is_empty() {
-        return Err("Chatbot companion exited before sending ready line".to_string());
+    let mut skipped_lines: Vec<String> = Vec::new();
+    let mut saw_ready = false;
+    for _ in 0..32 {
+        let mut ready_line = String::new();
+        let read = stdout
+            .read_line(&mut ready_line)
+            .map_err(|err| format!("Failed to read companion ready line: {err}"))?;
+        if read == 0 {
+            break;
+        }
+        let trimmed = ready_line.trim();
+        if trimmed.is_empty() {
+            continue;
+        }
+        match serde_json::from_str::<Value>(trimmed) {
+            Ok(value) if value.get("type").and_then(Value::as_str) == Some("ready") => {
+                saw_ready = true;
+                break;
+            }
+            Ok(_) => {
+                skipped_lines.push(trimmed.to_string());
+            }
+            Err(_) => {
+                skipped_lines.push(trimmed.to_string());
+            }
+        }
     }
-    let _: Value = serde_json::from_str(ready_line.trim())
-        .map_err(|err| format!("Invalid companion ready payload: {err}"))?;
+    if !saw_ready {
+        let context = if skipped_lines.is_empty() {
+            "none".to_string()
+        } else {
+            skipped_lines.join(" | ")
+        };
+        return Err(format!(
+            "Chatbot companion exited before sending ready line. Preceding output: {context}"
+        ));
+    }
 
     Ok(ChatbotsCompanionHandle { child, stdin, stdout })
 }

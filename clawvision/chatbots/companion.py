@@ -29,6 +29,17 @@ from ..vision.llm import VisionLLM
 logger = logging.getLogger(__name__)
 
 
+def _emit_json(payload: dict) -> bool:
+    """Write a protocol payload to stdout, returning False on broken pipes."""
+    try:
+        sys.stdout.write(json.dumps(payload, ensure_ascii=False) + "\n")
+        sys.stdout.flush()
+        return True
+    except BrokenPipeError:
+        logger.warning("Companion stdout pipe closed while sending payload")
+        return False
+
+
 def _task_stub(task_id: str, question: str, output_root: Path) -> dict:
     created_at = str(int(time.time() * 1000))
     return {
@@ -63,6 +74,7 @@ class ChatbotsCompanion:
         self.output_root_base = output_root_base
         self.vision_backend = vision_backend
         self.bridge = ExtensionBridge(port=port)
+        self.bridge.on_log(lambda action, detail: logger.info("bridge %s: %s", action, detail))
         self.vision = VisionLLM(backend=vision_backend)
         self._active_run: asyncio.Task | None = None
         self._latest_task: dict | None = None
@@ -169,7 +181,8 @@ class ChatbotsCompanion:
 
 async def _read_requests(companion: ChatbotsCompanion) -> int:
     ready = {"type": "ready", "pid": os.getpid()}
-    print(json.dumps(ready, ensure_ascii=False), flush=True)
+    if not _emit_json(ready):
+        return 0
 
     while True:
         line = await asyncio.to_thread(sys.stdin.readline)
@@ -180,7 +193,8 @@ async def _read_requests(companion: ChatbotsCompanion) -> int:
             continue
         request = json.loads(line)
         response = await companion.handle_request(request)
-        print(json.dumps(response, ensure_ascii=False), flush=True)
+        if not _emit_json(response):
+            return 0
         if response.get("shutdown"):
             return 0
 
