@@ -60,12 +60,6 @@ const xhsPresets = [
   "拆解 https://www.xiaohongshu.com/user/profile/665e81660000000003033638",
 ];
 
-const chatbotPresets = [
-  "Explain quantum computing in simple terms",
-  "What are the pros and cons of microservices vs monolith?",
-  "Write a Python function to merge two sorted lists",
-];
-
 function render() {
   const app = document.querySelector("#app");
   if (!(app instanceof HTMLElement)) return;
@@ -115,88 +109,24 @@ function renderChatbotsMode(): string {
     <section class="hero">
       <div class="composer-wrap">
         <h1>Ask ChatGPT, Gemini &amp; Claude</h1>
-        <p class="subtitle">
-          Type a question once. ClawVision opens three visible Chrome windows, reuses your existing login state, and enters it for you.
-        </p>
 
-        <div class="composer">
+        <form class="composer chatbot-composer-simple" id="chatbots-form">
           <textarea
             id="chatbots-input"
             rows="4"
-            placeholder="Type your question..."
+            aria-label="Ask ChatGPT, Gemini, and Claude"
           >${escapeHtml(state.chatbotsQuestion)}</textarea>
 
-          <div class="composer-actions">
-            <div class="preset-row">
-              ${chatbotPresets
-                .map(
-                  (preset) =>
-                    `<button class="preset" data-chatbot-preset="${escapeHtmlAttr(preset)}">${escapeHtml(
-                      preset.length > 40 ? preset.slice(0, 40) + "..." : preset,
-                    )}</button>`,
-                )
-                .join("")}
-            </div>
-
-            <button id="ask-all" class="start-button ask-all-button" ${launchDisabled ? "disabled" : ""}>
+          <div class="composer-footer">
+            <button id="ask-all" type="submit" class="start-button ask-all-button" ${launchDisabled ? "disabled" : ""}>
               ${state.chatbotsLaunching ? "Opening..." : "Ask All"}
             </button>
           </div>
-        </div>
+        </form>
 
         ${
           state.chatbotsError
             ? `<p class="inline-error">${escapeHtml(state.chatbotsError)}</p>`
-            : ""
-        }
-
-        ${
-          state.chatbotsResult
-            ? `
-              <div class="chatbot-status-row">
-                <div class="chatbot-card chatgpt">
-                  <div class="chatbot-icon">G</div>
-                  <span>ChatGPT</span>
-                </div>
-                <div class="chatbot-card gemini">
-                  <div class="chatbot-icon">G</div>
-                  <span>Gemini</span>
-                </div>
-                <div class="chatbot-card claude">
-                  <div class="chatbot-icon">C</div>
-                  <span>Claude</span>
-                </div>
-              </div>
-              <p class="chatbot-launched-msg">
-                Visible Chrome windows launched.
-              </p>
-              ${
-                state.chatbotsResult.outputRoot
-                  ? `<p class="chatbot-output-path">${escapeHtml(state.chatbotsResult.outputRoot)}</p>`
-                  : ""
-              }
-            `
-            : ""
-        }
-
-        ${
-          state.chatbotsLaunching
-            ? `
-              <div class="chatbot-status-row launching">
-                <div class="chatbot-card chatgpt pulsing">
-                  <div class="chatbot-icon">G</div>
-                  <span>ChatGPT</span>
-                </div>
-                <div class="chatbot-card gemini pulsing">
-                  <div class="chatbot-icon">G</div>
-                  <span>Gemini</span>
-                </div>
-                <div class="chatbot-card claude pulsing">
-                  <div class="chatbot-icon">C</div>
-                  <span>Claude</span>
-                </div>
-              </div>
-            `
             : ""
         }
       </div>
@@ -283,6 +213,11 @@ function bindCommonEvents(app: HTMLElement) {
 }
 
 function bindChatbotsEvents(app: HTMLElement) {
+  app.querySelector<HTMLFormElement>("#chatbots-form")?.addEventListener("submit", (event) => {
+    event.preventDefault();
+    void askChatbots();
+  });
+
   const input = app.querySelector<HTMLTextAreaElement>("#chatbots-input");
   input?.addEventListener("input", (event) => {
     state.chatbotsQuestion = (event.target as HTMLTextAreaElement).value;
@@ -298,14 +233,6 @@ function bindChatbotsEvents(app: HTMLElement) {
   app.querySelector<HTMLButtonElement>("#ask-all")?.addEventListener("click", () => {
     void askChatbots();
   });
-
-  for (const button of app.querySelectorAll<HTMLButtonElement>("[data-chatbot-preset]")) {
-    button.addEventListener("click", () => {
-      state.chatbotsQuestion = button.dataset.chatbotPreset || "";
-      render();
-      app.querySelector<HTMLTextAreaElement>("#chatbots-input")?.focus();
-    });
-  }
 }
 
 function bindXhsEvents(app: HTMLElement) {

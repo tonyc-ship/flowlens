@@ -138,6 +138,18 @@ textarea {
   color: var(--text-soft);
 }
 
+#chatbots-input {
+  width: 100%;
+  min-height: 180px;
+  resize: none;
+  border: 0;
+  outline: none;
+  background: transparent;
+  color: inherit;
+  font-size: 1.08rem;
+  line-height: 1.55;
+}
+
 .composer-actions {
   display: flex;
   align-items: flex-end;
@@ -263,6 +275,16 @@ textarea {
   color: var(--text-soft);
   margin: -8px 0 20px;
   font-size: 0.95rem;
+}
+
+.chatbot-composer-simple {
+  padding: 18px 18px 16px;
+}
+
+.composer-footer {
+  display: flex;
+  justify-content: flex-end;
+  margin-top: 12px;
 }
 
 .ask-all-button {
