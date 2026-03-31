@@ -79,11 +79,12 @@ When a change materially affects architecture, runtime flow, testing entry point
 - If the change is operational rather than architectural, add the rule to local memory as well when it is likely to matter in future turns.
 - Generated outputs and local run artifacts should stay out of git unless explicitly requested.
 
-### Always bundle the desktop app after Tauri changes
+### Always rebuild and reinstall the desktop app after relevant changes
 
-Whenever you modify the Tauri app under `desktop_app/`, also produce a fresh macOS `.app` bundle in the same working session.
+Whenever you modify the Tauri app under `desktop_app/` **or** any Python code that the installed app bundles (the `runtime_bundle/` copy of `clawvision/`), produce a fresh macOS `.app` bundle and install it in the same working session.
 
 - Do not stop at `cargo check` / `npm run build` alone for Tauri changes.
+- Do not stop at editing Python source — the installed `.app` bundles its own copy under `Contents/Resources/_up_/runtime_bundle/`, so source edits only take effect after a rebuild.
 - Run the repo packaging path so the real desktop artifact exists after the change.
 - Prefer `bash scripts/build_desktop_app.sh` unless the user explicitly asks for a different packaging flow.
 

@@ -399,8 +399,39 @@ class XHSTaskRunner:
         session_gif = task_dir / "session.gif"
         recording_stats = {"frames": 0, "duration_s": 0}
         automation_window_id: int | None = None
+        automation_tab_id: int | None = None
 
         try:
+            # ── Phase 1: Open browser window ASAP ────────────────────
+            # Start the bridge and connect to the extension first so the
+            # user sees the browser window immediately.  LLM planning
+            # runs in parallel while the page loads.
+            await bridge.start()
+            action.log("bridge_started", f"ws://localhost:{self.port}")
+            print("\n  >>> Waiting for Chrome Extension to connect. <<<\n")
+            await bridge.wait_for_connection(timeout=120, require_watch=self.watch)
+            action.log("extension_connected", "using the currently loaded extension runtime")
+            if self.watch:
+                bg_window = await bridge.create_watch_window(url="https://www.xiaohongshu.com")
+                action.log(
+                    "watch_window",
+                    f"window={bg_window.get('windowId')} tab={bg_window.get('tabId')} watch=true sidePanel={bg_window.get('sidePanel')}",
+                )
+            else:
+                bg_window = await bridge.create_background_window(url="https://www.xiaohongshu.com", minimized=False)
+                action.log(
+                    "background_window",
+                    f"window={bg_window.get('windowId')} tab={bg_window.get('tabId')}",
+                )
+            automation_window_id = bg_window.get("windowId")
+            automation_tab_id = bg_window.get("tabId")
+            await bridge.lock_active_tab(automation_tab_id)
+
+            # ── Phase 2: LLM planning while page loads ───────────────
+            # The page needs a few seconds to render anyway, so use that
+            # time for task understanding and execution strategy planning.
+            navigate_task = asyncio.ensure_future(browser.navigate("https://www.xiaohongshu.com"))
+
             action.log("task_understand_start", task.title)
             t0 = time.time()
             understanding = task_agent.understand_task(task.to_prompt())
@@ -431,28 +462,10 @@ class XHSTaskRunner:
                 ),
             )
 
-            await bridge.start()
-            action.log("bridge_started", f"ws://localhost:{self.port}")
-            print("\n  >>> Waiting for Chrome Extension to connect. <<<\n")
-            await bridge.wait_for_connection(timeout=120, require_watch=self.watch)
-            action.log("extension_reload_skipped", "using the currently loaded extension runtime")
-            if self.watch:
-                bg_window = await bridge.create_watch_window(url="https://www.xiaohongshu.com")
-                action.log(
-                    "watch_window",
-                    f"window={bg_window.get('windowId')} tab={bg_window.get('tabId')} watch=true",
-                )
-            else:
-                bg_window = await bridge.create_background_window(url="https://www.xiaohongshu.com", minimized=False)
-                action.log(
-                    "background_window",
-                    f"window={bg_window.get('windowId')} tab={bg_window.get('tabId')}",
-                )
-            automation_window_id = bg_window.get("windowId")
-            await bridge.lock_active_tab(bg_window.get("tabId"))
-
-            await browser.navigate("https://www.xiaohongshu.com")
-            await asyncio.sleep(4)
+            # Wait for navigation to finish (likely already done by now)
+            await navigate_task
+            # Brief settle time for XHS SPA rendering
+            await asyncio.sleep(1.5)
             action.log("navigate_home", "https://www.xiaohongshu.com")
 
             await recorder.start()
@@ -544,9 +557,9 @@ class XHSTaskRunner:
                 await bridge.release_active_tab()
             except Exception:
                 pass
-            if automation_window_id is not None:
+            if automation_tab_id is not None:
                 try:
-                    await bridge.close_window(automation_window_id)
+                    await bridge.close_tab(automation_tab_id)
                 except Exception:
                     pass
 

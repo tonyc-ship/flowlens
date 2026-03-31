@@ -705,12 +705,15 @@ class XHSResearchAgent:
         self._log_step("close_note", close_result.get("method", "unknown"))
         close_state = await self.browser.wait_for_state(
             {"search_results", "profile_page", "homepage", *self.browser.ANTI_BOT_STATES},
-            timeout=4.0,
+            timeout=6.0,
         )
         if await handle_anti_bot("close_note", close_state):
             return note
-        if close_state.get("state") != "search_results":
-            await ensure_search_context()
+        # Trust the Escape/X close — do NOT fall back to navigation which
+        # reloads and reranks search results, adding anti-bot pressure.
+        if close_state.get("state") not in ("search_results", "profile_page", "homepage", None):
+            self._log_step("close_note_state", f"unexpected state={close_state.get('state')}, waiting longer")
+            await asyncio.sleep(1.5)
         await asyncio.sleep(self.config.inter_note_pause_s)
 
         return note

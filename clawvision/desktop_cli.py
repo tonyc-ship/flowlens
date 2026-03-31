@@ -60,7 +60,7 @@ async def _run_request(request: DesktopTaskRequest, *, output_root: str, port: i
         else make_topic_research_task(request.topic)
     )
 
-    runner = XHSTaskRunner(output_root=output_root, port=port, record_interval=1.5)
+    runner = XHSTaskRunner(output_root=output_root, port=port, record_interval=1.5, watch=True)
     result = await runner.run(task)
     return {
         "request": asdict(request),
