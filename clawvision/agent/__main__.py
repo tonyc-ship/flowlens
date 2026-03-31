@@ -13,7 +13,7 @@ Usage:
 import argparse
 import asyncio
 
-from .xhs import run_research, run_user_analysis
+from ..workflows.xhs import run_research, run_user_analysis
 
 
 def main():

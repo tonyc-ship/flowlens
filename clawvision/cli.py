@@ -5,11 +5,11 @@ from __future__ import annotations
 import sys
 
 from .agent.__main__ import main as agent_main
-from .chatbots.cli import main as chatbots_main
-from .chatbots.companion import main as chatbots_companion_main
 from .debug_cli import main as debug_main
 from .desktop_cli import main as desktop_main
 from .extension_cli import main as extension_main
+from .workflows.chat.cli import main as chatbots_main
+from .workflows.chat.companion import main as chatbots_companion_main
 
 
 def main() -> None:

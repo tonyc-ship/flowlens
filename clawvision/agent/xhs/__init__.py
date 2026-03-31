@@ -1,24 +1,36 @@
-"""Xiaohongshu (小红书) platform-specific agent modules."""
+"""Compatibility exports for the legacy `clawvision.agent.xhs` namespace."""
 
-from .browser import XHSBrowser
-from .capabilities import (
+from ...platforms.xhs import (
+    AuthorEntity,
     CapabilityCost,
     CapabilitySpec,
+    Comment,
+    ImageInfo,
+    NoteCard,
+    NoteEntity,
     NoteExtractionLevel,
     NoteExtractionPlan,
+    NoteProcessor,
+    NoteType,
+    ProcessorConfig,
+    SearchResult,
+    TimingRecord,
+    VideoInfo,
+    XHSBrowser,
     capability_catalog,
     capabilities_for_task,
     deep_note_plan,
     lite_note_plan,
 )
-from .entities import (
-    NoteType, ImageInfo, VideoInfo, Comment,
-    NoteEntity, NoteCard, AuthorEntity, SearchResult,
+from ...workflows.xhs import (
+    ResearchConfig,
+    UserAnalysisConfig,
+    XHSResearchAgent,
+    XHSTaskRunner,
+    XHSUserAnalyzer,
+    run_research,
+    run_user_analysis,
 )
-from .processor import NoteProcessor, ProcessorConfig, TimingRecord
-from .research import XHSResearchAgent, ResearchConfig, run_research
-from .task_runner import XHSTaskRunner
-from .user_analysis import XHSUserAnalyzer, UserAnalysisConfig, run_user_analysis
 
 __all__ = [
     "XHSBrowser",

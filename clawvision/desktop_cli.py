@@ -9,11 +9,8 @@ import re
 from dataclasses import asdict, dataclass
 from pathlib import Path
 
-from .agent import (
-    XHSTaskRunner,
-    make_creator_growth_breakdown_task,
-    make_topic_research_task,
-)
+from .reasoning.tasks import make_creator_growth_breakdown_task, make_topic_research_task
+from .workflows.xhs import XHSTaskRunner
 
 PROFILE_URL_RE = re.compile(r"https?://www\.xiaohongshu\.com/user/profile/[^\s]+")
 CREATOR_HINT_RE = re.compile(r"(作者|博主|起号|账号|profile|creator)", re.IGNORECASE)

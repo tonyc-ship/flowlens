@@ -12,8 +12,8 @@ from pathlib import Path
 
 from PIL import Image, ImageChops, ImageDraw, ImageStat
 
-from ..agent.local_llm import LocalLLM
-from ..vision.grounding import GroundingModel
+from ..perception.grounding import GroundingModel
+from ..perception.local_llm import LocalLLM
 from .macos import DisplayInfo, MacOSController, WindowInfo
 
 RESAMPLE = getattr(Image, "Resampling", Image).LANCZOS

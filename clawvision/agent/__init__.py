@@ -1,38 +1,41 @@
-"""Chrome Extension + External Agent architecture for browser automation."""
+"""Compatibility exports for the legacy `clawvision.agent` namespace."""
 
-from .bridge import ExtensionBridge
-from .composer import (
+from ..core import (
     ComposerEntryResult,
     ComposerSpec,
     ComposerSubmitResult,
+    DomTextAssessment,
+    ExtensionBridge,
     SubmitAttemptResult,
+    assess_expected_text_state,
+    compact_text,
     enter_text,
     focus_chat_input,
     submit_attempt_order,
     submit_with_dom_verification,
     wait_for_input_ready,
 )
-from .media import MediaProcessor, MediaConfig
-from .tasks import (
-    StructuredTask,
-    TaskKind,
-    make_creator_growth_breakdown_task,
-    make_topic_research_task,
-)
-from .verification import DomTextAssessment, assess_expected_text_state, compact_text
-from .xhs import (
-    XHSBrowser,
+from ..perception import MediaConfig, MediaProcessor
+from ..platforms.xhs import (
     CapabilityCost,
     CapabilitySpec,
     NoteExtractionLevel,
     NoteExtractionPlan,
+    XHSBrowser,
     capability_catalog,
     capabilities_for_task,
     deep_note_plan,
     lite_note_plan,
+)
+from ..reasoning import StructuredTask, TaskKind, make_creator_growth_breakdown_task, make_topic_research_task
+from ..workflows.xhs import (
+    ResearchConfig,
+    UserAnalysisConfig,
+    XHSResearchAgent,
     XHSTaskRunner,
-    XHSResearchAgent, ResearchConfig, run_research,
-    XHSUserAnalyzer, UserAnalysisConfig, run_user_analysis,
+    XHSUserAnalyzer,
+    run_research,
+    run_user_analysis,
 )
 
 __all__ = [

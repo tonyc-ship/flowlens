@@ -9,8 +9,8 @@ import json
 from pathlib import Path
 import time
 
-from .agent.bridge import ExtensionBridge
-from .reporting import markdown_styles, render_markdown_block
+from .core.bridge import ExtensionBridge
+from .core.reporting import markdown_styles, render_markdown_block
 
 
 @dataclass
