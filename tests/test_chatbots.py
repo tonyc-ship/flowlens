@@ -1,12 +1,12 @@
 import unittest
 
-from clawvision.chatbots.cleanup import parse_orphaned_chrome_processes
-from clawvision.chatbots.sites import CHATBOT_SITES
-from clawvision.chatbots.vision_profiles import (
+from clawvision.platforms.chat.sites import CHATBOT_SITES
+from clawvision.platforms.chat.vision_profiles import (
     CHATBOT_COMPLEX_FALLBACK_CHECK,
     CHATBOT_INPUT_SIMPLE_CHECK,
     CHATBOT_PAGE_SIMPLE_CHECK,
 )
+from clawvision.workflows.chat.cleanup import parse_orphaned_chrome_processes
 
 
 class MultiChatHelpersTest(unittest.TestCase):

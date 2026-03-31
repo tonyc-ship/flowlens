@@ -1,6 +1,6 @@
 import unittest
 
-from clawvision.agent.verification import assess_expected_text_state, compact_text
+from clawvision.core.verification import assess_expected_text_state, compact_text
 
 
 class VerificationHelpersTest(unittest.TestCase):

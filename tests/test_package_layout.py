@@ -2,14 +2,17 @@ import unittest
 
 
 class PackageLayoutTest(unittest.TestCase):
-    def test_canonical_and_legacy_imports_point_to_same_core_objects(self) -> None:
-        from clawvision.agent.bridge import ExtensionBridge as LegacyBridge
-        from clawvision.chatbots.runner import MultiChatRunner as LegacyMultiChatRunner
+    def test_canonical_packages_expose_expected_entry_points(self) -> None:
         from clawvision.core.bridge import ExtensionBridge
         from clawvision.workflows.chat.runner import MultiChatRunner
 
-        self.assertIs(LegacyBridge, ExtensionBridge)
-        self.assertIs(LegacyMultiChatRunner, MultiChatRunner)
+        self.assertTrue(ExtensionBridge)
+        self.assertTrue(MultiChatRunner)
+
+    def test_python_module_entry_stays_canonical(self) -> None:
+        from clawvision.workflows.xhs.cli import main
+
+        self.assertTrue(main)
 
     def test_new_layered_packages_are_importable(self) -> None:
         from clawvision import core, perception, platforms, reasoning, workflows

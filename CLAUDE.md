@@ -1,11 +1,13 @@
 # ClawVision
 
-ClawVision is currently maintained as a Xiaohongshu research / analysis agent built on:
+ClawVision is currently maintained as a layered browser automation framework built on:
 
-- Python orchestration in `clawvision.agent.xhs`
+- Core browser/runtime primitives in `clawvision.core`
+- Perception utilities in `clawvision.perception`
+- Task understanding and knowledge in `clawvision.reasoning`
+- Platform adapters in `clawvision.platforms`
+- Task workflows in `clawvision.workflows`
 - A Chrome Extension in `chrome_extension/`
-- Shared media / vision utilities in `clawvision.agent.media` and `clawvision.vision`
-- A lightweight task layer in `clawvision.agent.tasks` / `clawvision.agent.task_agent`
 
 The old screen-level MCP route has been archived under `archive/legacy_mcp/`.
 
@@ -22,29 +24,32 @@ clawvision/
 │   ├── extension_cli.py              # `python -m clawvision extension ...`
 │   ├── extension_ops.py              # Generic extension operational reports / commands
 │   ├── server.py                     # Archived-route compatibility stub
-│   ├── runtime.py                    # Local env / path discovery
-│   ├── reporting.py                  # Shared markdown/html report rendering
-│   ├── agent/
-│   │   ├── bridge.py                 # WebSocket bridge to the extension
-│   │   ├── local_llm.py              # Local MLX inference (Qwen3.5-9B-MLX-4bit)
+│   ├── core/
+│   │   ├── bridge.py                 # WebSocket bridge to the extension + tab routing
+│   │   ├── composer.py               # DOM-first composer interaction helpers
+│   │   ├── verification.py           # DOM-first verifier primitives
+│   │   ├── recorder.py               # Session recording
+│   │   ├── reporting.py              # Shared markdown/html rendering
+│   │   └── runtime.py                # Local env / path discovery
+│   ├── perception/
+│   │   ├── local_llm.py              # Local MLX inference
 │   │   ├── media.py                  # LLM calls (text+vision), OCR, transcription
+│   │   ├── llm.py                    # Vision API wrapper + request profiles
+│   │   ├── apple_ocr.py              # macOS native OCR
+│   │   ├── detector.py               # Optional local UI detection
+│   │   ├── grounding.py              # Optional local grounding backends
+│   │   ├── ocr.py                    # OCR helpers
+│   │   └── transcriber.py            # whisper.cpp integration
+│   ├── reasoning/
 │   │   ├── task_agent.py             # Generic task understanding / assessment
 │   │   ├── tasks.py                  # Structured task definitions
-│   │   └── xhs/
-│   │       ├── browser.py            # XHS-specific browser actions / DOM extraction
-│   │       ├── capabilities.py       # Costed extraction capabilities / plans
-│   │       ├── entities.py           # Note / author / card schemas
-│   │       ├── processor.py          # OCR / vision / transcript enrichment
-│   │       ├── research.py           # Topic research flow
-│   │       ├── task_runner.py        # Task -> XHS workflow runtime
-│   │       └── user_analysis.py      # Creator profile analysis flow
-│   └── vision/
-│       ├── llm.py                    # Vision API wrapper
-│       ├── apple_ocr.py              # macOS native OCR
-│       ├── detector.py               # Optional local UI detection
-│       ├── grounding.py              # Optional local grounding backends
-│       ├── ocr.py                    # OCR helpers
-│       └── transcriber.py            # whisper.cpp integration
+│   │   └── knowledge/                # Reusable knowledge extraction + loading
+│   ├── platforms/
+│   │   ├── xhs/                      # XHS browser adapters, schemas, capability catalog
+│   │   └── chat/                     # Chat site descriptors + visible verification helpers
+│   └── workflows/
+│       ├── xhs/                      # Topic research / creator analysis workflows
+│       └── chat/                     # Ask-all-chatbots workflow + companion
 ├── tests/
 │   ├── manual_xhs_research.py        # Manual integration script
 │   ├── manual_xhs_user_analysis.py   # Manual integration script
@@ -142,11 +147,11 @@ Prefer semantic understanding over pixel math. Don't use pixel-level heuristics 
 ### Strategic architecture
 
 The project's goal is **robust agentic browser automation**, not a single-site scraper. Architecture is layered:
-1. **Generic Agent Infrastructure** (bridge.py, media.py, recorder.py) — WebSocket, CDP, screenshots, session recording, background windows, LLM/OCR/Whisper. Platform-independent.
-2. **Site Skills** (xhs/, future: douyin/, taobao/, etc.) — Site-specific DOM extraction, navigation patterns, entity models. Each site is a "skill" integrated one by one.
-3. **Capability Layer** (`xhs/capabilities.py`) — Declares what can be extracted at what latency/cost, and defines `lite` vs `deep` extraction plans.
-4. **Task Layer** (`tasks.py`, `task_agent.py`, `xhs/task_runner.py`) — Structured tasks, execution planning, workflow dispatch, task assessment, and task-level reporting.
-5. **Workflow Layer** (`research.py`, `user_analysis.py`) — High-level XHS workflows that consume the site skill and capability layers.
+1. **Core layer** (`clawvision.core`) — bridge, tab/window control, DOM-first composer helpers, verification, recording, shared reports, runtime.
+2. **Perception layer** (`clawvision.perception`) — hosted/local vision, OCR, grounding, transcription, image preprocessing.
+3. **Reasoning layer** (`clawvision.reasoning`) — structured tasks, planning, evaluation, and reusable knowledge extraction.
+4. **Platform layer** (`clawvision.platforms`) — site-specific DOM extraction, navigation patterns, entity models, capability catalogs.
+5. **Workflow layer** (`clawvision.workflows`) — concrete task orchestration such as XHS research and multi-chat fanout.
 
 New generic capabilities (background windows, dedup, session recording) belong in the generic layer. Site-specific DOM selectors and navigation belong in site skill modules.
 
@@ -154,10 +159,10 @@ New generic capabilities (background windows, dedup, session recording) belong i
 
 1. Python starts a local WebSocket server.
 2. The Chrome extension connects from the logged-in browser profile.
-3. `XHSBrowser` issues DOM extraction and CDP-backed interaction commands.
-4. The task layer chooses a bounded execution strategy (`coverage_first` / `balanced` / `deep_focus`) using the available capability catalog.
-5. `research.py` / `user_analysis.py` orchestrate note collection using `lite` and `deep` extraction plans.
-6. `processor.py` enriches notes with OCR, image descriptions, and video transcription when the chosen plan requires it.
+3. `clawvision.platforms.xhs.XHSBrowser` issues DOM extraction and CDP-backed interaction commands.
+4. The reasoning layer chooses a bounded execution strategy (`coverage_first` / `balanced` / `deep_focus`) using the available capability catalog.
+5. `clawvision.workflows.xhs` orchestrates note collection using `lite` and `deep` extraction plans.
+6. `clawvision.platforms.xhs.processor` enriches notes with OCR, image descriptions, and video transcription when the chosen plan requires it.
 7. The agent writes JSON + HTML reports plus a session GIF to `task_runs/` or a custom output dir.
 
 ## Extension Ops
@@ -190,7 +195,7 @@ pip install -e ".[local-llm]" # optional local MLX backend
 1. Open `chrome://extensions/`
 2. Enable Developer Mode
 3. Load `chrome_extension/` as an unpacked extension
-4. Open the extension popup and connect it to the agent port when running scripts
+4. Open the extension popup and connect it to the local port when running scripts
 
 ### Desktop Shell (Spike)
 
@@ -340,18 +345,16 @@ Runtime implications:
 - Treat `error_page`, scan-on-phone prompts, and security verification as explicit anti-bot signals in logs/reports, not generic failures.
 - When these states appear, slow down and reduce page-level navigations before retrying.
 
-## Vision Status
+## Perception Status
 
-The active product path is still DOM-first browser automation for XHS.
+The active product path is still DOM-first browser automation with vision/perception as verification and fallback.
 
-The `clawvision.vision` modules remain available for:
+The shared perception layer in `clawvision.perception` currently supports:
 
 - Apple OCR on downloaded note images
-- Anthropic Vision fallback when DOM extraction is weak
+- Hosted vision fallback when DOM extraction is weak
 - Optional local UI detection / grounding experiments
 - Local whisper.cpp video transcription
-
-They are intentionally kept as shared utilities so future workflows can use more vision without reviving the archived screen-level MCP route.
 
 ## Archive
 

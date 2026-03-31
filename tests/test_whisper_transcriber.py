@@ -1,6 +1,6 @@
 import unittest
 
-from clawvision.vision.transcriber import WhisperTranscriber
+from clawvision.perception.transcriber import WhisperTranscriber
 
 
 class WhisperTranscriberTests(unittest.TestCase):

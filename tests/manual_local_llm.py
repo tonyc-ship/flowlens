@@ -22,9 +22,7 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
-from clawvision.agent.media import MediaProcessor, MediaConfig
-from clawvision.agent.local_llm import LocalLLM
-from clawvision.vision.llm import VisionLLM
+from clawvision.perception import LocalLLM, MediaConfig, MediaProcessor, VisionLLM
 
 
 def test_text(backend: str, prompt: str) -> dict:

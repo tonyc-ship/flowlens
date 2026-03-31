@@ -2,7 +2,7 @@ import unittest
 from types import SimpleNamespace
 from unittest import IsolatedAsyncioTestCase, mock
 
-from clawvision.agent.composer import ComposerSpec, enter_text, submit_attempt_order, submit_with_dom_verification
+from clawvision.core.composer import ComposerSpec, enter_text, submit_attempt_order, submit_with_dom_verification
 
 
 class ComposerHelpersTest(unittest.TestCase):

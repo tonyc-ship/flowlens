@@ -19,11 +19,11 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).parent.parent))
 
-from clawvision.agent import (  # noqa: E402
-    XHSTaskRunner,
+from clawvision.reasoning import (  # noqa: E402
     make_creator_growth_breakdown_task,
     make_topic_research_task,
 )
+from clawvision.workflows.xhs import XHSTaskRunner  # noqa: E402
 
 
 DEFAULT_CREATOR_URL = "https://www.xiaohongshu.com/user/profile/665e81660000000003033638"

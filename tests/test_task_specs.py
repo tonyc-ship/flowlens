@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import unittest
 
-from clawvision.agent.tasks import (
+from clawvision.reasoning.tasks import (
     TaskKind,
     make_creator_growth_breakdown_task,
     make_topic_research_task,

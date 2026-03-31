@@ -24,12 +24,12 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).parent.parent))
 
-from clawvision.agent.bridge import ExtensionBridge
-from clawvision.agent.media import MediaProcessor
-from clawvision.agent.xhs.browser import XHSBrowser
-from clawvision.agent.xhs.entities import Comment, NoteCard, NoteEntity, NoteType
-from clawvision.agent.xhs.processor import NoteProcessor, ProcessorConfig
-from clawvision.reporting import markdown_styles, render_markdown_block
+from clawvision.core.bridge import ExtensionBridge
+from clawvision.core.reporting import markdown_styles, render_markdown_block
+from clawvision.perception.media import MediaProcessor
+from clawvision.platforms.xhs.browser import XHSBrowser
+from clawvision.platforms.xhs.entities import Comment, NoteCard, NoteEntity, NoteType
+from clawvision.platforms.xhs.processor import NoteProcessor, ProcessorConfig
 
 
 DEFAULT_OUTPUT_DIR = Path("test_carousel_output")

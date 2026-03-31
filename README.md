@@ -4,7 +4,11 @@ ClawVision is a macOS-first browser automation project for Xiaohongshu research,
 
 Current repo highlights:
 
-- `clawvision/`: Python runtime, agent orchestration, reporting, and browser bridge logic
+- `clawvision/core/`: browser bridge, runtime helpers, common interaction + verification primitives
+- `clawvision/perception/`: vision, OCR, grounding, transcription, and local multimodal models
+- `clawvision/reasoning/`: task understanding, planning, evaluation, and reusable knowledge extraction
+- `clawvision/platforms/`: site-level adapters and platform knowledge for XHS and chat sites
+- `clawvision/workflows/`: concrete task flows such as XHS research and ask-all-chatbots
 - `chrome_extension/`: MV3 extension used for Chrome-side automation and DOM extraction
 - `desktop_app/`: Tauri desktop shell that launches the local Python runtime
 
@@ -65,6 +69,18 @@ CLAWVISION_WHISPER_MODELS_DIR=
 3. Click `Load unpacked`
 4. Select `chrome_extension/`
 
+## Package Layout
+
+Canonical Python packages are now:
+
+- `clawvision.core`: bridge, runtime, recorder, reporting, DOM-first interaction + verification primitives
+- `clawvision.perception`: hosted/local vision, OCR, grounding, transcription, media preprocessing
+- `clawvision.reasoning`: task understanding, planning, evaluation, reusable knowledge extraction
+- `clawvision.platforms.xhs` / `clawvision.platforms.chat`: site-level adapters and platform knowledge
+- `clawvision.workflows.xhs` / `clawvision.workflows.chat`: concrete task flows and workflow CLIs
+
+Legacy `clawvision.agent`, `clawvision.chatbots`, and `clawvision.vision` paths have been removed.
+
 ## Start The Desktop App
 
 ```bash
@@ -91,7 +107,7 @@ Start the chatbot fan-out CLI:
 Run an XHS topic research task:
 
 ```bash
-.venv/bin/python -m clawvision.agent "露营装备"
+.venv/bin/python -m clawvision "露营装备"
 ```
 
 Reload the unpacked Chrome extension through the live bridge:

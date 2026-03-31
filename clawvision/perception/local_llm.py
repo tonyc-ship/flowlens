@@ -4,7 +4,7 @@ Provides a drop-in backend that matches MediaProcessor's call_text / call_vision
 interface using Qwen3.5-9B-MLX-4bit (natively multimodal via early fusion).
 
 Usage:
-    from clawvision.agent.local_llm import LocalLLM
+    from clawvision.perception.local_llm import LocalLLM
 
     llm = LocalLLM()                          # loads default model
     text = llm.call_text("Explain X")

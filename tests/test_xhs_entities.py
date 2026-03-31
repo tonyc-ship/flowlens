@@ -1,6 +1,6 @@
 import unittest
 
-from clawvision.agent.xhs.entities import (
+from clawvision.platforms.xhs.entities import (
     Comment,
     NoteEntity,
     NoteType,

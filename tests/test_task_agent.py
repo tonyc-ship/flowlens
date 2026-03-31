@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import unittest
 
-from clawvision.agent.task_agent import TaskAgent
+from clawvision.reasoning.task_agent import TaskAgent
 
 
 class _FakeMedia:

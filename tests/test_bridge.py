@@ -1,7 +1,7 @@
 import unittest
 from unittest import IsolatedAsyncioTestCase, mock
 
-from clawvision.agent.bridge import ExtensionBridge
+from clawvision.core.bridge import ExtensionBridge
 
 
 class BridgeHelpersTest(unittest.TestCase):
