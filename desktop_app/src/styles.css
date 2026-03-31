@@ -226,12 +226,43 @@ textarea {
 
 .task-meta {
   display: flex;
-  justify-content: space-between;
+  align-items: center;
   gap: 12px;
   font-size: 0.8rem;
   color: rgba(245, 242, 234, 0.5);
   text-transform: uppercase;
   letter-spacing: 0.08em;
+}
+
+.status-running {
+  color: #f0a030;
+}
+
+.status-done {
+  color: #70c070;
+}
+
+.stop-btn {
+  margin-left: auto;
+  padding: 2px 10px;
+  font-size: 0.75rem;
+  border: 1px solid #e05050;
+  border-radius: 8px;
+  background: transparent;
+  color: #e05050;
+  cursor: pointer;
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+}
+
+.stop-btn:hover {
+  background: #e05050;
+  color: #fff;
+}
+
+.stop-btn:disabled {
+  opacity: 0.5;
+  cursor: default;
 }
 
 /* ── Mode Tabs ────────────────────────────── */

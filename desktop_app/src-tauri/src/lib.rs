@@ -1,6 +1,7 @@
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use std::env;
+extern crate libc;
 use std::ffi::OsString;
 use std::fs::{self, File};
 use std::io::{BufRead, BufReader, Write};
@@ -38,6 +39,9 @@ struct TaskStub {
 
 #[derive(Default)]
 struct LatestChatbotsTask(Mutex<Option<TaskStub>>);
+
+#[derive(Default)]
+struct RunningTasks(Mutex<Vec<TaskStub>>);
 
 #[derive(Default)]
 struct ChatbotsCompanionState(Mutex<Option<ChatbotsCompanionHandle>>);
@@ -279,6 +283,16 @@ fn spawn_clawvision(
 
 fn companion_is_alive(handle: &mut ChatbotsCompanionHandle) -> bool {
     matches!(handle.child.try_wait(), Ok(None))
+}
+
+fn stop_chatbots_companion(app: &AppHandle) {
+    let state = app.state::<ChatbotsCompanionState>();
+    if let Ok(mut guard) = state.0.lock() {
+        if let Some(mut handle) = guard.take() {
+            let _ = handle.child.kill();
+            let _ = handle.child.wait();
+        }
+    };
 }
 
 fn parse_task_stub(value: &Value) -> Result<TaskStub, String> {
@@ -533,6 +547,50 @@ fn latest_chatbots_task(app: AppHandle, state: State<'_, LatestChatbotsTask>) ->
     Ok(guard.clone())
 }
 
+fn is_pid_alive(pid: u32) -> bool {
+    // kill(pid, 0) checks if process exists without sending a signal
+    unsafe { libc::kill(pid as i32, 0) == 0 }
+}
+
+#[tauri::command]
+fn check_task_status(state: State<'_, RunningTasks>) -> Vec<TaskStub> {
+    let mut guard = match state.0.lock() {
+        Ok(g) => g,
+        Err(_) => return vec![],
+    };
+    for task in guard.iter_mut() {
+        if task.status == "running" && !is_pid_alive(task.pid) {
+            task.status = "done".to_string();
+        }
+    }
+    guard.clone()
+}
+
+#[tauri::command]
+fn stop_task(task_id: String, state: State<'_, RunningTasks>) -> Result<String, String> {
+    let mut guard = state
+        .0
+        .lock()
+        .map_err(|_| "Task state is poisoned".to_string())?;
+    let task = guard
+        .iter_mut()
+        .find(|t| t.id == task_id)
+        .ok_or_else(|| format!("Task {task_id} not found"))?;
+    if task.status != "running" {
+        return Err(format!("Task {} is already {}", task_id, task.status));
+    }
+    let pid = task.pid as i32;
+    // Send SIGTERM first for graceful shutdown
+    unsafe { libc::kill(pid, libc::SIGTERM); }
+    // Give it a moment, then force kill
+    std::thread::sleep(std::time::Duration::from_millis(500));
+    if is_pid_alive(task.pid) {
+        unsafe { libc::kill(pid, libc::SIGKILL); }
+    }
+    task.status = "stopped".to_string();
+    Ok(format!("Task {task_id} stopped"))
+}
+
 fn extract_profile_url(prompt: &str) -> Option<String> {
     prompt
         .split_whitespace()
@@ -564,7 +622,11 @@ fn start_task(app: AppHandle, prompt: String) -> Result<TaskStub, String> {
     }
 
     let kind = infer_kind(trimmed)?.to_string();
-    spawn_clawvision(
+    // Stop the chatbots companion if running — it holds the WebSocket port
+    // the task runner needs for the Chrome extension bridge.
+    stop_chatbots_companion(&app);
+
+    let task = spawn_clawvision(
         &app,
         "task",
         &kind,
@@ -577,7 +639,18 @@ fn start_task(app: AppHandle, prompt: String) -> Result<TaskStub, String> {
             OsString::from(trimmed),
         ],
         "--output-root",
-    )
+    )?;
+
+    if let Ok(mut guard) = app.state::<RunningTasks>().0.lock() {
+        guard.push(task.clone());
+        // Keep only the latest 10 tasks
+        let excess = guard.len().saturating_sub(10);
+        if excess > 0 {
+            guard.drain(..excess);
+        }
+    }
+
+    Ok(task)
 }
 
 #[tauri::command]
@@ -589,6 +662,7 @@ fn ask_chatbots(app: AppHandle, question: String) -> Result<TaskStub, String> {
 pub fn run() {
     let builder = tauri::Builder::default()
         .manage(LatestChatbotsTask::default())
+        .manage(RunningTasks::default())
         .manage(ChatbotsCompanionState::default())
         .plugin(tauri_plugin_deep_link::init())
         .setup(|app| {
@@ -616,6 +690,8 @@ pub fn run() {
         .invoke_handler(tauri::generate_handler![
             app_health,
             start_task,
+            check_task_status,
+            stop_task,
             ask_chatbots,
             latest_chatbots_task
         ])

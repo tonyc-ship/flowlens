@@ -184,8 +184,9 @@ function renderXhsMode(): string {
                 (task) => `
                   <article class="task-card">
                     <div class="task-meta">
-                      <span>${escapeHtml(task.status)}</span>
+                      <span class="task-status ${task.status === "running" ? "status-running" : "status-done"}">${escapeHtml(task.status.toUpperCase())}</span>
                       <span>${escapeHtml(task.id)}</span>
+                      ${task.status === "running" ? `<button class="stop-btn" data-task-id="${escapeHtmlAttr(task.id)}">Stop</button>` : ""}
                     </div>
                     <p>${escapeHtml(task.prompt)}</p>
                   </article>
@@ -259,6 +260,23 @@ function bindXhsEvents(app: HTMLElement) {
       app.querySelector<HTMLTextAreaElement>("#task-input")?.focus();
     });
   }
+
+  for (const button of app.querySelectorAll<HTMLButtonElement>(".stop-btn")) {
+    button.addEventListener("click", async () => {
+      const taskId = button.dataset.taskId;
+      if (!taskId) return;
+      button.disabled = true;
+      button.textContent = "Stopping...";
+      try {
+        await invoke("stop_task", { taskId });
+        const task = state.recentTasks.find((t) => t.id === taskId);
+        if (task) task.status = "stopped";
+      } catch (error) {
+        console.warn("stop_task failed:", error);
+      }
+      render();
+    });
+  }
 }
 
 function syncStartButton() {
@@ -288,6 +306,32 @@ async function refreshHealth() {
   }
 }
 
+let taskPollTimer: ReturnType<typeof setInterval> | null = null;
+
+function startTaskPolling() {
+  if (taskPollTimer) return;
+  taskPollTimer = setInterval(async () => {
+    try {
+      const tasks = await invoke<TaskStub[]>("check_task_status");
+      const taskMap = new Map(tasks.map((t) => [t.id, t]));
+      let changed = false;
+      for (const task of state.recentTasks) {
+        const latest = taskMap.get(task.id);
+        if (latest && latest.status !== task.status) {
+          task.status = latest.status;
+          changed = true;
+        }
+      }
+      if (changed) render();
+      // Stop polling when no tasks are running
+      if (!state.recentTasks.some((t) => t.status === "running")) {
+        clearInterval(taskPollTimer!);
+        taskPollTimer = null;
+      }
+    } catch {}
+  }, 2000);
+}
+
 async function startTask() {
   if (!state.prompt.trim() || state.launchingTask) return;
 
@@ -299,6 +343,7 @@ async function startTask() {
     const task = await invoke<TaskStub>("start_task", { prompt: state.prompt.trim() });
     state.recentTasks = [task, ...state.recentTasks].slice(0, 4);
     state.prompt = "";
+    startTaskPolling();
   } catch (error) {
     state.launchError = String(error);
   } finally {
