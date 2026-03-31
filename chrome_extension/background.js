@@ -137,22 +137,37 @@ function broadcastHighlight(mode, opts) {
   } catch {}
 }
 
-async function openSidePanelForWindow(windowId) {
-  if (!windowId || !chrome.sidePanel?.open) return false;
-  try {
-    if (chrome.sidePanel?.setOptions) {
-      await chrome.sidePanel.setOptions({
-        path: 'sidepanel.html',
-        enabled: true,
-      });
+async function openSidePanelForWindow(windowId, tabId) {
+  if (chrome.sidePanel?.open) {
+    try {
+      if (chrome.sidePanel?.setOptions) {
+        await chrome.sidePanel.setOptions({
+          path: 'sidepanel.html',
+          enabled: true,
+        });
+      }
+      if (tabId) {
+        try {
+          await chrome.sidePanel.open({ tabId });
+          broadcastStatus();
+          return true;
+        } catch {}
+      }
+      if (windowId) {
+        await chrome.sidePanel.open({ windowId });
+        broadcastStatus();
+        return true;
+      }
+    } catch (err) {
+      console.log('[BG] sidePanel.open failed (no user gesture?):', err.message);
     }
-    await chrome.sidePanel.open({ windowId });
-    broadcastStatus();
-    return true;
-  } catch (err) {
-    console.log('[BG] Failed to open side panel:', err.message);
-    return false;
   }
+
+  // sidePanel.open requires a user gesture context.
+  // The Python agent will click the extension icon via macOS Accessibility
+  // to provide a real user gesture, which triggers openPanelOnActionClick.
+  console.log('[BG] sidePanel.open unavailable without user gesture — agent will click extension icon');
+  return false;
 }
 
 async function launchDeepLink(url) {
@@ -197,7 +212,14 @@ async function prepareWatchModeOnCurrentTab(params = {}) {
   watchStartTime = Date.now();
   watchLog = [];
   broadcastStatus();
-  openSidePanelForWindow(tab.windowId);
+
+  // Open side panel with retry — Chrome may reject the first attempt
+  // if the window isn't fully focused yet.
+  let sidePanelOpened = await openSidePanelForWindow(tab.windowId, tab.id);
+  if (!sidePanelOpened) {
+    await new Promise(r => setTimeout(r, 1000));
+    sidePanelOpened = await openSidePanelForWindow(tab.windowId, tab.id);
+  }
 
   broadcastWatch({
     kind: 'session',
@@ -211,7 +233,7 @@ async function prepareWatchModeOnCurrentTab(params = {}) {
     tabId: tab.id,
     locked: params.lock !== false,
     watchMode: true,
-    sidePanel: true,
+    sidePanel: sidePanelOpened,
   };
 }
 
@@ -401,7 +423,7 @@ function categorizeAction(action) {
   if (['click_at', 'click_card', 'click_note_by_id', 'click_note_link', 'click_search_tab'].includes(action)) return 'click';
   if (['extract_search_cards', 'extract_note_content', 'extract_comments', 'extract_profile_info', 'extract_profile_notes', 'extract_search_tabs', 'get_search_page_state', 'collect_carousel_images'].includes(action)) return 'extract';
   if (['navigate', 'scroll_page', 'scroll_note', 'press_key', 'type_text', 'find_chat_input', 'set_chat_input_text', 'click_chat_submit', 'mouse_move', 'run_js'].includes(action)) return 'action';
-  if (['create_background_window', 'create_watch_window', 'create_tab', 'close_window', 'lock_active_tab', 'release_active_tab', 'set_active_tab', 'get_tab_info'].includes(action)) return 'action';
+  if (['create_background_window', 'create_watch_window', 'create_tab', 'close_window', 'close_tab', 'lock_active_tab', 'release_active_tab', 'set_active_tab', 'get_tab_info'].includes(action)) return 'action';
   if (['detect_state'].includes(action)) return 'info';
   return 'command';
 }
@@ -1228,6 +1250,27 @@ async function handleCommand(msg) {
       return { ok: true };
     }
 
+    case 'close_tab': {
+      if (!params.tabId) throw new Error('close_tab requires tabId');
+      if (pinnedTabId === params.tabId) {
+        releasePinnedTab();
+      }
+      if (watchMode) {
+        watchMode = false;
+        broadcastStatus();
+      }
+      await chrome.tabs.remove(params.tabId);
+      // Verify it's actually gone
+      try {
+        await chrome.tabs.get(params.tabId);
+        throw new Error(`Tab ${params.tabId} still exists after remove`);
+      } catch (e) {
+        if (e.message?.includes('still exists')) throw e;
+        // Expected: "No tab with id" means removal succeeded
+      }
+      return { ok: true, removedTabId: params.tabId };
+    }
+
     case 'close_window': {
       if (params.windowId) {
         if (pinnedWindowId === params.windowId) {
@@ -1537,7 +1580,7 @@ if (chrome.action?.onClicked) {
   chrome.action.onClicked.addListener(async (tab) => {
     if (!tab?.windowId) return;
     activeTabId = tab.id || activeTabId;
-    await openSidePanelForWindow(tab.windowId);
+    await openSidePanelForWindow(tab.windowId, tab.id);
   });
 }
 
@@ -1550,7 +1593,7 @@ if (chrome.commands?.onCommand) {
     } catch {}
     if (!tab?.windowId) return;
     activeTabId = tab.id || activeTabId;
-    await openSidePanelForWindow(tab.windowId);
+    await openSidePanelForWindow(tab.windowId, tab.id);
   });
 }
 
