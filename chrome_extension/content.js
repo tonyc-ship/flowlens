@@ -59,6 +59,290 @@ function watchHighlightElement(el) {
   setTimeout(() => { overlay.remove(); }, 2000);
 }
 
+// ── Watch Mode: In-Page Overlay ───────────────────────────────
+
+const WATCH_OVERLAY_MAX_ENTRIES = 10;
+let watchOverlayHost = null;
+let watchOverlayShadow = null;
+let watchOverlayFeed = null;
+let watchOverlayDot = null;
+let watchOverlayStatusText = null;
+let watchOverlayCount = null;
+let watchOverlayEntries = [];
+let watchOverlayStartTime = Date.now();
+
+function ensureWatchOverlay() {
+  if (watchOverlayHost) return watchOverlayHost;
+
+  watchOverlayHost = document.createElement('div');
+  watchOverlayHost.id = 'clawvision-watch-overlay';
+  watchOverlayHost.style.cssText = [
+    'position: fixed',
+    'top: 88px',
+    'right: 16px',
+    'width: 320px',
+    'max-height: min(52vh, 460px)',
+    'z-index: 2147483645',
+    'pointer-events: auto',
+  ].join(';');
+  document.documentElement.appendChild(watchOverlayHost);
+
+  watchOverlayShadow = watchOverlayHost.attachShadow({ mode: 'open' });
+
+  const style = document.createElement('style');
+  style.textContent = `
+    * { box-sizing: border-box; }
+    .hud {
+      display: flex;
+      flex-direction: column;
+      overflow: hidden;
+      border: 1px solid rgba(99, 102, 241, 0.24);
+      border-radius: 14px;
+      background: rgba(14, 17, 24, 0.92);
+      backdrop-filter: blur(16px);
+      color: #e5e7eb;
+      box-shadow: 0 20px 60px rgba(0, 0, 0, 0.35);
+      font-family: -apple-system, BlinkMacSystemFont, "SF Pro Text", "Helvetica Neue", sans-serif;
+    }
+    .header {
+      display: flex;
+      align-items: center;
+      gap: 10px;
+      padding: 10px 12px;
+      border-bottom: 1px solid rgba(148, 163, 184, 0.14);
+      background: linear-gradient(180deg, rgba(30, 41, 59, 0.65), rgba(15, 23, 42, 0.35));
+    }
+    .title {
+      font-size: 12px;
+      font-weight: 700;
+      color: #f8fafc;
+      letter-spacing: 0.2px;
+    }
+    .subtitle {
+      margin-top: 2px;
+      font-size: 11px;
+      color: #94a3b8;
+    }
+    .grow { flex: 1; min-width: 0; }
+    .dot {
+      width: 8px;
+      height: 8px;
+      border-radius: 999px;
+      background: #64748b;
+      box-shadow: none;
+      flex-shrink: 0;
+    }
+    .dot.on {
+      background: #34d399;
+      box-shadow: 0 0 10px rgba(52, 211, 153, 0.75);
+    }
+    .count {
+      font-size: 10px;
+      color: #64748b;
+      flex-shrink: 0;
+    }
+    .toggle {
+      border: 0;
+      background: rgba(30, 41, 59, 0.8);
+      color: #cbd5e1;
+      border-radius: 999px;
+      width: 26px;
+      height: 26px;
+      cursor: pointer;
+      font-size: 13px;
+      line-height: 1;
+      flex-shrink: 0;
+    }
+    .feed {
+      display: flex;
+      flex-direction: column;
+      gap: 8px;
+      overflow-y: auto;
+      padding: 10px 12px 12px;
+      max-height: 360px;
+    }
+    .feed.hidden { display: none; }
+    .feed::-webkit-scrollbar { width: 6px; }
+    .feed::-webkit-scrollbar-thumb {
+      background: rgba(100, 116, 139, 0.35);
+      border-radius: 999px;
+    }
+    .entry {
+      border-radius: 10px;
+      padding: 8px 10px;
+      border: 1px solid rgba(148, 163, 184, 0.08);
+      background: rgba(15, 23, 42, 0.6);
+    }
+    .entry-head {
+      display: flex;
+      align-items: center;
+      gap: 8px;
+      margin-bottom: 5px;
+    }
+    .entry-kind {
+      font-size: 9px;
+      font-weight: 700;
+      text-transform: uppercase;
+      letter-spacing: 0.5px;
+      padding: 2px 6px;
+      border-radius: 999px;
+      background: rgba(99, 102, 241, 0.22);
+      color: #c7d2fe;
+    }
+    .entry-time {
+      font-size: 10px;
+      color: #64748b;
+      margin-left: auto;
+    }
+    .entry-action {
+      font-size: 11px;
+      font-weight: 600;
+      color: #f8fafc;
+      margin-bottom: 3px;
+      word-break: break-word;
+    }
+    .entry-message {
+      font-size: 11px;
+      line-height: 1.45;
+      color: #cbd5e1;
+      word-break: break-word;
+    }
+    .empty {
+      padding: 16px 10px;
+      text-align: center;
+      color: #64748b;
+      font-size: 11px;
+    }
+  `;
+  watchOverlayShadow.appendChild(style);
+
+  const panel = document.createElement('div');
+  panel.className = 'hud';
+  panel.innerHTML = `
+    <div class="header">
+      <span class="dot" id="cvWatchDot"></span>
+      <div class="grow">
+        <div class="title">ClawVision Live</div>
+        <div class="subtitle" id="cvWatchStatus">Waiting for agent activity...</div>
+      </div>
+      <span class="count" id="cvWatchCount">0 events</span>
+      <button class="toggle" id="cvWatchToggle" title="Collapse">−</button>
+    </div>
+    <div class="feed" id="cvWatchFeed">
+      <div class="empty">Waiting for agent activity...</div>
+    </div>
+  `;
+  watchOverlayShadow.appendChild(panel);
+
+  watchOverlayFeed = watchOverlayShadow.getElementById('cvWatchFeed');
+  watchOverlayDot = watchOverlayShadow.getElementById('cvWatchDot');
+  watchOverlayStatusText = watchOverlayShadow.getElementById('cvWatchStatus');
+  watchOverlayCount = watchOverlayShadow.getElementById('cvWatchCount');
+
+  const toggle = watchOverlayShadow.getElementById('cvWatchToggle');
+  toggle.addEventListener('click', () => {
+    const hidden = watchOverlayFeed.classList.toggle('hidden');
+    toggle.textContent = hidden ? '+' : '−';
+  });
+
+  return watchOverlayHost;
+}
+
+function hideWatchOverlay() {
+  if (watchOverlayHost) {
+    watchOverlayHost.style.display = 'none';
+  }
+}
+
+function showWatchOverlay() {
+  ensureWatchOverlay();
+  watchOverlayHost.style.display = '';
+}
+
+function watchOverlayTime(ts) {
+  if (typeof ts !== 'number') return '';
+  if (ts < 60) return `${ts.toFixed(1)}s`;
+  return `${Math.floor(ts / 60)}m ${Math.floor(ts % 60)}s`;
+}
+
+function watchOverlaySummary(entry) {
+  return String(
+    entry?.decision ||
+    entry?.message ||
+    entry?.detail ||
+    entry?.observation ||
+    entry?.reasoning ||
+    entry?.evidence ||
+    ''
+  ).trim();
+}
+
+function renderWatchOverlay() {
+  ensureWatchOverlay();
+  watchOverlayCount.textContent = `${watchOverlayEntries.length} events`;
+  if (!watchOverlayEntries.length) {
+    watchOverlayFeed.innerHTML = '<div class="empty">Waiting for agent activity...</div>';
+    return;
+  }
+
+  watchOverlayFeed.innerHTML = watchOverlayEntries.map((entry) => {
+    const kind = String(entry.kind || 'info').toUpperCase();
+    const action = String(entry.action || entry.phase || 'update');
+    const message = watchOverlaySummary(entry);
+    return `
+      <div class="entry">
+        <div class="entry-head">
+          <span class="entry-kind">${kind}</span>
+          <span class="entry-time">${watchOverlayTime(entry.timestamp)}</span>
+        </div>
+        <div class="entry-action">${action}</div>
+        <div class="entry-message">${message || 'No details yet.'}</div>
+      </div>
+    `;
+  }).join('');
+  watchOverlayFeed.scrollTop = watchOverlayFeed.scrollHeight;
+}
+
+function updateWatchOverlayStatus(status) {
+  ensureWatchOverlay();
+  const active = !!status?.watchMode;
+  watchOverlayDot.classList.toggle('on', active);
+  watchOverlayStatusText.textContent = active
+    ? `Watching tab ${status?.pinnedTabId || status?.activeTabId || ''}`.trim()
+    : 'Watch mode idle';
+  if (active) {
+    showWatchOverlay();
+  } else if (!watchOverlayEntries.length) {
+    hideWatchOverlay();
+  }
+}
+
+function setWatchOverlayState(payload) {
+  watchOverlayStartTime = payload?.startTime || Date.now();
+  watchOverlayEntries = Array.isArray(payload?.entries)
+    ? payload.entries.slice(-WATCH_OVERLAY_MAX_ENTRIES)
+    : [];
+  if (payload?.status) {
+    updateWatchOverlayStatus(payload.status);
+  } else {
+    showWatchOverlay();
+  }
+  renderWatchOverlay();
+}
+
+function appendWatchOverlayEntry(entry) {
+  if (!entry) return;
+  if (entry.timestamp === undefined) {
+    entry.timestamp = Math.max(0, (Date.now() - watchOverlayStartTime) / 1000);
+  }
+  watchOverlayEntries.push(entry);
+  if (watchOverlayEntries.length > WATCH_OVERLAY_MAX_ENTRIES) {
+    watchOverlayEntries = watchOverlayEntries.slice(-WATCH_OVERLAY_MAX_ENTRIES);
+  }
+  showWatchOverlay();
+  renderWatchOverlay();
+}
+
 // ── Utility ────────────────────────────────────────────────────
 
 function $(selector, root = document) {
@@ -335,6 +619,13 @@ function detectState() {
   );
   if (overlay && overlay.offsetHeight > 0) return 'note_detail';
 
+  const searchInput = findVisibleSearchInput();
+  const searchTabs = extractSearchTabs();
+  const hasSearchTabs = ['全部', '图文', '视频', '用户'].every((label) =>
+    searchTabs.some((tab) => tab.label === label)
+  );
+  if (searchInput && hasSearchTabs) return 'search_results';
+
   // URL-based detection (only match actual explore URLs, not redirect params)
   if (extractNoteIdFromUrl(url)) return 'note_detail';
   if (url.includes('/search_result') || url.includes('keyword=')) return 'search_results';
@@ -423,6 +714,8 @@ function detectSearchPageState() {
   const cards = extractSearchCards();
   const tabs = extractSearchTabs();
   const activeTab = tabs.find(tab => tab.active)?.label || '';
+  const pageState = detectState();
+  const input = findVisibleSearchInput();
   const noResultText = firstText([
     '.empty-result-page',
     '.empty-page',
@@ -438,9 +731,11 @@ function detectSearchPageState() {
   ).length;
 
   return {
+    page_state: pageState,
     card_count: cards.length,
     tabs,
     active_filter: activeTab,
+    input_keyword: input && typeof input.value === 'string' ? input.value.trim() : '',
     has_no_results: hasNoResults,
     loading: !cards.length && !hasNoResults,
     skeleton_count: skeletonCount,
@@ -468,6 +763,172 @@ async function clickSearchTab(label) {
     };
   }
   return { ok: false, error: `Search tab not found: ${label}` };
+}
+
+function findVisibleSearchInput() {
+  const candidates = $$(
+    'input#search-input, input[type="search"], input[placeholder*="搜索"], input[placeholder*="探索"], .search-input input, .search-container input'
+  ).filter((el) => {
+    if (!(el instanceof HTMLElement)) return false;
+    const rect = el.getBoundingClientRect();
+    return rect.width >= 120 && rect.height >= 24 && rect.bottom > 0 && rect.right > 0;
+  });
+  return candidates[0] || null;
+}
+
+function setNativeInputValue(input, value) {
+  const proto = input instanceof HTMLTextAreaElement
+    ? HTMLTextAreaElement.prototype
+    : HTMLInputElement.prototype;
+  const descriptor = Object.getOwnPropertyDescriptor(proto, 'value');
+  if (descriptor && descriptor.set) descriptor.set.call(input, value);
+  else input.value = value;
+}
+
+async function submitSearchQuery(keyword) {
+  function hasSearchTransition(targetKeyword) {
+    const state = detectSearchPageState();
+    const normalizedKeyword = String(targetKeyword || '').trim().toLowerCase();
+    const visibleKeyword = String(state.input_keyword || '').trim().toLowerCase();
+    const decodedUrl = (() => {
+      try {
+        return decodeURIComponent(window.location.href).toLowerCase();
+      } catch {
+        return String(window.location.href || '').toLowerCase();
+      }
+    })();
+    const keywordMatches = !normalizedKeyword
+      || visibleKeyword === normalizedKeyword
+      || decodedUrl.includes(normalizedKeyword);
+    const isSearchResults = state.page_state === 'search_results';
+    const hasSearchSurface = state.tabs.length > 0 || state.has_no_results || state.card_count > 0;
+    return {
+      ok: isSearchResults && keywordMatches && hasSearchSurface,
+      state,
+      url: window.location.href,
+    };
+  }
+
+  async function waitForSearchTransition(targetKeyword, timeoutMs = 2600) {
+    const deadline = Date.now() + timeoutMs;
+    while (Date.now() < deadline) {
+      const result = hasSearchTransition(targetKeyword);
+      if (result.ok) return result;
+      await wait(120);
+    }
+    return hasSearchTransition(targetKeyword);
+  }
+
+  function dispatchEnter(target) {
+    const enterPayload = {
+      key: 'Enter',
+      code: 'Enter',
+      keyCode: 13,
+      which: 13,
+      charCode: 13,
+      bubbles: true,
+      cancelable: true,
+      composed: true,
+    };
+    target.dispatchEvent(new KeyboardEvent('keydown', enterPayload));
+    target.dispatchEvent(new KeyboardEvent('keypress', enterPayload));
+    target.dispatchEvent(new KeyboardEvent('keyup', enterPayload));
+  }
+
+  const input = findVisibleSearchInput();
+  if (!input) {
+    return { ok: false, error: 'Search input not found' };
+  }
+
+  input.scrollIntoView({ behavior: 'instant', block: 'center' });
+  await wait(200);
+  input.focus();
+  watchHighlightElement(input);
+
+  if (input instanceof HTMLInputElement || input instanceof HTMLTextAreaElement) {
+    setNativeInputValue(input, keyword);
+  } else if (input.isContentEditable) {
+    input.textContent = keyword;
+  } else {
+    return { ok: false, error: 'Unsupported search input element' };
+  }
+
+  input.dispatchEvent(new InputEvent('input', {
+    bubbles: true,
+    inputType: 'insertText',
+    data: keyword,
+  }));
+  input.dispatchEvent(new Event('change', { bubbles: true }));
+
+  const root = input.closest('form, header, .search-input, .search-container, .search-bar, .search-box') || document;
+  const inputRect = input.getBoundingClientRect();
+  const submitCandidates = [...document.querySelectorAll('button, [role="button"], a, div, span, svg, .search-icon, .search-btn, .icon-search')]
+    .filter((el) => el instanceof HTMLElement || el instanceof SVGElement)
+    .map((el) => {
+      const clickable = el.closest?.('button, [role="button"], a, div, span') || el;
+      const rect = clickable.getBoundingClientRect();
+      const meta = [
+        clickable.getAttribute?.('aria-label') || '',
+        clickable.getAttribute?.('title') || '',
+        clickable.className || '',
+        el.getAttribute?.('aria-label') || '',
+        el.getAttribute?.('title') || '',
+        el.className || '',
+      ].join(' ').toLowerCase();
+      let score = 0;
+      if (/search|搜索|find|query/.test(meta)) score += 100;
+      if (/clear|close|cancel|remove|delete|清除|关闭|取消/.test(meta)) score -= 120;
+      score -= Math.abs(rect.left - inputRect.right);
+      if (rect.left >= inputRect.left && rect.right <= inputRect.right) score -= 10;
+      return { el: clickable, rect, score, meta };
+    })
+    .filter(({ rect, score }) => rect.width >= 12 && rect.height >= 12 && rect.right >= inputRect.left && rect.left <= inputRect.right + 180 && score > -140)
+    .sort((a, b) => b.score - a.score);
+
+  const target = submitCandidates[0]?.el || null;
+  if (target && typeof target.click === 'function') {
+    watchHighlightElement(target);
+    target.click();
+    const clicked = await waitForSearchTransition(keyword, 1800);
+    if (clicked.ok) {
+      return {
+        ok: true,
+        keyword,
+        strategy: 'click_search_target',
+        state: clicked.state.page_state,
+        searchState: clicked.state,
+        url: clicked.url,
+      };
+    }
+  }
+
+  if (input.form && typeof input.form.requestSubmit === 'function') {
+    input.form.requestSubmit();
+    const submitted = await waitForSearchTransition(keyword, 1800);
+    if (submitted.ok) {
+      return {
+        ok: true,
+        keyword,
+        strategy: 'form_request_submit',
+        state: submitted.state.page_state,
+        searchState: submitted.state,
+        url: submitted.url,
+      };
+    }
+  }
+
+  dispatchEnter(input);
+  dispatchEnter(document);
+  const entered = await waitForSearchTransition(keyword, 2200);
+  return {
+    ok: entered.ok,
+    keyword,
+    strategy: entered.ok ? 'synthetic_enter' : 'submit_failed',
+    error: entered.ok ? '' : 'Search submit did not transition to search_results',
+    state: entered.state.page_state,
+    searchState: entered.state,
+    url: entered.url,
+  };
 }
 
 // ── Note Content Extraction ────────────────────────────────────
@@ -1160,6 +1621,46 @@ connectKeepalive();
 chrome.runtime.sendMessage({ type: 'content_ready', url: window.location.href });
 
 chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
+  if (msg.type === 'watch_highlight') {
+    if (msg.mode === 'coords') {
+      const overlay = document.createElement('div');
+      overlay.className = 'clawvision-element-highlight';
+      overlay.style.cssText = [
+        'position: fixed',
+        `left: ${(msg.x || 0) - 14}px`,
+        `top: ${(msg.y || 0) - 14}px`,
+        'width: 28px',
+        'height: 28px',
+        'border-radius: 999px',
+        'border: 2px solid #f97316',
+        'background: rgba(249, 115, 22, 0.18)',
+        'pointer-events: none',
+        'z-index: 2147483646',
+        'box-shadow: 0 0 0 8px rgba(249, 115, 22, 0.12)',
+        'transition: opacity 0.6s ease-out',
+      ].join(';');
+      document.documentElement.appendChild(overlay);
+      setTimeout(() => { overlay.style.opacity = '0'; }, 1400);
+      setTimeout(() => { overlay.remove(); }, 2000);
+    }
+    return;
+  }
+
+  if (msg.type === 'watch_state') {
+    setWatchOverlayState(msg);
+    return;
+  }
+
+  if (msg.type === 'watch_event') {
+    appendWatchOverlayEntry(msg.data || {});
+    return;
+  }
+
+  if (msg.type === 'watch_status') {
+    updateWatchOverlayStatus(msg.data || {});
+    return;
+  }
+
   if (msg.type !== 'command') return;
 
   (async () => {
@@ -1193,6 +1694,10 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
 
         case 'click_search_tab':
           result = await clickSearchTab(msg.params?.label ?? '全部');
+          break;
+
+        case 'submit_search_query':
+          result = await submitSearchQuery(msg.params?.keyword ?? '');
           break;
 
         case 'extract_note_content':

@@ -27,6 +27,7 @@ let reconnectTimer = null;
 let wsPort = DEFAULT_PORT;
 const debuggerQueues = new Map();
 const sidePanelPorts = new Set();
+const sidePanelPortWindows = new Map();
 
 // ── Watch Mode State ──────────────────────────────────────────
 let watchMode = false;
@@ -94,6 +95,9 @@ function statusSnapshot() {
     pinnedTabId,
     pinnedWindowId,
     watchMode,
+    sidePanelOpen: sidePanelPorts.size > 0,
+    sidePanelPortCount: sidePanelPorts.size,
+    sidePanelWindowIds: [...new Set([...sidePanelPortWindows.values()].filter(Boolean))],
   };
 }
 
@@ -105,8 +109,18 @@ function broadcastSidePanel(message) {
   }
 }
 
+function broadcastOverlay(message, explicitTabId = null) {
+  const tabId = explicitTabId || targetTabId();
+  if (!tabId) return;
+  try {
+    chrome.tabs.sendMessage(tabId, message);
+  } catch {}
+}
+
 function broadcastStatus() {
-  broadcastSidePanel({ type: 'status', data: statusSnapshot() });
+  const data = statusSnapshot();
+  broadcastSidePanel({ type: 'status', data });
+  broadcastOverlay({ type: 'watch_status', data });
 }
 
 function currentWatchState() {
@@ -125,6 +139,7 @@ function broadcastWatch(data) {
   watchLog.push(data);
   if (watchLog.length > WATCH_LOG_MAX) watchLog.shift();
   broadcastSidePanel({ type: 'watch_event', data });
+  broadcastOverlay({ type: 'watch_event', data });
   broadcastStatus();
 }
 
@@ -213,14 +228,6 @@ async function prepareWatchModeOnCurrentTab(params = {}) {
   watchLog = [];
   broadcastStatus();
 
-  // Open side panel with retry — Chrome may reject the first attempt
-  // if the window isn't fully focused yet.
-  let sidePanelOpened = await openSidePanelForWindow(tab.windowId, tab.id);
-  if (!sidePanelOpened) {
-    await new Promise(r => setTimeout(r, 1000));
-    sidePanelOpened = await openSidePanelForWindow(tab.windowId, tab.id);
-  }
-
   broadcastWatch({
     kind: 'session',
     message: `Watch mode attached to current tab ${tab.id}`,
@@ -233,32 +240,20 @@ async function prepareWatchModeOnCurrentTab(params = {}) {
     tabId: tab.id,
     locked: params.lock !== false,
     watchMode: true,
-    sidePanel: sidePanelOpened,
+    sidePanel: false,
   };
 }
 
 async function createWatchTabInCurrentWindow(params = {}) {
-  let currentWindow = null;
-  try {
-    currentWindow = await chrome.windows.getLastFocused();
-  } catch {}
-
-  let tab = null;
-  if (currentWindow?.id) {
-    await chrome.windows.update(currentWindow.id, { focused: true });
-    tab = await chrome.tabs.create({
-      windowId: currentWindow.id,
-      url: params.url || 'https://www.xiaohongshu.com/explore',
-      active: true,
-    });
-  } else {
-    const win = await chrome.windows.create({
-      url: params.url || 'https://www.xiaohongshu.com/explore',
-      focused: true,
-      state: 'normal',
-    });
-    tab = win.tabs?.[0] || null;
-  }
+  const win = await chrome.windows.create({
+    url: params.url || 'https://www.xiaohongshu.com/explore',
+    focused: true,
+    state: 'normal',
+    type: 'normal',
+    width: params.width || 1280,
+    height: params.height || 900,
+  });
+  const tab = win.tabs?.[0] || null;
   if (!tab?.id) throw new Error('Failed to create watch tab');
   await chrome.tabs.update(tab.id, { active: true });
 
@@ -422,7 +417,7 @@ function disconnect() {
 function categorizeAction(action) {
   if (['click_at', 'click_card', 'click_note_by_id', 'click_note_link', 'click_search_tab'].includes(action)) return 'click';
   if (['extract_search_cards', 'extract_note_content', 'extract_comments', 'extract_profile_info', 'extract_profile_notes', 'extract_search_tabs', 'get_search_page_state', 'collect_carousel_images'].includes(action)) return 'extract';
-  if (['navigate', 'scroll_page', 'scroll_note', 'press_key', 'type_text', 'find_chat_input', 'set_chat_input_text', 'click_chat_submit', 'mouse_move', 'run_js'].includes(action)) return 'action';
+  if (['navigate', 'go_back', 'scroll_page', 'scroll_note', 'press_key', 'type_text', 'find_chat_input', 'set_chat_input_text', 'click_chat_submit', 'mouse_move', 'run_js', 'submit_search_query'].includes(action)) return 'action';
   if (['create_background_window', 'create_watch_window', 'create_tab', 'close_window', 'close_tab', 'lock_active_tab', 'release_active_tab', 'set_active_tab', 'get_tab_info'].includes(action)) return 'action';
   if (['detect_state'].includes(action)) return 'info';
   return 'command';
@@ -441,11 +436,13 @@ function describeCommand(action, params) {
   if (!params) params = {};
   switch (action) {
     case 'navigate': return `Navigate → ${params.url || ''}`.slice(0, 120);
+    case 'go_back': return 'Go back in tab history';
     case 'click_at': return `CDP click at (${params.x}, ${params.y})`;
     case 'click_card': return `Click card #${params.index}`;
     case 'click_note_by_id': return `Click note ${params.note_id || params.noteId || ''}`;
     case 'click_note_link': return `Click note link: ${params.url || ''}`.slice(0, 100);
     case 'click_search_tab': return `Switch tab → ${params.label || ''}`;
+    case 'submit_search_query': return `Submit XHS search: ${(params.keyword || '').slice(0, 40)}`;
     case 'extract_search_cards': return 'Extract search cards from DOM';
     case 'extract_note_content': return 'Extract note content';
     case 'extract_comments': return `Extract comments (max: ${params.max_comments || 'all'})`;
@@ -463,7 +460,7 @@ function describeCommand(action, params) {
     case 'run_js': return 'Execute JavaScript';
     case 'get_tab_info': return 'Get tab info';
     case 'create_background_window': return 'Create background window';
-    case 'create_watch_window': return 'Open watch side panel';
+    case 'create_watch_window': return 'Open watch overlay';
     default: return action;
   }
 }
@@ -472,6 +469,7 @@ function describeResult(action, result) {
   if (!result) return 'OK';
   switch (action) {
     case 'navigate': return `Navigated to ${result.url || 'page'}`.slice(0, 100);
+    case 'go_back': return `Back to ${result.url || 'previous page'}`.slice(0, 100);
     case 'detect_state': return `State: ${result.state || '?'}${result.antiBotState ? ' ⚠ ' + result.antiBotState : ''}`;
     case 'extract_search_cards': {
       const cards = result.cards || [];
@@ -1144,6 +1142,23 @@ async function handleCommand(msg) {
       return { ok: true, url: params.url };
     }
 
+    case 'go_back': {
+      const tabId = commandTabId(params);
+      if (!tabId) throw new Error('No active tab');
+      await chrome.scripting.executeScript({
+        target: { tabId },
+        world: 'MAIN',
+        func: () => {
+          history.back();
+          return true;
+        },
+      });
+      await new Promise(r => setTimeout(r, params.wait || 1500));
+      await waitForContentScript(tabId, 3000);
+      const tab = await chrome.tabs.get(tabId);
+      return { ok: true, url: tab.url || '', title: tab.title || '' };
+    }
+
     case 'capture_screenshot': {
       return await captureScreenshot(params);
     }
@@ -1200,7 +1215,7 @@ async function handleCommand(msg) {
       return { ok: true, windowId: win.id, tabId: tab.id, locked: params.lock !== false };
     }
 
-    // ── Watch Mode: current window + native side panel ──
+    // ── Watch Mode: current window + in-page overlay ──
 
     case 'create_watch_window': {
       return await createWatchTabInCurrentWindow(params);
@@ -1218,6 +1233,10 @@ async function handleCommand(msg) {
       broadcastStatus();
       broadcastSidePanel({ type: 'watch_state', status: statusSnapshot(), startTime: watchStartTime, entries: watchLog });
       return { ok: true };
+    }
+
+    case 'get_status': {
+      return statusSnapshot();
     }
 
     case 'watch_log': {
@@ -1310,6 +1329,10 @@ async function handleCommand(msg) {
         args: [params.code || ''],
       });
       return result.result || {};
+    }
+
+    case 'submit_search_query': {
+      return await sendToContentScript(commandTabId(params), msg);
     }
 
     case 'find_chat_input': {
@@ -1513,7 +1536,17 @@ chrome.runtime.onConnect.addListener((port) => {
     try {
       port.postMessage(currentWatchState());
     } catch {}
-    port.onDisconnect.addListener(() => sidePanelPorts.delete(port));
+    port.onMessage.addListener((msg) => {
+      if (msg?.type === 'panel_context' && Number.isFinite(msg.windowId)) {
+        sidePanelPortWindows.set(port, Number(msg.windowId));
+        broadcastStatus();
+      }
+    });
+    port.onDisconnect.addListener(() => {
+      sidePanelPorts.delete(port);
+      sidePanelPortWindows.delete(port);
+      broadcastStatus();
+    });
     return;
   }
 });
@@ -1538,6 +1571,10 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
   if (msg.type === 'content_ready' && sender.tab) {
     contentReady.set(sender.tab.id, true);
     console.log(`[BG] Content script ready on tab ${sender.tab.id}: ${msg.url}`);
+    if (watchMode && sender.tab.id === targetTabId()) {
+      try { chrome.tabs.sendMessage(sender.tab.id, currentWatchState()); } catch {}
+      try { chrome.tabs.sendMessage(sender.tab.id, { type: 'watch_status', data: statusSnapshot() }); } catch {}
+    }
     return;
   }
 

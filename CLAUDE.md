@@ -88,6 +88,21 @@ Whenever you modify the Tauri app under `desktop_app/` **or** any Python code th
 - Run the repo packaging path so the real desktop artifact exists after the change.
 - Prefer `bash scripts/build_desktop_app.sh` unless the user explicitly asks for a different packaging flow.
 
+After changes that affect the installed app + Chrome extension workflow together (for example `desktop_app/`, `chrome_extension/`, `clawvision/core/bridge.py`, or XHS watch-mode workflow code), run the packaged end-to-end verification path too:
+
+```bash
+python3 scripts/verify_packaged_xhs_overlay.py
+```
+
+This script:
+- opens the installed app from `/Applications`
+- switches to the XHS view
+- launches the built-in `研究露营` preset task
+- captures screenshots of the app + browser result
+- records the new desktop task dir and key log lines
+
+Use this packaged verification path as the default regression check for app/watch UX work. The script intentionally avoids free-form typing because non-interactive macOS keystroke permission can be flaky in agent sessions.
+
 ### Test → Evaluate → Fix → Present
 
 After every significant change, follow this mandatory workflow:
@@ -140,6 +155,11 @@ For UI / UX / window-management debugging, also verify that the screenshot itsel
 - Confirm the dominant app/window in the image is actually the one you meant to capture.
 - Reject captures where another window is covering the target or where the image looks stitched across multiple Spaces/displays.
 - Do not use an unverified screenshot as evidence for page state, selector bugs, or interaction bugs.
+
+For packaged-app verification:
+- capture screenshots from the actual desktop, not just CDP tab screenshots
+- confirm the browser opened on-screen and the in-page XHS watch overlay is visible
+- confirm the Tauri app state advances out of `RUNNING` when the task completes
 
 ### No pixel-heuristic CV
 

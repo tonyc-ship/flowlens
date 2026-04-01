@@ -100,6 +100,12 @@ textarea {
   place-items: center;
 }
 
+.hero.hero-compact {
+  min-height: auto;
+  padding-top: 64px;
+  padding-bottom: 20px;
+}
+
 .composer-wrap {
   width: min(860px, 100%);
 }
@@ -212,6 +218,10 @@ textarea {
   gap: 10px;
 }
 
+.hero.hero-compact + .recent {
+  margin-top: 0;
+}
+
 .task-card {
   border: 1px solid var(--line);
   background: var(--panel-strong);
@@ -222,6 +232,65 @@ textarea {
 .task-card p {
   margin: 8px 0 0;
   color: var(--text-soft);
+}
+
+.task-outcome {
+  margin-top: 12px;
+  display: grid;
+  gap: 8px;
+}
+
+.task-assessment {
+  font-size: 0.82rem;
+  font-weight: 560;
+}
+
+.assessment-complete {
+  color: var(--ok);
+}
+
+.assessment-incomplete {
+  color: #f0b74b;
+}
+
+.task-path-row {
+  display: grid;
+  grid-template-columns: 52px minmax(0, 1fr) auto;
+  gap: 10px;
+  align-items: center;
+}
+
+.task-path-label {
+  color: rgba(245, 242, 234, 0.48);
+  text-transform: uppercase;
+  letter-spacing: 0.08em;
+  font-size: 0.72rem;
+}
+
+.task-path-row code {
+  display: block;
+  padding: 7px 9px;
+  border-radius: 10px;
+  background: rgba(255, 255, 255, 0.03);
+  color: rgba(245, 242, 234, 0.78);
+  font-size: 0.8rem;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.reveal-btn {
+  border: 1px solid var(--line);
+  background: transparent;
+  color: var(--text-soft);
+  border-radius: 999px;
+  padding: 6px 10px;
+  cursor: pointer;
+}
+
+.reveal-btn:hover {
+  border-color: rgba(255, 126, 92, 0.42);
+  color: inherit;
 }
 
 .task-meta {

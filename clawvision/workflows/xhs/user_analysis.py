@@ -18,7 +18,7 @@ from contextlib import contextmanager
 from dataclasses import dataclass
 from pathlib import Path
 
-from ...core.bridge import ExtensionBridge
+from ...core.bridge import ExtensionBridge, ensure_extension_connection
 from ...core.reporting import markdown_styles, render_markdown_block
 from ...perception.media import MediaProcessor
 from ...platforms.xhs.browser import XHSBrowser
@@ -167,13 +167,18 @@ class XHSUserAnalyzer:
         else:
             self._log_step("bridge_ready", f"Using external bridge on port {self.browser.bridge.port}")
         print("\n  >>> Waiting for Chrome Extension to connect. <<<\n")
-        await self.browser.bridge.wait_for_connection(timeout=120, require_watch=getattr(self, '_watch', False))
+        await ensure_extension_connection(
+            self.browser.bridge,
+            require_watch=getattr(self, "_watch", False),
+            timeout=120,
+            warmup_active_tab=False,
+        )
 
-        # Watch mode: create foreground window with sidebar
+        # Watch mode: create foreground window with in-page overlay
         if getattr(self, '_watch', False):
             await self.browser.bridge.create_watch_window(url="https://www.xiaohongshu.com")
-            await asyncio.sleep(4)
-            self._log_step("watch_mode", "Foreground window with watch sidebar created")
+            await asyncio.sleep(2)
+            self._log_step("watch_mode", "Foreground window with in-page watch overlay created")
 
         # Navigate to profile
         profile_url = await self.browser.navigate_to_profile(user_url)
@@ -398,21 +403,7 @@ class XHSUserAnalyzer:
             return None
 
         async def ensure_profile_context() -> dict:
-            try:
-                current_state = await self.browser.detect_state()
-            except Exception:
-                current_state = {}
-            try:
-                current_url = (await self.browser.get_tab_info()).get("url", "")
-            except Exception:
-                current_url = ""
-
-            if current_state.get("state") == "profile_page" and current_url == profile_url:
-                return current_state
-
-            await self.browser.navigate(profile_url, wait_ms=5000)
-            await asyncio.sleep(2)
-            return await self.browser.detect_state()
+            return await self.browser.restore_profile_context(profile_url)
 
         async def ensure_note_detail(label: str, wait_s: float = 1.5) -> bool:
             await asyncio.sleep(wait_s)
@@ -494,8 +485,7 @@ class XHSUserAnalyzer:
                         await self.browser.close_note()
                         await asyncio.sleep(1)
                     else:
-                        await self.browser.navigate(profile_url, wait_ms=5000)
-                        await asyncio.sleep(2)
+                        await ensure_profile_context()
                     return "anti_bot"
             except Exception:
                 pass

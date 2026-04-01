@@ -61,6 +61,7 @@ from __future__ import annotations
 
 import asyncio
 import random
+import urllib.parse
 
 from ...core.bridge import ExtensionBridge
 
@@ -80,12 +81,17 @@ class XHSBrowser:
 
     def __init__(self, bridge: ExtensionBridge):
         self.bridge = bridge
+        self.last_search_route: str = "unknown"
+        self.last_search_submit: dict[str, object] = {}
 
     # ── Delegated generic operations ────────────────────────────
     # Exposed for convenience so callers don't need bridge.bridge.navigate()
 
     async def navigate(self, url: str, wait_ms: int = 5000) -> dict:
         return await self.bridge.navigate(url, wait_ms)
+
+    async def go_back(self, wait_ms: int = 1500) -> dict:
+        return await self.bridge.go_back(wait_ms)
 
     async def capture_screenshot(self) -> str:
         return await self.bridge.capture_screenshot()
@@ -160,6 +166,10 @@ class XHSBrowser:
         """Switch the active XHS search tab."""
         return await self.bridge.send_command("click_search_tab", {"label": label})
 
+    async def submit_search_query(self, keyword: str) -> dict:
+        """Submit a search through the visible XHS search box instead of hard-navigating to a search URL."""
+        return await self.bridge.send_command("submit_search_query", {"keyword": keyword})
+
     async def wait_for_search_results(
         self,
         *,
@@ -180,7 +190,9 @@ class XHSBrowser:
             except Exception:
                 await asyncio.sleep(poll_s)
                 continue
-            if last_state.get("card_count", 0) > 0 or last_state.get("has_no_results"):
+            if last_state.get("page_state") == "search_results" and (
+                last_state.get("card_count", 0) > 0 or last_state.get("has_no_results")
+            ):
                 return last_state
             await asyncio.sleep(poll_s)
         return last_state
@@ -411,6 +423,69 @@ class XHSBrowser:
                 return True
         return False
 
+    @staticmethod
+    def _normalized_path(url: str) -> str:
+        try:
+            parsed = urllib.parse.urlparse(url)
+        except Exception:
+            return ""
+        return parsed.path.rstrip("/")
+
+    @staticmethod
+    def _query_param(url: str, key: str) -> str:
+        try:
+            parsed = urllib.parse.urlparse(url)
+            values = urllib.parse.parse_qs(parsed.query).get(key, [])
+        except Exception:
+            return ""
+        if not values:
+            return ""
+        return urllib.parse.unquote(values[0]).strip()
+
+    async def _visible_search_keyword(self) -> str:
+        try:
+            result = await self.bridge.run_js("""
+            const selectors = [
+                'input.search-input',
+                'input[placeholder*="搜索"]',
+                'input[placeholder*="搜"]',
+                'input[type="search"]',
+            ];
+            for (const selector of selectors) {
+                const input = document.querySelector(selector);
+                if (input && input.offsetParent !== null) {
+                    return (input.value || '').trim();
+                }
+            }
+            return '';
+            """)
+        except Exception:
+            return ""
+        value = result.get("value", result)
+        return value.strip() if isinstance(value, str) else ""
+
+    async def _matches_search_context(self, current_url: str, expected_url: str, keyword: str) -> bool:
+        if self._normalized_path(current_url) != self._normalized_path(expected_url or current_url):
+            return False
+        current_keyword = self._query_param(current_url, "keyword")
+        expected_keyword = self._query_param(expected_url, "keyword")
+        normalized_keyword = keyword.strip()
+        if current_keyword and normalized_keyword and current_keyword == normalized_keyword:
+            return True
+        if current_keyword and expected_keyword and current_keyword == expected_keyword:
+            return True
+        visible_keyword = await self._visible_search_keyword()
+        return bool(visible_keyword and normalized_keyword and visible_keyword == normalized_keyword)
+
+    @classmethod
+    def _matches_profile_context(cls, current_url: str, profile_url: str) -> bool:
+        return bool(
+            current_url
+            and profile_url
+            and cls._normalized_path(current_url)
+            and cls._normalized_path(current_url) == cls._normalized_path(profile_url)
+        )
+
     async def navigate_to_profile(self, user_url_or_id: str) -> str:
         """Navigate to a user's profile page. Accepts URL or user ID.
         Returns the canonical profile URL.
@@ -424,10 +499,163 @@ class XHSBrowser:
         return profile_url
 
     async def navigate_to_search(self, keyword: str) -> str:
-        """Navigate to XHS search results for a keyword. Returns the URL."""
-        import urllib.parse
+        """Reach XHS search results for a keyword, preferring the in-site search UI."""
+        self.last_search_route = "existing_results"
+        self.last_search_submit = {}
+        try:
+            current_url = (await self.get_tab_info()).get("url", "")
+        except Exception:
+            current_url = ""
+        try:
+            state = await self.detect_state()
+        except Exception:
+            state = {}
+
+        if state.get("state") == "search_results" and await self._matches_search_context(
+            current_url,
+            current_url,
+            keyword,
+        ):
+            return current_url
+
+        if "xiaohongshu.com" not in current_url:
+            await self.navigate("https://www.xiaohongshu.com", wait_ms=5000)
+            await asyncio.sleep(2.5)
+
+        submit = await self.submit_search_query(keyword)
+        self.last_search_submit = submit
+        if submit.get("ok"):
+            state = await self.wait_for_search_results(timeout_s=20, poll_s=1.5)
+            if state.get("page_state") == "search_results":
+                self.last_search_route = "dom_submit"
+                return (await self.get_tab_info()).get("url", "")
+
         encoded = urllib.parse.quote(keyword)
         url = f"https://www.xiaohongshu.com/search_result?keyword={encoded}&source=web_search_result_notes"
+        self.last_search_route = "url_fallback"
         await self.navigate(url, wait_ms=5000)
         await asyncio.sleep(3)
         return url
+
+    async def restore_search_context(self, keyword: str, expected_url: str) -> dict:
+        """Return to search results with minimal direct navigation."""
+        try:
+            state = await self.detect_state()
+        except Exception:
+            state = {}
+        try:
+            current_url = (await self.get_tab_info()).get("url", "")
+        except Exception:
+            current_url = ""
+
+        if state.get("state") == "search_results" and await self._matches_search_context(
+            current_url,
+            expected_url,
+            keyword,
+        ):
+            return state
+
+        if state.get("state") == "note_detail":
+            try:
+                await self.close_note()
+                state = await self.wait_for_state(
+                    {"search_results", "profile_page", "homepage", *self.ANTI_BOT_STATES},
+                    timeout=5.0,
+                )
+            except Exception:
+                state = {}
+            try:
+                current_url = (await self.get_tab_info()).get("url", "")
+            except Exception:
+                current_url = ""
+            if state.get("state") == "search_results" and await self._matches_search_context(
+                current_url,
+                expected_url,
+                keyword,
+            ):
+                return state
+
+        for _ in range(2):
+            try:
+                await self.go_back(wait_ms=1500)
+                state = await self.wait_for_state(
+                    {"search_results", "profile_page", "homepage", *self.ANTI_BOT_STATES},
+                    timeout=6.0,
+                )
+            except Exception:
+                state = {}
+            try:
+                current_url = (await self.get_tab_info()).get("url", "")
+            except Exception:
+                current_url = ""
+            if state.get("state") == "search_results" and await self._matches_search_context(
+                current_url,
+                expected_url,
+                keyword,
+            ):
+                return state
+            if self.is_anti_bot_state(state.get("state")):
+                return state
+
+        submit = await self.submit_search_query(keyword)
+        self.last_search_submit = submit
+        if submit.get("ok"):
+            self.last_search_route = "dom_submit"
+            return await self.wait_for_search_results(timeout_s=20, poll_s=1.5)
+
+        self.last_search_route = "url_fallback"
+        await self.navigate(expected_url, wait_ms=5000)
+        await asyncio.sleep(2)
+        return await self.wait_for_search_results(timeout_s=20, poll_s=1.5)
+
+    async def restore_profile_context(self, profile_url: str) -> dict:
+        """Return to a creator profile with minimal direct navigation."""
+        try:
+            state = await self.detect_state()
+        except Exception:
+            state = {}
+        try:
+            current_url = (await self.get_tab_info()).get("url", "")
+        except Exception:
+            current_url = ""
+
+        if state.get("state") == "profile_page" and self._matches_profile_context(current_url, profile_url):
+            return state
+
+        if state.get("state") == "note_detail":
+            try:
+                await self.close_note()
+                state = await self.wait_for_state(
+                    {"profile_page", "search_results", "homepage", *self.ANTI_BOT_STATES},
+                    timeout=5.0,
+                )
+            except Exception:
+                state = {}
+            try:
+                current_url = (await self.get_tab_info()).get("url", "")
+            except Exception:
+                current_url = ""
+            if state.get("state") == "profile_page" and self._matches_profile_context(current_url, profile_url):
+                return state
+
+        for _ in range(2):
+            try:
+                await self.go_back(wait_ms=1500)
+                state = await self.wait_for_state(
+                    {"profile_page", "search_results", "homepage", *self.ANTI_BOT_STATES},
+                    timeout=6.0,
+                )
+            except Exception:
+                state = {}
+            try:
+                current_url = (await self.get_tab_info()).get("url", "")
+            except Exception:
+                current_url = ""
+            if state.get("state") == "profile_page" and self._matches_profile_context(current_url, profile_url):
+                return state
+            if self.is_anti_bot_state(state.get("state")):
+                return state
+
+        await self.navigate(profile_url, wait_ms=5000)
+        await asyncio.sleep(2)
+        return await self.detect_state()

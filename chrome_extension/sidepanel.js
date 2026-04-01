@@ -1,17 +1,8 @@
 const feed = document.getElementById('feed');
 const filtersEl = document.getElementById('filters');
-const statusBadge = document.getElementById('statusBadge');
 const watchState = document.getElementById('watchState');
 const targetState = document.getElementById('targetState');
 const eventCount = document.getElementById('eventCount');
-const portInput = document.getElementById('port');
-const connectBtn = document.getElementById('connectBtn');
-const disconnectBtn = document.getElementById('disconnectBtn');
-const observerBtn = document.getElementById('observerBtn');
-const askQuestion = document.getElementById('askQuestion');
-const askAllBtn = document.getElementById('askAllBtn');
-const openDesktopBtn = document.getElementById('openDesktopBtn');
-const askStatus = document.getElementById('askStatus');
 
 const ENTRY_COLORS = {
   think:   { badge: '#a78bfa', bg: '#1e1b3a', border: '#7c3aed' },
@@ -29,7 +20,6 @@ const ENTRY_COLORS = {
 let entries = [];
 let activeFilter = 'all';
 let panelPort = null;
-const LAST_QUESTION_KEY = 'clawvision_sidepanel_last_question';
 
 function escapeHtml(str) {
   const el = document.createElement('div');
@@ -122,56 +112,10 @@ function addEntry(entry) {
 }
 
 function updateStatus(status = {}) {
-  const connected = !!status.connected;
-  statusBadge.textContent = connected ? `Connected:${status.port || 8765}` : 'Disconnected';
-  statusBadge.className = `status-badge ${connected ? 'connected' : 'disconnected'}`;
   watchState.textContent = status.watchMode ? 'Watch active' : 'Watch idle';
   targetState.textContent = status.pinnedTabId || status.activeTabId
     ? `Target tab ${status.pinnedTabId || status.activeTabId}`
     : 'No target tab';
-}
-
-function setAskStatus(message, tone = '') {
-  askStatus.textContent = message || '';
-  askStatus.className = `composer-status${tone ? ` ${tone}` : ''}`;
-}
-
-function buildAskDeepLink(question = '') {
-  const params = new URLSearchParams();
-  if (question) params.set('question', question);
-  const query = params.toString();
-  return `clawvision://ask${query ? `?${query}` : ''}`;
-}
-
-function sendRuntimeMessage(message) {
-  return new Promise((resolve, reject) => {
-    chrome.runtime.sendMessage(message, (response) => {
-      if (chrome.runtime.lastError) {
-        reject(new Error(chrome.runtime.lastError.message));
-        return;
-      }
-      resolve(response || {});
-    });
-  });
-}
-
-async function launchDesktopApp(question = '') {
-  const url = buildAskDeepLink(question);
-  try {
-    const response = await sendRuntimeMessage({ action: 'launch_deep_link', url });
-    if (response && response.ok) return response;
-    throw new Error(response?.error || 'Chrome refused the deep link');
-  } catch (err) {
-    const anchor = document.createElement('a');
-    anchor.href = url;
-    anchor.target = '_blank';
-    anchor.rel = 'noreferrer';
-    anchor.style.display = 'none';
-    document.body.appendChild(anchor);
-    anchor.click();
-    anchor.remove();
-    return { ok: true, method: 'anchor' };
-  }
 }
 
 function handlePanelMessage(msg) {
@@ -194,6 +138,11 @@ function connectPanelPort() {
   try {
     panelPort = chrome.runtime.connect({ name: 'sidepanel' });
     panelPort.onMessage.addListener(handlePanelMessage);
+    chrome.windows.getCurrent().then((currentWindow) => {
+      try {
+        panelPort?.postMessage({ type: 'panel_context', windowId: currentWindow?.id || null });
+      } catch {}
+    }).catch(() => {});
     panelPort.onDisconnect.addListener(() => {
       panelPort = null;
       setTimeout(connectPanelPort, 1000);
@@ -212,65 +161,8 @@ filtersEl.addEventListener('click', (event) => {
   applyFilter();
 });
 
-connectBtn.addEventListener('click', () => {
-  chrome.runtime.sendMessage({ action: 'connect', port: parseInt(portInput.value, 10) || 8765 });
-});
-
-disconnectBtn.addEventListener('click', () => {
-  chrome.runtime.sendMessage({ action: 'disconnect' });
-});
-
-observerBtn.addEventListener('click', () => {
-  chrome.tabs.create({ url: chrome.runtime.getURL('observer_viewer.html') });
-});
-
-askAllBtn.addEventListener('click', async () => {
-  const question = askQuestion.value.trim();
-  if (!question) {
-    setAskStatus('Question is empty.', 'error');
-    return;
-  }
-
-  askAllBtn.disabled = true;
-  setAskStatus('Opening ClawVision Desktop…');
-  try {
-    localStorage.setItem(LAST_QUESTION_KEY, question);
-    await launchDesktopApp(question);
-    setAskStatus('Question sent. ClawVision Desktop should start the three-browser run.', 'ok');
-  } catch (err) {
-    setAskStatus(`Could not open ClawVision Desktop: ${err.message || err}`, 'error');
-  } finally {
-    askAllBtn.disabled = false;
-  }
-});
-
-openDesktopBtn.addEventListener('click', async () => {
-  openDesktopBtn.disabled = true;
-  setAskStatus('Opening ClawVision Desktop…');
-  try {
-    await launchDesktopApp();
-    setAskStatus('Desktop app open request sent.', 'ok');
-  } catch (err) {
-    setAskStatus(`Could not open ClawVision Desktop: ${err.message || err}`, 'error');
-  } finally {
-    openDesktopBtn.disabled = false;
-  }
-});
-
-askQuestion.addEventListener('keydown', (event) => {
-  if ((event.metaKey || event.ctrlKey) && event.key === 'Enter') {
-    event.preventDefault();
-    askAllBtn.click();
-  }
-});
-
 chrome.runtime.sendMessage({ action: 'get_status' }, (status) => {
   updateStatus(status || {});
 });
-
-try {
-  const savedQuestion = localStorage.getItem(LAST_QUESTION_KEY);
-  if (savedQuestion) askQuestion.value = savedQuestion;
-} catch {}
 
 connectPanelPort();

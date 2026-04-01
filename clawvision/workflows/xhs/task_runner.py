@@ -14,7 +14,7 @@ from datetime import datetime
 from html import escape
 from pathlib import Path
 
-from ...core.bridge import ExtensionBridge
+from ...core.bridge import ExtensionBridge, ensure_extension_connection
 from ...core.recorder import SessionRecorder
 from ...core.reporting import markdown_styles, render_markdown_block
 from ...perception.media import MediaProcessor
@@ -409,13 +409,18 @@ class XHSTaskRunner:
             await bridge.start()
             action.log("bridge_started", f"ws://localhost:{self.port}")
             print("\n  >>> Waiting for Chrome Extension to connect. <<<\n")
-            await bridge.wait_for_connection(timeout=120, require_watch=self.watch)
+            await ensure_extension_connection(
+                bridge,
+                require_watch=self.watch,
+                timeout=120,
+                warmup_active_tab=False,
+            )
             action.log("extension_connected", "using the currently loaded extension runtime")
             if self.watch:
                 bg_window = await bridge.create_watch_window(url="https://www.xiaohongshu.com")
                 action.log(
                     "watch_window",
-                    f"window={bg_window.get('windowId')} tab={bg_window.get('tabId')} watch=true sidePanel={bg_window.get('sidePanel')}",
+                    f"window={bg_window.get('windowId')} tab={bg_window.get('tabId')} watch=true sidePanel={bg_window.get('sidePanel')} overlay=true",
                 )
             else:
                 bg_window = await bridge.create_background_window(url="https://www.xiaohongshu.com", minimized=False)

@@ -116,6 +116,14 @@ Reload the unpacked Chrome extension through the live bridge:
 .venv/bin/python -m clawvision extension reload
 ```
 
+Run the installed desktop app end-to-end XHS watch-overlay smoke test:
+
+```bash
+python3 scripts/verify_packaged_xhs_overlay.py
+```
+
+This launches the installed `.app`, switches to the XHS view, starts the built-in `研究露营` preset, captures desktop screenshots, and writes a JSON summary under `task_runs/`.
+
 ## Optional Extras
 
 Base bootstrap keeps the install light. If you want optional local models or extra media backends:

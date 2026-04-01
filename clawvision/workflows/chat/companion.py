@@ -23,7 +23,7 @@ from .runner import (
     FAST_CONNECT_TIMEOUT_S,
     MultiChatRunner,
 )
-from ...core.bridge import ExtensionBridge
+from ...core.bridge import ExtensionBridge, ensure_extension_connection
 from ...perception.llm import VisionLLM
 
 logger = logging.getLogger(__name__)
@@ -105,19 +105,14 @@ class ChatbotsCompanion:
             logger.info("Companion passive extension warmup timed out; will connect on demand")
 
     async def _ensure_extension_ready(self) -> None:
-        try:
-            await self.bridge.wait_for_connection(
-                timeout=FAST_CONNECT_TIMEOUT_S,
-                warmup_active_tab=False,
-            )
-            return
-        except RuntimeError:
-            logger.info("Companion waking Google Chrome for extension reconnect")
-        subprocess.run(["open", "-a", "Google Chrome"], check=True)
-        await self.bridge.wait_for_connection(
+        woke_browser = await ensure_extension_connection(
+            self.bridge,
+            fast_timeout=FAST_CONNECT_TIMEOUT_S,
             timeout=DEFAULT_CONNECT_TIMEOUT_S,
             warmup_active_tab=False,
         )
+        if woke_browser:
+            logger.info("Companion woke Google Chrome for extension reconnect")
 
     async def handle_request(self, request: dict) -> dict:
         action = request.get("action", "")

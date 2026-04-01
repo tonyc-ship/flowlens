@@ -1,7 +1,7 @@
 import unittest
 from unittest import IsolatedAsyncioTestCase, mock
 
-from clawvision.core.bridge import ExtensionBridge
+from clawvision.core.bridge import ExtensionBridge, ensure_extension_connection
 
 
 class BridgeHelpersTest(unittest.TestCase):
@@ -12,6 +12,30 @@ class BridgeHelpersTest(unittest.TestCase):
     def test_with_tab_leaves_params_unchanged_without_tab(self) -> None:
         params = ExtensionBridge._with_tab({"x": 1}, None)
         self.assertEqual(params, {"x": 1})
+
+
+class EnsureExtensionConnectionTest(IsolatedAsyncioTestCase):
+    async def test_returns_without_launching_chrome_when_already_connected(self) -> None:
+        bridge = ExtensionBridge()
+        bridge.wait_for_connection = mock.AsyncMock(return_value=None)
+
+        with mock.patch("clawvision.core.bridge.subprocess.run") as run:
+            woke = await ensure_extension_connection(bridge, fast_timeout=0.5, timeout=5)
+
+        self.assertFalse(woke)
+        bridge.wait_for_connection.assert_awaited_once()
+        run.assert_not_called()
+
+    async def test_launches_chrome_after_fast_timeout(self) -> None:
+        bridge = ExtensionBridge()
+        bridge.wait_for_connection = mock.AsyncMock(side_effect=[RuntimeError("timeout"), None])
+
+        with mock.patch("clawvision.core.bridge.subprocess.run") as run:
+            woke = await ensure_extension_connection(bridge, fast_timeout=0.5, timeout=5)
+
+        self.assertTrue(woke)
+        self.assertEqual(bridge.wait_for_connection.await_count, 2)
+        run.assert_called_once_with(["open", "-a", "Google Chrome"], check=True)
 
 
 class TabBridgeTest(IsolatedAsyncioTestCase):

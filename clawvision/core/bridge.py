@@ -33,6 +33,9 @@ class TabBridge:
     async def navigate(self, url: str, wait_ms: int = 5000) -> dict:
         return await self.bridge.navigate(url, wait_ms=wait_ms, tab_id=self.tab_id)
 
+    async def go_back(self, wait_ms: int = 1500) -> dict:
+        return await self.bridge.go_back(wait_ms=wait_ms, tab_id=self.tab_id)
+
     async def capture_screenshot(self) -> str:
         return await self.bridge.capture_screenshot(tab_id=self.tab_id)
 
@@ -317,6 +320,10 @@ class ExtensionBridge:
         """Navigate the active tab to a URL."""
         return await self.send_command("navigate", self._with_tab({"url": url, "wait": wait_ms}, tab_id))
 
+    async def go_back(self, wait_ms: int = 1500, *, tab_id: int | None = None) -> dict:
+        """Go back in tab history without hard-navigating to a URL."""
+        return await self.send_command("go_back", self._with_tab({"wait": wait_ms}, tab_id))
+
     async def capture_screenshot(self, *, tab_id: int | None = None) -> str:
         """Capture screenshot of visible tab. Returns base64 data URL."""
         result = await self.send_command("capture_screenshot", self._with_tab({}, tab_id))
@@ -480,94 +487,27 @@ class ExtensionBridge:
         return self._watch_mode
 
     async def create_watch_window(self, url: str = "about:blank") -> dict:
-        """Enable watch mode on the current browser window and open the side panel.
+        """Enable watch mode on the current browser window.
 
-        If sidePanel.open() fails (no user gesture context), automatically
-        clicks the Chrome extension icon via macOS Accessibility to natively
-        unfold the side panel.
+        Watch mode now relies on the in-page overlay by default instead of
+        trying to auto-open Chrome's native side panel.
         """
         result = await self.send_command("create_watch_window", {
             "url": url,
             "lock": True,
         })
         self._watch_mode = True
-
-        if not result.get("sidePanel"):
-            await asyncio.sleep(0.8)
-            clicked = await self._click_extension_icon()
-            self._log("watch_mode", f"Accessibility click extension icon: {'ok' if clicked else 'failed'}")
-        else:
-            self._log("watch_mode", "Side panel opened via API")
-
+        result["sidePanel"] = False
         return result
 
-    @staticmethod
-    async def _click_extension_icon(extension_name: str = "XHS Research Agent") -> bool:
-        """Click the Chrome extension icon via macOS Accessibility.
-
-        Since openPanelOnActionClick is true, this causes Chrome to natively
-        unfold the side panel — a real OS-level user gesture.
-        """
-        script = """
-function run(argv){
-  const target = argv[0];
-  // Ensure Chrome is frontmost so its accessibility tree is available
-  Application("Google Chrome").activate();
-  delay(0.3);
-  const se = Application("System Events");
-  const proc = se.processes.byName("Google Chrome");
-  function matches(el){
-    try{
-      const name = String(el.name() || "");
-      const desc = String(el.description() || "");
-      return name.includes(target) || desc.includes(target);
-    }catch(e){ return false; }
-  }
-  function walk(elements){
-    for (let i = 0; i < elements.length; i += 1){
-      const el = elements[i];
-      try{
-        if (matches(el)){
-          try{ el.actions.byName("AXPress").perform(); return "clicked"; }catch(e){}
-          try{ el.click(); return "clicked"; }catch(e){}
-        }
-      }catch(e){}
-      try{
-        const out = walk(el.uiElements());
-        if (out) return out;
-      }catch(e){}
-    }
-    return "";
-  }
-  try{
-    const wins = proc.windows();
-    if (!wins.length) return "";
-    return walk(wins[0].uiElements()) || "";
-  }catch(e){ return ""; }
-}
-"""
-        loop = asyncio.get_running_loop()
-
-        def _run():
-            try:
-                result = subprocess.run(
-                    ["osascript", "-l", "JavaScript", "-e", script, extension_name],
-                    check=True, capture_output=True, text=True, timeout=10,
-                )
-                return result.stdout.strip() == "clicked"
-            except (subprocess.CalledProcessError, subprocess.TimeoutExpired):
-                return False
-
-        return await loop.run_in_executor(None, _run)
-
     async def enable_watch_mode(self) -> dict:
-        """Enable watch mode on the current tab and open the side panel."""
+        """Enable watch mode on the current tab."""
         result = await self.send_command("enable_watch_mode")
         self._watch_mode = True
         return result
 
     async def disable_watch_mode(self) -> dict:
-        """Disable watch mode and hide the activity sidebar."""
+        """Disable watch mode and hide the activity overlay/feed."""
         result = await self.send_command("disable_watch_mode")
         self._watch_mode = False
         return result
@@ -589,7 +529,7 @@ function run(argv){
         y: int | None = None,
         target: str = "",
     ) -> None:
-        """Send a log entry to the watch panel sidebar.
+        """Send a log entry to the active watch renderer.
 
         Only sends if watch mode is active. Safe to call unconditionally.
 
@@ -667,3 +607,35 @@ function run(argv){
         if self._server:
             self._server.close()
             await self._server.wait_closed()
+
+
+async def ensure_extension_connection(
+    bridge: ExtensionBridge,
+    *,
+    require_watch: bool = False,
+    fast_timeout: float = 0.75,
+    timeout: float = 120.0,
+    warmup_active_tab: bool = False,
+    chrome_app: str = "Google Chrome",
+) -> bool:
+    """Ensure the Chrome extension is connected, waking Chrome if needed.
+
+    Returns True when Chrome had to be explicitly launched for reconnect.
+    """
+    try:
+        await bridge.wait_for_connection(
+            timeout=fast_timeout,
+            require_watch=require_watch,
+            warmup_active_tab=warmup_active_tab,
+        )
+        return False
+    except RuntimeError:
+        bridge._log("waking_browser", f"Launching {chrome_app} for extension reconnect")  # noqa: SLF001
+
+    subprocess.run(["open", "-a", chrome_app], check=True)
+    await bridge.wait_for_connection(
+        timeout=timeout,
+        require_watch=require_watch,
+        warmup_active_tab=warmup_active_tab,
+    )
+    return True

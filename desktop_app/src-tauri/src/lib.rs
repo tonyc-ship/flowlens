@@ -35,6 +35,14 @@ struct TaskStub {
     log_path: String,
     output_root: String,
     pid: u32,
+    #[serde(default)]
+    result_path: Option<String>,
+    #[serde(default)]
+    result_kind: Option<String>,
+    #[serde(default)]
+    assessment_complete: Option<bool>,
+    #[serde(default)]
+    assessment_confidence: Option<f64>,
 }
 
 #[derive(Default)]
@@ -215,6 +223,72 @@ fn make_task_stub(
         log_path: log_path.to_string_lossy().into_owned(),
         output_root: output_root.to_string_lossy().into_owned(),
         pid,
+        result_path: None,
+        result_kind: None,
+        assessment_complete: None,
+        assessment_confidence: None,
+    }
+}
+
+fn collect_named_files(dir: &Path, target_name: &str, max_depth: usize, out: &mut Vec<PathBuf>) {
+    if max_depth == 0 {
+        return;
+    }
+    let Ok(entries) = fs::read_dir(dir) else {
+        return;
+    };
+    for entry in entries.flatten() {
+        let path = entry.path();
+        if path.is_dir() {
+            collect_named_files(&path, target_name, max_depth - 1, out);
+        } else if path
+            .file_name()
+            .and_then(|name| name.to_str())
+            .map(|name| name == target_name)
+            .unwrap_or(false)
+        {
+            out.push(path);
+        }
+    }
+}
+
+fn choose_preferred_report(candidates: &mut [PathBuf]) -> Option<PathBuf> {
+    candidates.sort_by_key(|path| {
+        let text = path.to_string_lossy();
+        let workflow_penalty = if text.contains("/workflow/") { 1 } else { 0 };
+        let depth = path.components().count();
+        (workflow_penalty, depth)
+    });
+    candidates.first().cloned()
+}
+
+fn hydrate_task_artifacts(task: &mut TaskStub) {
+    let root = Path::new(&task.output_root);
+    if !root.exists() {
+        return;
+    }
+
+    let mut report_htmls = Vec::new();
+    collect_named_files(root, "report.html", 5, &mut report_htmls);
+    if let Some(report_path) = choose_preferred_report(&mut report_htmls) {
+        task.result_kind = Some("html_report".to_string());
+        task.result_path = Some(report_path.to_string_lossy().into_owned());
+    } else {
+        task.result_kind = None;
+        task.result_path = None;
+    }
+
+    let mut report_jsons = Vec::new();
+    collect_named_files(root, "report.json", 5, &mut report_jsons);
+    if let Some(report_json_path) = choose_preferred_report(&mut report_jsons) {
+        if let Ok(contents) = fs::read_to_string(report_json_path) {
+            if let Ok(value) = serde_json::from_str::<Value>(&contents) {
+                if let Some(assessment) = value.get("assessment") {
+                    task.assessment_complete = assessment.get("complete").and_then(Value::as_bool);
+                    task.assessment_confidence = assessment.get("confidence").and_then(Value::as_f64);
+                }
+            }
+        }
     }
 }
 
@@ -552,6 +626,23 @@ fn is_pid_alive(pid: u32) -> bool {
     unsafe { libc::kill(pid as i32, 0) == 0 }
 }
 
+fn reap_pid_if_exited(pid: u32) -> bool {
+    let mut status: libc::c_int = 0;
+    let result = unsafe { libc::waitpid(pid as i32, &mut status, libc::WNOHANG) };
+    result == pid as i32
+}
+
+fn task_status_from_log(log_path: &str) -> Option<String> {
+    let contents = fs::read_to_string(log_path).ok()?;
+    if contents.contains("TASK COMPLETE") {
+        return Some("done".to_string());
+    }
+    if contents.contains("TASK FAILED") {
+        return Some("failed".to_string());
+    }
+    None
+}
+
 #[tauri::command]
 fn check_task_status(state: State<'_, RunningTasks>) -> Vec<TaskStub> {
     let mut guard = match state.0.lock() {
@@ -559,11 +650,39 @@ fn check_task_status(state: State<'_, RunningTasks>) -> Vec<TaskStub> {
         Err(_) => return vec![],
     };
     for task in guard.iter_mut() {
-        if task.status == "running" && !is_pid_alive(task.pid) {
+        if task.status != "running" {
+            hydrate_task_artifacts(task);
+            continue;
+        }
+        if let Some(status) = task_status_from_log(&task.log_path) {
+            task.status = status;
+        } else if reap_pid_if_exited(task.pid) || !is_pid_alive(task.pid) {
             task.status = "done".to_string();
+        }
+        if task.status != "running" {
+            hydrate_task_artifacts(task);
         }
     }
     guard.clone()
+}
+
+#[tauri::command]
+fn reveal_path(path: String) -> Result<(), String> {
+    let target = PathBuf::from(&path);
+    if !target.exists() {
+        return Err(format!("Path does not exist: {path}"));
+    }
+
+    let mut command = Command::new("open");
+    if target.is_file() {
+        command.arg("-R").arg(&target);
+    } else {
+        command.arg(&target);
+    }
+    command
+        .spawn()
+        .map_err(|err| format!("Failed to reveal path {path}: {err}"))?;
+    Ok(())
 }
 
 #[tauri::command]
@@ -668,11 +787,6 @@ pub fn run() {
         .setup(|app| {
             let app_handle = app.handle().clone();
 
-            let companion_handle = app_handle.clone();
-            tauri::async_runtime::spawn(async move {
-                let _ = request_chatbots_companion(&companion_handle, serde_json::json!({ "action": "status" }));
-            });
-
             if let Some(urls) = app.deep_link().get_current()? {
                 handle_deep_links(&app_handle, &urls);
             }
@@ -693,7 +807,8 @@ pub fn run() {
             check_task_status,
             stop_task,
             ask_chatbots,
-            latest_chatbots_task
+            latest_chatbots_task,
+            reveal_path
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");
@@ -701,7 +816,8 @@ pub fn run() {
 
 #[cfg(test)]
 mod tests {
-    use super::{extract_profile_url, extract_question_from_deep_link, infer_kind};
+    use super::{extract_profile_url, extract_question_from_deep_link, infer_kind, task_status_from_log};
+    use std::fs;
     use url::Url;
 
     #[test]
@@ -729,5 +845,13 @@ mod tests {
     fn ignores_unrelated_deep_link() {
         let url = Url::parse("clawvision://settings?question=ignored").expect("url");
         assert!(extract_question_from_deep_link(&url).is_none());
+    }
+
+    #[test]
+    fn detects_completed_task_from_log_marker() {
+        let path = std::env::temp_dir().join("clawvision-task-status-test.log");
+        fs::write(&path, "hello\nTASK COMPLETE — 10.1s\n").expect("write temp log");
+        assert_eq!(task_status_from_log(path.to_string_lossy().as_ref()).as_deref(), Some("done"));
+        let _ = fs::remove_file(path);
     }
 }

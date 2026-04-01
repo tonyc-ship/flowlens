@@ -36,13 +36,6 @@
       backdrop-filter: blur(8px);
     }
 
-    .title-row {
-      display: flex;
-      align-items: center;
-      justify-content: space-between;
-      gap: 8px;
-    }
-
     .title {
       font-size: 14px;
       font-weight: 700;
@@ -54,128 +47,12 @@
       margin-right: 6px;
     }
 
-    .status-badge {
-      padding: 3px 8px;
-      border-radius: 999px;
-      font-size: 11px;
-      border: 1px solid var(--border);
-      color: var(--muted);
-      background: rgba(148, 163, 184, 0.08);
-    }
-
-    .status-badge.connected {
-      color: #d1fae5;
-      border-color: rgba(52, 211, 153, 0.4);
-      background: rgba(52, 211, 153, 0.15);
-    }
-
-    .status-badge.disconnected {
-      color: #fecaca;
-      border-color: rgba(248, 113, 113, 0.35);
-      background: rgba(248, 113, 113, 0.12);
-    }
-
     .meta {
       display: flex;
       gap: 10px;
       margin-top: 8px;
       color: var(--muted);
       flex-wrap: wrap;
-    }
-
-    .controls {
-      display: flex;
-      gap: 8px;
-      margin-top: 12px;
-      flex-wrap: wrap;
-    }
-
-    .controls input {
-      width: 72px;
-      border-radius: 8px;
-      border: 1px solid var(--border);
-      background: var(--panel);
-      color: var(--text);
-      padding: 6px 8px;
-    }
-
-    .controls button {
-      border: 0;
-      border-radius: 8px;
-      padding: 7px 10px;
-      cursor: pointer;
-      color: white;
-      background: var(--accent);
-      font-weight: 600;
-    }
-
-    .controls button.secondary {
-      background: #334155;
-    }
-
-    .composer {
-      padding: 12px 14px 14px;
-      border-bottom: 1px solid var(--border);
-      background: rgba(21, 25, 37, 0.92);
-    }
-
-    .composer-title {
-      font-size: 12px;
-      font-weight: 700;
-      margin-bottom: 8px;
-      color: var(--text);
-    }
-
-    .composer-subtitle {
-      color: var(--muted);
-      margin-bottom: 10px;
-    }
-
-    .composer textarea {
-      width: 100%;
-      min-height: 92px;
-      resize: vertical;
-      border-radius: 12px;
-      border: 1px solid var(--border);
-      background: var(--panel);
-      color: var(--text);
-      padding: 10px 12px;
-      font: inherit;
-    }
-
-    .composer-actions {
-      display: flex;
-      gap: 8px;
-      margin-top: 10px;
-      flex-wrap: wrap;
-    }
-
-    .composer-actions button {
-      border: 0;
-      border-radius: 10px;
-      padding: 8px 12px;
-      cursor: pointer;
-      color: white;
-      background: var(--accent);
-      font-weight: 700;
-    }
-
-    .composer-actions button.secondary {
-      background: #334155;
-    }
-
-    .composer-status {
-      margin-top: 10px;
-      color: var(--muted);
-      min-height: 18px;
-    }
-
-    .composer-status.ok {
-      color: #d1fae5;
-    }
-
-    .composer-status.error {
-      color: #fecaca;
     }
 
     .filters {
@@ -271,34 +148,14 @@
     }
   </style>
 </head>
-<body>
+  <body>
   <div class="topbar">
-    <div class="title-row">
-      <div class="title"><span class="dot">⊙</span>ClawVision</div>
-      <div id="statusBadge" class="status-badge disconnected">Disconnected</div>
-    </div>
+    <div class="title"><span class="dot">⊙</span>ClawVision Activity</div>
     <div id="metaRow" class="meta">
       <span id="watchState">Watch idle</span>
       <span id="targetState">No target tab</span>
       <span id="eventCount">0 events</span>
     </div>
-    <div class="controls">
-      <input type="number" id="port" value="8765" min="1024" max="65535">
-      <button id="connectBtn">Connect</button>
-      <button id="disconnectBtn" class="secondary">Disconnect</button>
-      <button id="observerBtn" class="secondary">Observations</button>
-    </div>
-  </div>
-
-  <div class="composer">
-    <div class="composer-title">Ask ChatGPT, Gemini, Claude</div>
-    <div class="composer-subtitle">This sends your question to the installed ClawVision Desktop app, which opens the three visible Chrome windows for you.</div>
-    <textarea id="askQuestion" placeholder="Type a question once."></textarea>
-    <div class="composer-actions">
-      <button id="askAllBtn">Ask All</button>
-      <button id="openDesktopBtn" class="secondary">Open Desktop App</button>
-    </div>
-    <div id="askStatus" class="composer-status"></div>
   </div>
 
   <div class="filters" id="filters">
@@ -312,7 +169,7 @@
   </div>
 
   <div id="feed" class="feed">
-    <div class="empty">Open the extension on the current tab, then start a watch task to stream agent activity here.</div>
+    <div class="empty">Start a ClawVision task to stream agent activity here.</div>
   </div>
 
   <script src="sidepanel.js"></script>

@@ -20,6 +20,10 @@ type TaskStub = {
   logPath?: string;
   outputRoot?: string;
   pid?: number;
+  resultPath?: string | null;
+  resultKind?: string | null;
+  assessmentComplete?: boolean | null;
+  assessmentConfidence?: number | null;
 };
 
 type AppMode = "xhs" | "chatbots";
@@ -138,7 +142,7 @@ function renderXhsMode(): string {
   const launchDisabled = state.launchingTask || !state.prompt.trim();
 
   return `
-    <section class="hero">
+    <section class="hero ${state.recentTasks.length ? "hero-compact" : ""}">
       <div class="composer-wrap">
         <h1>What should ClawVision do?</h1>
 
@@ -189,6 +193,7 @@ function renderXhsMode(): string {
                       ${task.status === "running" ? `<button class="stop-btn" data-task-id="${escapeHtmlAttr(task.id)}">Stop</button>` : ""}
                     </div>
                     <p>${escapeHtml(task.prompt)}</p>
+                    ${renderTaskOutcome(task)}
                   </article>
                 `,
               )
@@ -277,6 +282,18 @@ function bindXhsEvents(app: HTMLElement) {
       render();
     });
   }
+
+  for (const button of app.querySelectorAll<HTMLButtonElement>(".reveal-btn")) {
+    button.addEventListener("click", async () => {
+      const path = button.dataset.path;
+      if (!path) return;
+      try {
+        await invoke("reveal_path", { path });
+      } catch (error) {
+        console.warn("reveal_path failed:", error);
+      }
+    });
+  }
 }
 
 function syncStartButton() {
@@ -317,9 +334,12 @@ function startTaskPolling() {
       let changed = false;
       for (const task of state.recentTasks) {
         const latest = taskMap.get(task.id);
-        if (latest && latest.status !== task.status) {
-          task.status = latest.status;
-          changed = true;
+        if (latest) {
+          const before = JSON.stringify(task);
+          Object.assign(task, latest);
+          if (JSON.stringify(task) !== before) {
+            changed = true;
+          }
         }
       }
       if (changed) render();
@@ -376,6 +396,40 @@ function applyChatbotsTask(task: TaskStub) {
   state.chatbotsResult = task;
   state.chatbotsQuestion = "";
   state.chatbotsError = "";
+}
+
+function renderTaskOutcome(task: TaskStub): string {
+  const hasAssessment = typeof task.assessmentConfidence === "number";
+  const assessment = hasAssessment
+    ? `${task.assessmentComplete ? "Complete" : "Incomplete"} • ${Math.round((task.assessmentConfidence || 0) * 100)}% confidence`
+    : "";
+
+  const reportPath = task.resultPath?.trim();
+  const outputPath = task.outputRoot?.trim();
+
+  if (!assessment && !reportPath && !outputPath) {
+    return "";
+  }
+
+  return `
+    <div class="task-outcome">
+      ${assessment ? `<div class="task-assessment ${task.assessmentComplete ? "assessment-complete" : "assessment-incomplete"}">${escapeHtml(assessment)}</div>` : ""}
+      ${reportPath ? `
+        <div class="task-path-row">
+          <span class="task-path-label">Report</span>
+          <code>${escapeHtml(reportPath)}</code>
+          <button class="reveal-btn" data-path="${escapeHtmlAttr(reportPath)}">Reveal</button>
+        </div>
+      ` : ""}
+      ${outputPath ? `
+        <div class="task-path-row">
+          <span class="task-path-label">Output</span>
+          <code>${escapeHtml(outputPath)}</code>
+          <button class="reveal-btn" data-path="${escapeHtmlAttr(outputPath)}">Reveal</button>
+        </div>
+      ` : ""}
+    </div>
+  `;
 }
 
 async function initializeDesktopHooks() {

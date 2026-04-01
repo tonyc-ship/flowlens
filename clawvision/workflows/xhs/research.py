@@ -25,7 +25,7 @@ from contextlib import contextmanager
 from dataclasses import dataclass
 from pathlib import Path
 
-from ...core.bridge import ExtensionBridge
+from ...core.bridge import ExtensionBridge, ensure_extension_connection
 from ...core.reporting import markdown_styles, render_markdown_block
 from ...perception.media import MediaProcessor
 from ...platforms.xhs.browser import XHSBrowser
@@ -360,13 +360,18 @@ class XHSResearchAgent:
             "\n  >>> Waiting for Chrome Extension to connect. <<<\n"
             "  >>> Open extension popup and click 'Connect'. <<<\n"
         )
-        await self.browser.bridge.wait_for_connection(timeout=120, require_watch=getattr(self, '_watch', False))
+        await ensure_extension_connection(
+            self.browser.bridge,
+            require_watch=getattr(self, "_watch", False),
+            timeout=120,
+            warmup_active_tab=False,
+        )
 
-        # Watch mode: create foreground window with sidebar
+        # Watch mode: create foreground window with in-page overlay
         if getattr(self, '_watch', False):
             await self.browser.bridge.create_watch_window(url="https://www.xiaohongshu.com")
-            await asyncio.sleep(4)
-            self._log_step("watch_mode", "Foreground window with watch sidebar created")
+            await asyncio.sleep(2)
+            self._log_step("watch_mode", "Foreground window with in-page watch overlay created")
         else:
             tab_info = await self.browser.get_tab_info()
             if "xiaohongshu.com" not in tab_info.get("url", ""):
@@ -476,6 +481,12 @@ class XHSResearchAgent:
 
     async def _collect_search_candidates(self, keyword: str, keyword_index: int) -> list[ResearchCandidate]:
         await self.browser.navigate_to_search(keyword)
+        submit = self.browser.last_search_submit or {}
+        strategy = submit.get("strategy") or submit.get("method") or "n/a"
+        self._log_step(
+            "search_submit",
+            f"{keyword}: route={self.browser.last_search_route} strategy={strategy}",
+        )
         search_state = await self.browser.wait_for_search_results(timeout_s=20, poll_s=2)
         if search_state.get("loading") and search_state.get("card_count", 0) == 0:
             self._log_step("search_wait_extend", f"{keyword}: still loading after initial wait, extending")
@@ -494,6 +505,12 @@ class XHSResearchAgent:
 
         if search_state.get("has_no_results"):
             self._log_step("search_empty", f"{keyword}: no results")
+            return []
+        if search_state.get("page_state") != "search_results":
+            self._log_step(
+                "search_mismatch",
+                f"{keyword}: expected search_results, got {search_state.get('page_state', 'unknown')}",
+            )
             return []
         if search_state.get("card_count", 0) == 0 and search_state.get("loading"):
             self._log_step("search_skip", f"{keyword}: still loading without cards, skip keyword")
@@ -561,21 +578,7 @@ class XHSResearchAgent:
         self._log_step("open_note", f"{plan.level.value}: {card.title[:60]}")
 
         async def ensure_search_context() -> dict:
-            try:
-                current_state = await self.browser.detect_state()
-            except Exception:
-                current_state = {}
-            try:
-                current_url = (await self.browser.get_tab_info()).get("url", "")
-            except Exception:
-                current_url = ""
-
-            if current_state.get("state") == "search_results" and current_url == candidate.search_url:
-                return current_state
-
-            await self.browser.navigate(candidate.search_url, wait_ms=5000)
-            await asyncio.sleep(2)
-            return await self.browser.wait_for_search_results(timeout_s=20, poll_s=1.5)
+            return await self.browser.restore_search_context(candidate.keyword, candidate.search_url)
 
         async def ensure_note_detail(label: str, wait_s: float = 1.5) -> bool:
             await asyncio.sleep(wait_s)
