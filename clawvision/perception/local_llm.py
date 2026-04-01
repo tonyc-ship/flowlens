@@ -16,6 +16,8 @@ from __future__ import annotations
 import base64
 import io
 import logging
+import os
+import threading
 import time
 from pathlib import Path
 
@@ -27,6 +29,7 @@ DEFAULT_LOCAL_MODEL = "Qwen3.5-9B-MLX-4bit"
 # Singleton cache — loading a model takes several seconds and ~6GB RAM,
 # so we keep exactly one loaded at a time.
 _cache: dict[str, object] = {}
+_locks: dict[str, threading.RLock] = {}
 
 
 def _local_model_candidates(name: str) -> list[str]:
@@ -84,37 +87,41 @@ class LocalLLM:
             return
 
         cache_key = self.model_name
-        if cache_key in _cache:
-            self._model, self._processor = _cache[cache_key]
-            logger.info("Reusing cached model: %s", self.model_name)
-            return
+        lock = _locks.setdefault(cache_key, threading.RLock())
+        with lock:
+            if self._model is not None:
+                return
+            if cache_key in _cache:
+                self._model, self._processor = _cache[cache_key]
+                logger.info("Reusing cached model: %s (%s)", self.model_name, _perf_snapshot())
+                return
 
-        try:
-            from mlx_vlm import load as vlm_load
-        except ImportError as exc:
-            raise RuntimeError(
-                "Local LLM backend requires mlx-vlm. Install with "
-                '`pip install -e ".[local-llm]"` or install `mlx-vlm`, `mlx-lm`, and `modelscope` manually.'
-            ) from exc
+            try:
+                from mlx_vlm import load as vlm_load
+            except ImportError as exc:
+                raise RuntimeError(
+                    "Local LLM backend requires mlx-vlm. Install with "
+                    '`pip install -e ".[local-llm]"` or install `mlx-vlm`, `mlx-lm`, and `modelscope` manually.'
+                ) from exc
 
-        path = _resolve_model_path(self.model_name)
-        logger.info("Loading local model: %s", path)
-        t0 = time.perf_counter()
-        self._model, self._processor = vlm_load(path)
+            path = _resolve_model_path(self.model_name)
+            logger.info("Loading local model: %s (%s)", path, _perf_snapshot())
+            t0 = time.perf_counter()
+            self._model, self._processor = vlm_load(path)
 
-        # Force slow (non-fast) image processor to avoid the
-        # "Only returning PyTorch tensors" error from the fast processor.
-        if hasattr(self._processor, "image_processor"):
-            ip = self._processor.image_processor
-            if getattr(ip, "is_fast", False):
-                from transformers import AutoImageProcessor
-                slow_ip = AutoImageProcessor.from_pretrained(path, use_fast=False)
-                self._processor.image_processor = slow_ip
-                logger.info("Switched to slow image processor for MLX compat")
+            # Force slow (non-fast) image processor to avoid the
+            # "Only returning PyTorch tensors" error from the fast processor.
+            if hasattr(self._processor, "image_processor"):
+                ip = self._processor.image_processor
+                if getattr(ip, "is_fast", False):
+                    from transformers import AutoImageProcessor
+                    slow_ip = AutoImageProcessor.from_pretrained(path, use_fast=False)
+                    self._processor.image_processor = slow_ip
+                    logger.info("Switched to slow image processor for MLX compat")
 
-        elapsed = time.perf_counter() - t0
-        logger.info("Model loaded in %.1fs", elapsed)
-        _cache[cache_key] = (self._model, self._processor)
+            elapsed = time.perf_counter() - t0
+            logger.info("Model loaded in %.1fs (%s)", elapsed, _perf_snapshot())
+            _cache[cache_key] = (self._model, self._processor)
 
     def _format_prompt(self, text: str, *, image_path: str | None = None) -> str:
         """Wrap user content through the model's chat template.
@@ -147,25 +154,37 @@ class LocalLLM:
         from mlx_vlm import generate as vlm_generate
 
         t0 = time.perf_counter()
-        kwargs = dict(
-            max_tokens=max_tokens,
-            temperature=0.0,
-        )
+        kwargs = dict(max_tokens=max_tokens, temperature=0.0)
         if image:
             kwargs["image"] = image
-        result = vlm_generate(
-            self._model, self._processor,
-            prompt=formatted_prompt,
-            **kwargs,
+        call_type = "vision" if image else "text"
+        perf_before = _perf_snapshot()
+        logger.info(
+            "local_llm.generate start type=%s model=%s max_tokens=%d prompt_chars=%d %s",
+            call_type,
+            self.model_name,
+            max_tokens,
+            len(formatted_prompt),
+            perf_before,
         )
+        lock = _locks.setdefault(self.model_name, threading.RLock())
+        with lock:
+            result = vlm_generate(
+                self._model, self._processor,
+                prompt=formatted_prompt,
+                **kwargs,
+            )
         elapsed = time.perf_counter() - t0
         text = result.text if hasattr(result, "text") else str(result)
-        logger.debug(
-            "generate: %d prompt_tok, %d gen_tok, %.1fs (%.1f tok/s)",
+        logger.info(
+            "local_llm.generate done type=%s model=%s prompt_tok=%d gen_tok=%d elapsed=%.1fs tps=%.1f %s",
+            call_type,
+            self.model_name,
             getattr(result, "prompt_tokens", 0),
             getattr(result, "generation_tokens", 0),
             elapsed,
             getattr(result, "generation_tps", 0),
+            _perf_snapshot(),
         )
         return _strip_think_tags(text)
 
@@ -256,6 +275,20 @@ def _strip_think_tags(text: str) -> str:
     # Remove thinking blocks (may appear at start of response)
     text = re.sub(r"<think>[\s\S]*?</think>\s*", "", text)
     return text.strip()
+
+
+def _perf_snapshot() -> str:
+    try:
+        import psutil
+    except Exception:
+        return f"pid={os.getpid()}"
+    try:
+        proc = psutil.Process()
+        rss_gb = proc.memory_info().rss / (1024 ** 3)
+        threads = proc.num_threads()
+        return f"pid={proc.pid} rss={rss_gb:.2f}GB threads={threads}"
+    except Exception:
+        return f"pid={os.getpid()}"
 
 
 def _detect_media_type(data: bytes) -> str:

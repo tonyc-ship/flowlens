@@ -103,6 +103,17 @@ This script:
 
 Use this packaged verification path as the default regression check for app/watch UX work. The script intentionally avoids free-form typing because non-interactive macOS keystroke permission can be flaky in agent sessions.
 
+When comparing local vs cloud reasoning / vision quality for web-use behavior, use the dedicated benchmark harness:
+
+```bash
+python3 scripts/benchmark_webuse_models.py
+```
+
+It runs a fixed matrix of text-only, DOM-like, and screenshot cases through `sonnet` and `qwen-local`, then writes a timestamped bundle under `task_runs/` with:
+- raw outputs
+- per-case timing + simple process metrics
+- structured pass/fail scoring
+
 ### Test → Evaluate → Fix → Present
 
 After every significant change, follow this mandatory workflow:

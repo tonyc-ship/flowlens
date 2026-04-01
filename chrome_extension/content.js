@@ -809,7 +809,7 @@ async function submitSearchQuery(keyword) {
     };
   }
 
-  async function waitForSearchTransition(targetKeyword, timeoutMs = 2600) {
+  async function waitForSearchTransition(targetKeyword, timeoutMs = 4000) {
     const deadline = Date.now() + timeoutMs;
     while (Date.now() < deadline) {
       const result = hasSearchTransition(targetKeyword);
@@ -1568,18 +1568,69 @@ async function closeNoteDetail() {
 }
 
 async function scrollInNote(pixels = 400) {
-  // Scroll within the note detail panel, not the page
-  const scrollContainer = document.querySelector(
-    '.note-scroller, .note-content, .note-detail .content, .scroll-container'
-  );
-  if (scrollContainer) {
-    scrollContainer.scrollBy({ top: pixels, behavior: 'smooth' });
-  } else {
-    // Fallback: scroll the page
-    window.scrollBy({ top: pixels, behavior: 'smooth' });
+  function isScrollable(el) {
+    if (!(el instanceof HTMLElement)) return false;
+    const style = window.getComputedStyle(el);
+    const overflowY = style.overflowY || style.overflow || '';
+    const canOverflow = ['auto', 'scroll', 'overlay'].includes(overflowY);
+    return el.scrollHeight > el.clientHeight + 24 && canOverflow;
   }
-  await wait(800);
-  return { ok: true };
+
+  const overlay = document.querySelector(
+    '.note-detail-mask, .note-overlay, .note-detail-modal, .note-detail, #noteContainer'
+  );
+  const candidates = [
+    ...$$(
+      [
+        '.note-scroller',
+        '.note-content',
+        '.note-detail .content',
+        '.scroll-container',
+        '.note-detail',
+        '#noteContainer',
+        '.note-detail-mask [class*="scroll"]',
+        '.note-detail-mask [class*="content"]',
+      ].join(', ')
+    ),
+    overlay,
+  ].filter(Boolean);
+
+  const unique = [];
+  const seen = new Set();
+  for (const node of candidates) {
+    if (!(node instanceof HTMLElement)) continue;
+    if (seen.has(node)) continue;
+    seen.add(node);
+    unique.push(node);
+  }
+
+  unique.sort((a, b) => (b.scrollHeight - b.clientHeight) - (a.scrollHeight - a.clientHeight));
+  const scrollContainer = unique.find(isScrollable) || null;
+  if (scrollContainer) {
+    const before = scrollContainer.scrollTop;
+    scrollContainer.scrollBy({ top: pixels, behavior: 'smooth' });
+    await wait(900);
+    const after = scrollContainer.scrollTop;
+    return {
+      ok: after !== before,
+      scrolled: after !== before,
+      delta: after - before,
+      container: scrollContainer.className || scrollContainer.id || scrollContainer.tagName,
+      error: after !== before ? '' : 'Note scroll container did not move',
+    };
+  }
+
+  const beforeWindow = window.scrollY;
+  window.scrollBy({ top: pixels, behavior: 'smooth' });
+  await wait(900);
+  const afterWindow = window.scrollY;
+  return {
+    ok: afterWindow !== beforeWindow,
+    scrolled: afterWindow !== beforeWindow,
+    delta: afterWindow - beforeWindow,
+    container: 'window',
+    error: afterWindow !== beforeWindow ? '' : 'Window scroll did not move',
+  };
 }
 
 async function scrollPage(pixels = 600) {

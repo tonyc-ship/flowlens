@@ -470,12 +470,11 @@ class XHSBrowser:
         current_keyword = self._query_param(current_url, "keyword")
         expected_keyword = self._query_param(expected_url, "keyword")
         normalized_keyword = keyword.strip()
-        if current_keyword and normalized_keyword and current_keyword == normalized_keyword:
-            return True
-        if current_keyword and expected_keyword and current_keyword == expected_keyword:
-            return True
+        target_keyword = expected_keyword or normalized_keyword
+        if current_keyword:
+            return bool(target_keyword and current_keyword == target_keyword)
         visible_keyword = await self._visible_search_keyword()
-        return bool(visible_keyword and normalized_keyword and visible_keyword == normalized_keyword)
+        return bool(visible_keyword and target_keyword and visible_keyword == target_keyword)
 
     @classmethod
     def _matches_profile_context(cls, current_url: str, profile_url: str) -> bool:
@@ -500,8 +499,10 @@ class XHSBrowser:
 
     async def navigate_to_search(self, keyword: str) -> str:
         """Reach XHS search results for a keyword, preferring the in-site search UI."""
-        self.last_search_route = "existing_results"
+        self.last_search_route = "unknown"
         self.last_search_submit = {}
+        encoded = urllib.parse.quote(keyword)
+        expected_url = f"https://www.xiaohongshu.com/search_result?keyword={encoded}&source=web_search_result_notes"
         try:
             current_url = (await self.get_tab_info()).get("url", "")
         except Exception:
@@ -513,9 +514,10 @@ class XHSBrowser:
 
         if state.get("state") == "search_results" and await self._matches_search_context(
             current_url,
-            current_url,
+            expected_url,
             keyword,
         ):
+            self.last_search_route = "existing_results"
             return current_url
 
         if "xiaohongshu.com" not in current_url:
@@ -526,16 +528,22 @@ class XHSBrowser:
         self.last_search_submit = submit
         if submit.get("ok"):
             state = await self.wait_for_search_results(timeout_s=20, poll_s=1.5)
-            if state.get("page_state") == "search_results":
+            try:
+                post_submit_url = (await self.get_tab_info()).get("url", "")
+            except Exception:
+                post_submit_url = ""
+            if state.get("page_state") == "search_results" and await self._matches_search_context(
+                post_submit_url,
+                expected_url,
+                keyword,
+            ):
                 self.last_search_route = "dom_submit"
-                return (await self.get_tab_info()).get("url", "")
+                return post_submit_url
 
-        encoded = urllib.parse.quote(keyword)
-        url = f"https://www.xiaohongshu.com/search_result?keyword={encoded}&source=web_search_result_notes"
         self.last_search_route = "url_fallback"
-        await self.navigate(url, wait_ms=5000)
+        await self.navigate(expected_url, wait_ms=5000)
         await asyncio.sleep(3)
-        return url
+        return expected_url
 
     async def restore_search_context(self, keyword: str, expected_url: str) -> dict:
         """Return to search results with minimal direct navigation."""
@@ -600,8 +608,18 @@ class XHSBrowser:
         submit = await self.submit_search_query(keyword)
         self.last_search_submit = submit
         if submit.get("ok"):
-            self.last_search_route = "dom_submit"
-            return await self.wait_for_search_results(timeout_s=20, poll_s=1.5)
+            state = await self.wait_for_search_results(timeout_s=20, poll_s=1.5)
+            try:
+                post_submit_url = (await self.get_tab_info()).get("url", "")
+            except Exception:
+                post_submit_url = ""
+            if state.get("page_state") == "search_results" and await self._matches_search_context(
+                post_submit_url,
+                expected_url,
+                keyword,
+            ):
+                self.last_search_route = "dom_submit"
+                return state
 
         self.last_search_route = "url_fallback"
         await self.navigate(expected_url, wait_ms=5000)

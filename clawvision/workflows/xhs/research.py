@@ -333,7 +333,13 @@ class XHSResearchAgent:
             )
             if round_idx >= max_scrolls:
                 break
-            await self.browser.scroll_note(400)
+            scroll_result = await self.browser.scroll_note(400)
+            if not scroll_result.get("ok"):
+                self._log_step(
+                    "scroll_note_failed",
+                    scroll_result.get("error", "Scroll attempt did not move the note container"),
+                )
+                break
             await asyncio.sleep(1)
         return merged[:max_comments]
 

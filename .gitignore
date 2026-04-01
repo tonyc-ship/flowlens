@@ -22,3 +22,4 @@ node_modules/
 knowledge_output/
 .claude/
 tests/test_local_llm_results.md
+.antigravityignore

@@ -446,11 +446,6 @@ class XHSTaskRunner:
             automation_tab_id = bg_window.get("tabId")
             await bridge.lock_active_tab(automation_tab_id)
 
-            # ── Phase 2: LLM planning while page loads ───────────────
-            # The page needs a few seconds to render anyway, so use that
-            # time for task understanding and execution strategy planning.
-            navigate_task = asyncio.ensure_future(browser.navigate("https://www.xiaohongshu.com"))
-
             action.log("task_understand_start", task.title)
             t0 = time.time()
             understanding = task_agent.understand_task(task.to_prompt())
@@ -481,11 +476,9 @@ class XHSTaskRunner:
                 ),
             )
 
-            # Wait for navigation to finish (likely already done by now)
-            await navigate_task
             # Brief settle time for XHS SPA rendering
             await asyncio.sleep(1.5)
-            action.log("navigate_home", "https://www.xiaohongshu.com")
+            action.log("homepage_ready", "https://www.xiaohongshu.com")
 
             await recorder.start()
             action.log("recording_started", f"interval={self.record_interval}s")

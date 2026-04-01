@@ -37,6 +37,41 @@ class XHSBrowserNavigationTest(IsolatedAsyncioTestCase):
         self.assertIn("search_result", url)
         browser.navigate.assert_awaited_once()
 
+    async def test_navigate_to_search_falls_back_when_dom_submit_keeps_stale_keyword_context(self) -> None:
+        bridge = SimpleNamespace()
+        browser = XHSBrowser(bridge)
+        browser.get_tab_info = mock.AsyncMock(side_effect=[
+            {"url": "https://www.xiaohongshu.com/search_result?keyword=qwen%203.5%20MacBook"},
+            {"url": "https://www.xiaohongshu.com/search_result?keyword=qwen%203.5%20MacBook"},
+        ])
+        browser.detect_state = mock.AsyncMock(return_value={"state": "homepage"})
+        browser.navigate = mock.AsyncMock()
+        browser.submit_search_query = mock.AsyncMock(return_value={"ok": True, "strategy": "click_search_target"})
+        browser.wait_for_search_results = mock.AsyncMock(return_value={"page_state": "search_results", "card_count": 12})
+        browser._visible_search_keyword = mock.AsyncMock(return_value="Qwen 3.5 本地部署")
+
+        url = await browser.navigate_to_search("Qwen 3.5 本地部署")
+
+        self.assertIn("search_result", url)
+        self.assertEqual(browser.last_search_route, "url_fallback")
+        browser.navigate.assert_awaited_once()
+
+    async def test_navigate_to_search_does_not_reuse_search_results_for_different_keyword(self) -> None:
+        bridge = SimpleNamespace()
+        browser = XHSBrowser(bridge)
+        browser.get_tab_info = mock.AsyncMock(return_value={
+            "url": "https://www.xiaohongshu.com/search_result?keyword=qwen%203.5%20MacBook"
+        })
+        browser.detect_state = mock.AsyncMock(return_value={"state": "search_results"})
+        browser._visible_search_keyword = mock.AsyncMock(return_value="qwen 3.5 MacBook")
+        browser.navigate = mock.AsyncMock()
+        browser.submit_search_query = mock.AsyncMock(return_value={"ok": True})
+        browser.wait_for_search_results = mock.AsyncMock(return_value={"page_state": "search_results", "card_count": 12})
+
+        await browser.navigate_to_search("Qwen 3.5 本地部署")
+
+        browser.submit_search_query.assert_awaited_once_with("Qwen 3.5 本地部署")
+
     async def test_wait_for_search_results_ignores_homepage_cards(self) -> None:
         bridge = SimpleNamespace()
         browser = XHSBrowser(bridge)
@@ -117,6 +152,19 @@ class XHSBrowserNavigationTest(IsolatedAsyncioTestCase):
         )
 
         self.assertTrue(matched)
+
+    async def test_matches_search_context_rejects_different_current_keyword(self) -> None:
+        bridge = SimpleNamespace()
+        browser = XHSBrowser(bridge)
+        browser._visible_search_keyword = mock.AsyncMock(return_value="qwen 3.5 MacBook")
+
+        matched = await browser._matches_search_context(
+            "https://www.xiaohongshu.com/search_result?keyword=qwen%203.5%20MacBook",
+            "https://www.xiaohongshu.com/search_result?keyword=Qwen%203.5%20%E6%9C%AC%E5%9C%B0%E9%83%A8%E7%BD%B2",
+            "Qwen 3.5 本地部署",
+        )
+
+        self.assertFalse(matched)
 
 
 if __name__ == "__main__":

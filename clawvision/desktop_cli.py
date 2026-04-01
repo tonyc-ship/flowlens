@@ -5,6 +5,7 @@ from __future__ import annotations
 import argparse
 import asyncio
 import json
+import logging
 import re
 from dataclasses import asdict, dataclass
 from pathlib import Path
@@ -77,6 +78,14 @@ async def _run_request(request: DesktopTaskRequest, *, output_root: str, port: i
 
 
 def main(argv: list[str] | None = None) -> int:
+    logging.basicConfig(
+        level=logging.INFO,
+        format="%(asctime)s %(name)s %(levelname)s %(message)s",
+    )
+    logging.getLogger("websockets").setLevel(logging.WARNING)
+    logging.getLogger("httpx").setLevel(logging.WARNING)
+    logging.getLogger("anthropic").setLevel(logging.WARNING)
+
     parser = argparse.ArgumentParser(description="Desktop bridge for ClawVision.")
     subparsers = parser.add_subparsers(dest="command", required=True)
 

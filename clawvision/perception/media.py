@@ -19,6 +19,7 @@ import os
 import re
 import shutil
 import tempfile
+import time
 import urllib.request
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -84,14 +85,29 @@ class MediaProcessor:
     # ── LLM Calls ───────────────────────────────────────────────
 
     def call_text(self, prompt: str, max_tokens: int = 2048) -> str:
-        if self.backend == BACKEND_QWEN_LOCAL:
-            return self.local_llm.call_text(prompt, max_tokens=max_tokens)
-        resp = self.client.messages.create(
-            model=self.config.model,
-            max_tokens=max_tokens,
-            messages=[{"role": "user", "content": prompt}],
+        t0 = time.perf_counter()
+        logger.info(
+            "media.call_text start backend=%s prompt_chars=%d max_tokens=%d",
+            self.backend,
+            len(prompt),
+            max_tokens,
         )
-        return resp.content[0].text
+        if self.backend == BACKEND_QWEN_LOCAL:
+            result = self.local_llm.call_text(prompt, max_tokens=max_tokens)
+        else:
+            resp = self.client.messages.create(
+                model=self.config.model,
+                max_tokens=max_tokens,
+                messages=[{"role": "user", "content": prompt}],
+            )
+            result = resp.content[0].text
+        logger.info(
+            "media.call_text done backend=%s elapsed=%.2fs output_chars=%d",
+            self.backend,
+            time.perf_counter() - t0,
+            len(result),
+        )
+        return result
 
     def call_vision(
         self,
@@ -100,21 +116,39 @@ class MediaProcessor:
         media_type: str = "image/jpeg",
         max_tokens: int = 1024,
     ) -> str:
-        if self.backend == BACKEND_QWEN_LOCAL:
-            return self.local_llm.call_vision(
-                image_b64, prompt, media_type=media_type, max_tokens=max_tokens,
-            )
         if "," in image_b64:
             image_b64 = image_b64.split(",", 1)[1]
-        resp = self.client.messages.create(
-            model=self.config.model,
-            max_tokens=max_tokens,
-            messages=[{"role": "user", "content": [
-                {"type": "image", "source": {"type": "base64", "media_type": media_type, "data": image_b64}},
-                {"type": "text", "text": prompt},
-            ]}],
+        image_bytes = int(len(image_b64) * 3 / 4)
+        t0 = time.perf_counter()
+        logger.info(
+            "media.call_vision start backend=%s image_bytes~=%d prompt_chars=%d max_tokens=%d media_type=%s",
+            self.backend,
+            image_bytes,
+            len(prompt),
+            max_tokens,
+            media_type,
         )
-        return resp.content[0].text
+        if self.backend == BACKEND_QWEN_LOCAL:
+            result = self.local_llm.call_vision(
+                image_b64, prompt, media_type=media_type, max_tokens=max_tokens,
+            )
+        else:
+            resp = self.client.messages.create(
+                model=self.config.model,
+                max_tokens=max_tokens,
+                messages=[{"role": "user", "content": [
+                    {"type": "image", "source": {"type": "base64", "media_type": media_type, "data": image_b64}},
+                    {"type": "text", "text": prompt},
+                ]}],
+            )
+            result = resp.content[0].text
+        logger.info(
+            "media.call_vision done backend=%s elapsed=%.2fs output_chars=%d",
+            self.backend,
+            time.perf_counter() - t0,
+            len(result),
+        )
+        return result
 
     # ── OCR (Apple Vision Framework) ────────────────────────────
 

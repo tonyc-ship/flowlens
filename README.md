@@ -124,6 +124,14 @@ python3 scripts/verify_packaged_xhs_overlay.py
 
 This launches the installed `.app`, switches to the XHS view, starts the built-in `研究露营` preset, captures desktop screenshots, and writes a JSON summary under `task_runs/`.
 
+Run the local-vs-cloud web-use benchmark (text, DOM, screenshot cases):
+
+```bash
+python3 scripts/benchmark_webuse_models.py
+```
+
+This writes a timestamped benchmark bundle under `task_runs/` with per-case outputs, timing, and simple quality scoring for `sonnet` vs `qwen-local`.
+
 ## Optional Extras
 
 Base bootstrap keeps the install light. If you want optional local models or extra media backends:
