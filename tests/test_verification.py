@@ -1,6 +1,13 @@
 import unittest
+from unittest import IsolatedAsyncioTestCase
 
-from clawvision.core.verification import assess_expected_text_state, compact_text
+from clawvision.core.verification import (
+    VerificationResult,
+    assess_expected_text_state,
+    compact_text,
+    dom_assessment_to_result,
+    verify_dom_first,
+)
 
 
 class VerificationHelpersTest(unittest.TestCase):
@@ -27,3 +34,37 @@ class VerificationHelpersTest(unittest.TestCase):
             "Reply with the single word READY.",
         )
         self.assertEqual(result.status, "ambiguous")
+
+    def test_dom_assessment_to_result_maps_empty_to_passed(self) -> None:
+        assessment = assess_expected_text_state(
+            {"found": True, "empty": True, "text": "", "textLength": 0},
+            "hello world",
+        )
+        result = dom_assessment_to_result(assessment)
+        self.assertEqual(result.status, "passed")
+        self.assertEqual(result.source, "dom")
+
+
+class DomFirstVerificationTest(IsolatedAsyncioTestCase):
+    async def test_verify_dom_first_returns_dom_result_without_vision(self) -> None:
+        decision = await verify_dom_first(
+            lambda: _return_result(VerificationResult(status="passed", source="dom", detail="ok"))
+        )
+        self.assertEqual(decision.result.status, "passed")
+        self.assertIsNone(decision.vision_result)
+
+    async def test_verify_dom_first_uses_vision_on_ambiguous_dom(self) -> None:
+        dom_result = VerificationResult(status="ambiguous", source="dom", detail="unclear")
+        decision = await verify_dom_first(
+            lambda: _return_result(dom_result),
+            vision_verify=lambda result: _return_result(
+                VerificationResult(status="passed", source="vision", detail=f"resolved from {result.status}")
+            ),
+        )
+        self.assertEqual(decision.dom_result.status, "ambiguous")
+        self.assertEqual(decision.result.status, "passed")
+        self.assertEqual(decision.result.source, "vision")
+
+
+async def _return_result(result: VerificationResult) -> VerificationResult:
+    return result

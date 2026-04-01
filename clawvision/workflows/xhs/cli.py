@@ -5,6 +5,7 @@ from __future__ import annotations
 import argparse
 import asyncio
 
+from ...perception.policy import TaskModelPolicy
 from .research import run_research
 from .user_analysis import run_user_analysis
 
@@ -34,6 +35,8 @@ def build_parser() -> argparse.ArgumentParser:
 def main(argv: list[str] | None = None) -> int:
     parser = build_parser()
     args = parser.parse_args(argv)
+    policy = TaskModelPolicy.from_choice(args.llm_backend)
+    args.llm_backend = policy.reasoning_backend
 
     if args.user:
         output = args.output or "user_analysis"

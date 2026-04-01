@@ -10,6 +10,7 @@ import re
 from dataclasses import asdict, dataclass
 from pathlib import Path
 
+from .perception.policy import TaskModelPolicy
 from .reasoning.tasks import make_creator_growth_breakdown_task, make_topic_research_task
 from .workflows.xhs import XHSTaskRunner
 
@@ -56,6 +57,8 @@ def infer_desktop_task(prompt: str) -> DesktopTaskRequest:
 
 
 async def _run_request(request: DesktopTaskRequest, *, output_root: str, port: int) -> dict:
+    policy = TaskModelPolicy.from_choice(request.llm_backend)
+    request.llm_backend = policy.reasoning_backend
     task = (
         make_creator_growth_breakdown_task(request.profile_url)
         if request.kind == "creator_growth_breakdown"

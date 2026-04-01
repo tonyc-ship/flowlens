@@ -25,6 +25,7 @@ from .runner import (
 )
 from ...core.bridge import ExtensionBridge, ensure_extension_connection
 from ...perception.llm import VisionLLM
+from ...perception.policy import TaskModelPolicy
 
 logger = logging.getLogger(__name__)
 
@@ -72,10 +73,11 @@ class ChatbotsCompanion:
     def __init__(self, *, port: int, output_root_base: Path, vision_backend: str | None = None):
         self.port = port
         self.output_root_base = output_root_base
-        self.vision_backend = vision_backend
+        self.model_policy = TaskModelPolicy.from_choice(vision_backend)
+        self.vision_backend = self.model_policy.vision_backend
         self.bridge = ExtensionBridge(port=port)
         self.bridge.on_log(lambda action, detail: logger.info("bridge %s: %s", action, detail))
-        self.vision = VisionLLM(backend=vision_backend)
+        self.vision = VisionLLM(backend=self.vision_backend)
         self._active_run: asyncio.Task | None = None
         self._latest_task: dict | None = None
         self._started = False

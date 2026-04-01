@@ -7,7 +7,14 @@ from collections.abc import Awaitable, Callable, Mapping, Sequence
 from dataclasses import dataclass
 
 from .bridge import TabBridge
-from .verification import DomTextAssessment, assess_expected_text_state
+from .executor import ActionAttemptSpec, ActionExecutionResult, execute_action_plan
+from .verification import (
+    DomTextAssessment,
+    VerificationResult,
+    assess_expected_text_state,
+    dom_assessment_to_result,
+    verify_dom_first,
+)
 
 
 @dataclass(frozen=True)
@@ -38,6 +45,8 @@ class SubmitAttemptResult:
     dom_state: Mapping[str, object] | None
     assessment: DomTextAssessment | None
     outcome: str
+    verification_status: str = ""
+    verification_source: str = "dom"
 
 
 @dataclass(frozen=True)
@@ -47,6 +56,7 @@ class ComposerSubmitResult:
     status: str
     attempts: tuple[SubmitAttemptResult, ...]
     final_assessment: DomTextAssessment | None
+    execution: ActionExecutionResult | None = None
 
 
 def submit_attempt_order(submit_mode: str) -> tuple[str, ...]:
@@ -118,91 +128,141 @@ async def submit_with_dom_verification(
     on_submit_dispatched: Callable[[str, str, bool, Mapping[str, object] | None], Awaitable[None]] | None = None,
     on_after_submit: Callable[[str, str], Awaitable[None]] | None = None,
     on_attempt_resolved: Callable[[SubmitAttemptResult], Awaitable[None]] | None = None,
+    vision_verifier: Callable[[SubmitAttemptResult, VerificationResult], Awaitable[VerificationResult]] | None = None,
 ) -> ComposerSubmitResult:
     """Submit a prompt, verify via DOM, and retry with a secondary strategy if needed."""
     attempts: list[SubmitAttemptResult] = []
     last_assessment: DomTextAssessment | None = None
+    attempt_results_by_name: dict[str, SubmitAttemptResult] = {}
 
-    for index, strategy in enumerate(submit_attempt_order(spec.submit_mode), start=1):
+    async def _build_attempt(strategy: str, index: int) -> ActionAttemptSpec:
         attempt_name = f"{strategy}_{index}"
-        submit_result: Mapping[str, object] | None = None
 
-        if strategy == "enter":
-            await focus_chat_input(tab, input_result, settle_s=focus_settle_s)
-            await tab.press_key("Enter", code="Enter")
-            if on_submit_dispatched is not None:
-                await on_submit_dispatched(attempt_name, strategy, True, None)
-        else:
+        async def _action() -> Mapping[str, object] | None:
+            submit_result: Mapping[str, object] | None = None
+            if strategy == "enter":
+                await focus_chat_input(tab, input_result, settle_s=focus_settle_s)
+                await tab.press_key("Enter", code="Enter")
+                if on_submit_dispatched is not None:
+                    await on_submit_dispatched(attempt_name, strategy, True, None)
+                return None
+
             submit_result = await tab.click_chat_submit(list(spec.submit_selectors), anchor=dict(input_result or {}))
-            if not submit_result.get("clicked"):
-                skipped_attempt = SubmitAttemptResult(
+            submit_performed = bool(submit_result.get("clicked"))
+            if on_submit_dispatched is not None:
+                await on_submit_dispatched(attempt_name, strategy, submit_performed, submit_result)
+            return submit_result
+
+        async def _after(action_result: Mapping[str, object] | None) -> None:
+            if strategy == "button" and action_result is not None and not action_result.get("clicked"):
+                return
+            await asyncio.sleep(post_submit_settle_s)
+            if on_after_submit is not None:
+                await on_after_submit(attempt_name, strategy)
+
+        async def _verify(action_result: Mapping[str, object] | None) -> object:
+            if strategy == "button" and action_result is not None and not action_result.get("clicked"):
+                result = SubmitAttemptResult(
                     attempt=attempt_name,
                     strategy=strategy,
                     submit_performed=False,
-                    submit_result=submit_result,
+                    submit_result=action_result,
                     dom_state=None,
                     assessment=None,
                     outcome="skipped",
+                    verification_status="retry",
+                    verification_source="dom",
                 )
-                if on_submit_dispatched is not None:
-                    await on_submit_dispatched(attempt_name, strategy, False, submit_result)
-                attempts.append(skipped_attempt)
+                attempt_results_by_name[attempt_name] = result
                 if on_attempt_resolved is not None:
-                    await on_attempt_resolved(skipped_attempt)
-                continue
-            if on_submit_dispatched is not None:
-                await on_submit_dispatched(attempt_name, strategy, True, submit_result)
+                    await on_attempt_resolved(result)
+                return VerificationResult(
+                    status="retry",
+                    source="dom",
+                    detail="Submit button was not clickable; try secondary strategy",
+                )
 
-        await asyncio.sleep(post_submit_settle_s)
-        if on_after_submit is not None:
-            await on_after_submit(attempt_name, strategy)
+            dom_state = await tab.get_chat_input_state(list(spec.input_selectors))
+            assessment = assess_expected_text_state(dom_state, expected_text)
+            nonlocal last_assessment
+            last_assessment = assessment
 
-        dom_state = await tab.get_chat_input_state(list(spec.input_selectors))
-        assessment = assess_expected_text_state(dom_state, expected_text)
-        last_assessment = assessment
-
-        if assessment.status == "contains_expected":
-            attempt_result = SubmitAttemptResult(
+            result = SubmitAttemptResult(
                 attempt=attempt_name,
                 strategy=strategy,
                 submit_performed=True,
-                submit_result=submit_result,
+                submit_result=action_result,
                 dom_state=dom_state,
                 assessment=assessment,
-                outcome="retry",
+                outcome="retry" if assessment.status == "contains_expected" else ("sent" if assessment.status == "empty" else "ambiguous"),
+                verification_status="",
+                verification_source="dom",
             )
-            attempts.append(attempt_result)
-            if on_attempt_resolved is not None:
-                await on_attempt_resolved(attempt_result)
-            continue
 
-        if assessment.status == "empty":
-            attempt_result = SubmitAttemptResult(
-                attempt=attempt_name,
-                strategy=strategy,
-                submit_performed=True,
-                submit_result=submit_result,
-                dom_state=dom_state,
-                assessment=assessment,
-                outcome="sent",
+            decision = await verify_dom_first(
+                lambda: _return_dom_result(assessment),
+                vision_verify=(
+                    lambda dom_result: vision_verifier(result, dom_result)
+                ) if vision_verifier is not None else None,
             )
-            attempts.append(attempt_result)
+            final_result = SubmitAttemptResult(
+                attempt=result.attempt,
+                strategy=result.strategy,
+                submit_performed=result.submit_performed,
+                submit_result=result.submit_result,
+                dom_state=result.dom_state,
+                assessment=result.assessment,
+                outcome=_verification_status_to_outcome(decision.result.status),
+                verification_status=decision.result.status,
+                verification_source=decision.result.source,
+            )
+            attempt_results_by_name[attempt_name] = final_result
             if on_attempt_resolved is not None:
-                await on_attempt_resolved(attempt_result)
-            return ComposerSubmitResult(status="sent", attempts=tuple(attempts), final_assessment=assessment)
+                await on_attempt_resolved(final_result)
+            return decision.result
 
-        attempt_result = SubmitAttemptResult(
-            attempt=attempt_name,
+        return ActionAttemptSpec(
+            name=attempt_name,
             strategy=strategy,
-            submit_performed=True,
-            submit_result=submit_result,
-            dom_state=dom_state,
-            assessment=assessment,
-            outcome="ambiguous",
+            action=_action,
+            verify=_verify,
+            after=_after,
         )
-        attempts.append(attempt_result)
-        if on_attempt_resolved is not None:
-            await on_attempt_resolved(attempt_result)
-        return ComposerSubmitResult(status="ambiguous", attempts=tuple(attempts), final_assessment=assessment)
 
-    return ComposerSubmitResult(status="unsent", attempts=tuple(attempts), final_assessment=last_assessment)
+    plan = [
+        await _build_attempt(strategy, index)
+        for index, strategy in enumerate(submit_attempt_order(spec.submit_mode), start=1)
+    ]
+    execution = await execute_action_plan(plan)
+
+    for record in execution.attempts:
+        attempt_result = attempt_results_by_name.get(record.name)
+        if attempt_result is not None:
+            attempts.append(attempt_result)
+
+    final_status = {
+        "passed": "sent",
+        "retry": "unsent",
+        "ambiguous": "ambiguous",
+        "failed": "unsent",
+    }.get(execution.status, execution.status)
+    return ComposerSubmitResult(
+        status=final_status,
+        attempts=tuple(attempts),
+        final_assessment=last_assessment,
+        execution=execution,
+    )
+
+
+async def _return_dom_result(assessment: DomTextAssessment):
+    return dom_assessment_to_result(assessment)
+
+
+def _verification_status_to_outcome(status: str) -> str:
+    if status == "passed":
+        return "sent"
+    if status == "retry":
+        return "retry"
+    if status == "ambiguous":
+        return "ambiguous"
+    return "skipped"

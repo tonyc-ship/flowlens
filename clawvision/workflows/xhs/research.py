@@ -27,7 +27,9 @@ from pathlib import Path
 
 from ...core.bridge import ExtensionBridge, ensure_extension_connection
 from ...core.reporting import markdown_styles, render_markdown_block
+from ...core.watch import WatchRuntime
 from ...perception.media import MediaConfig, MediaProcessor
+from ...perception.policy import TaskModelPolicy
 from ...platforms.xhs.browser import XHSBrowser
 from ...platforms.xhs.capabilities import NoteExtractionPlan, deep_note_plan, lite_note_plan
 from ...platforms.xhs.entities import Comment, NoteCard, NoteEntity, NoteType, parse_count_text
@@ -73,6 +75,7 @@ class XHSResearchAgent:
         config: ResearchConfig | None = None,
         browser: XHSBrowser | None = None,
         media: MediaProcessor | None = None,
+        watch_runtime: WatchRuntime | None = None,
         manage_bridge_lifecycle: bool | None = None,
     ):
         self.config = config or ResearchConfig()
@@ -91,6 +94,7 @@ class XHSResearchAgent:
         )
 
         self.media = media or MediaProcessor()
+        self._watch_runtime = watch_runtime
 
         # NoteProcessor handles all media understanding
         proc_config = ProcessorConfig(
@@ -126,6 +130,13 @@ class XHSResearchAgent:
             entry["duration_s"] = round(duration, 2)
         self._log.append(entry)
         print(f"  [{self._step:03d} {elapsed:5.1f}s] {action}{dur_str}: {detail[:100]}")
+        if self._watch_runtime is not None:
+            self._watch_runtime.action_nowait(
+                action_name=action,
+                detail=detail[:500],
+                duration=duration,
+                message=detail[:200] or action,
+            )
 
     @contextmanager
     def _timed(self, op: str):
@@ -891,7 +902,8 @@ async def run_research(
     llm_backend: str = "sonnet",
 ):
     """Convenience function to run a research session."""
-    media_config = MediaConfig(backend=llm_backend)
+    policy = TaskModelPolicy.from_choice(llm_backend)
+    media_config = MediaConfig(backend=policy.reasoning_backend)
     agent = XHSResearchAgent(
         output_dir=output_dir,
         port=port,

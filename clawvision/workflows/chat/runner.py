@@ -14,12 +14,18 @@ from PIL import Image
 
 from ...core.bridge import ExtensionBridge
 from ...core.composer import ComposerSpec, enter_text, submit_with_dom_verification, wait_for_input_ready
+from ...core.verification import VerificationResult
 from ...perception.llm import VisionRequestConfig
+from ...perception.policy import TaskModelPolicy
 from .cleanup import cleanup_orphaned_chrome_processes
 from .models import ChatbotWindow
 from .reporting import build_summary, write_html_report, write_summary, write_timing_breakdown
 from ...platforms.chat.sites import CHATBOT_SITES
-from ...platforms.chat.visible_verifier import ChatbotVisibleVerifier
+from ...platforms.chat.visible_verifier import (
+    ChatbotVisibleVerifier,
+    build_visible_submit_prompt,
+    parse_status_label,
+)
 from ...platforms.chat.vision_profiles import CHATBOT_COMPLEX_FALLBACK_CHECK, CHATBOT_PAGE_SIMPLE_CHECK
 
 logger = logging.getLogger(__name__)
@@ -67,7 +73,8 @@ class MultiChatRunner:
 
             vision_backend = "qwen-local" if LocalLLM.is_available() else "sonnet"
 
-        self._vision_backend = vision_backend
+        self.model_policy = TaskModelPolicy.from_choice(vision_backend)
+        self._vision_backend = self.model_policy.vision_backend
         self._vision = None
         self._macos = None
         self._visible_verifier = None
@@ -495,6 +502,57 @@ class MultiChatRunner:
 
             self._record_window_event(cw, "submit_dom_state_ambiguous", attempt=attempt_result.attempt)
 
+        async def _vision_submit_verifier(attempt_result, dom_result: VerificationResult) -> VerificationResult:
+            prompt = build_visible_submit_prompt(cw.site.name, question)
+            image = await self._save_screenshot(cw, f"03_verify_{attempt_result.attempt}", tab=tab)
+            self._record_window_event(cw, "submit_vision_verification_started", attempt=attempt_result.attempt)
+
+            result_text, elapsed, profile_name = await self._verify_with_vision(
+                cw,
+                image,
+                prompt,
+                config=CHATBOT_PAGE_SIMPLE_CHECK,
+            )
+            label = parse_status_label(result_text)
+
+            if label in {"READY", "UNKNOWN"}:
+                fallback_text, fallback_elapsed, fallback_profile = await self._verify_with_vision(
+                    cw,
+                    image,
+                    prompt,
+                    config=CHATBOT_COMPLEX_FALLBACK_CHECK,
+                )
+                fallback_label = parse_status_label(fallback_text)
+                self._record_window_event(
+                    cw,
+                    "submit_vision_fallback_finished",
+                    attempt=attempt_result.attempt,
+                    seconds=round(fallback_elapsed, 3),
+                    profile=fallback_profile,
+                    label=fallback_label,
+                )
+                if fallback_label != "UNKNOWN":
+                    label = fallback_label
+                    result_text = fallback_text
+
+            self._record_window_event(
+                cw,
+                "submit_vision_verification_finished",
+                attempt=attempt_result.attempt,
+                seconds=round(elapsed, 3),
+                profile=profile_name,
+                label=label,
+                dom_status=dom_result.status,
+            )
+
+            if label == "GENERATING":
+                return VerificationResult(status="passed", source="vision", detail=result_text[:200])
+            if label == "READY":
+                return VerificationResult(status="retry", source="vision", detail=result_text[:200])
+            if label in {"BLOCKED", "WRONG_SITE"}:
+                return VerificationResult(status="failed", source="vision", detail=result_text[:200])
+            return VerificationResult(status="ambiguous", source="vision", detail=result_text[:200])
+
         submit_result = await submit_with_dom_verification(
             tab,
             composer,
@@ -505,6 +563,7 @@ class MultiChatRunner:
             on_submit_dispatched=_on_submit_dispatched,
             on_after_submit=_after_submit,
             on_attempt_resolved=_on_attempt_resolved,
+            vision_verifier=_vision_submit_verifier,
         )
 
         if cw.status != "generating" and not cw.error:

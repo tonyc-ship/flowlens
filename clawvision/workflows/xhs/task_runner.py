@@ -17,7 +17,9 @@ from pathlib import Path
 from ...core.bridge import ExtensionBridge, ensure_extension_connection
 from ...core.recorder import SessionRecorder
 from ...core.reporting import markdown_styles, render_markdown_block
+from ...core.watch import BridgeWatchSink, WatchRuntime
 from ...perception.media import MediaConfig, MediaProcessor
+from ...perception.policy import TaskModelPolicy
 from ...platforms.xhs.browser import XHSBrowser
 from ...platforms.xhs.capabilities import capability_catalog_markdown, capabilities_for_task
 from ...reasoning.task_agent import ExecutionStrategy, TaskAgent, TaskAssessment, TaskUnderstanding
@@ -39,10 +41,15 @@ class ReasoningLog:
     sent to the Chrome extension's watch panel sidebar in real-time.
     """
 
-    def __init__(self, bridge: "ExtensionBridge | None" = None):
+    def __init__(
+        self,
+        bridge: "ExtensionBridge | None" = None,
+        watch_runtime: WatchRuntime | None = None,
+    ):
         self._entries: list[dict] = []
         self._t0 = time.time()
         self._bridge = bridge
+        self._watch_runtime = watch_runtime
 
     def think(self, phase: str, observation: str, reasoning: str, decision: str, evidence: str = ""):
         entry = {
@@ -57,16 +64,15 @@ class ReasoningLog:
         print(f"  [{entry['timestamp']:6.1f}s] [{phase}] {decision[:120]}")
 
         # Pipe to watch panel if active
-        if self._bridge and self._bridge.watch_mode:
-            asyncio.ensure_future(self._bridge.watch_log(
-                "think",
-                decision[:300],
+        if self._watch_runtime is not None:
+            self._watch_runtime.think_nowait(
                 phase=phase,
                 observation=observation[:300],
                 reasoning=reasoning[:500],
                 decision=decision[:300],
                 evidence=evidence[:600],
-            ))
+                message=decision[:300],
+            )
 
     @property
     def entries(self) -> list[dict]:
@@ -80,10 +86,15 @@ class ActionLog:
     sent to the Chrome extension's watch panel sidebar in real-time.
     """
 
-    def __init__(self, bridge: "ExtensionBridge | None" = None):
+    def __init__(
+        self,
+        bridge: "ExtensionBridge | None" = None,
+        watch_runtime: WatchRuntime | None = None,
+    ):
         self._entries: list[dict] = []
         self._t0 = time.time()
         self._bridge = bridge
+        self._watch_runtime = watch_runtime
 
     def log(self, action: str, detail: str = "", duration: float | None = None):
         elapsed = round(time.time() - self._t0, 1)
@@ -97,14 +108,13 @@ class ActionLog:
         })
 
         # Pipe to watch panel if active
-        if self._bridge and self._bridge.watch_mode:
-            asyncio.ensure_future(self._bridge.watch_log(
-                "action",
-                detail[:200],
+        if self._watch_runtime is not None:
+            self._watch_runtime.action_nowait(
                 action_name=action,
                 detail=detail[:500],
                 duration=duration,
-            ))
+                message=detail[:200],
+            )
 
     @property
     def entries(self) -> list[dict]:
@@ -380,7 +390,8 @@ class XHSTaskRunner:
         self.port = port
         self.record_interval = record_interval
         self.watch = watch
-        self.llm_backend = llm_backend
+        self.model_policy = TaskModelPolicy.from_choice(llm_backend)
+        self.llm_backend = self.model_policy.reasoning_backend
         self.llm_model = llm_model
 
     async def run(self, task: StructuredTask) -> dict:
@@ -390,8 +401,9 @@ class XHSTaskRunner:
         workflow_dir.mkdir(parents=True, exist_ok=True)
 
         bridge = ExtensionBridge(port=self.port)
-        action = ActionLog(bridge=bridge)
-        reasoning = ReasoningLog(bridge=bridge)
+        watch_runtime = WatchRuntime(BridgeWatchSink(bridge))
+        action = ActionLog(bridge=bridge, watch_runtime=watch_runtime)
+        reasoning = ReasoningLog(bridge=bridge, watch_runtime=watch_runtime)
         media_config = MediaConfig(backend=self.llm_backend)
         if self.llm_model:
             media_config.model = self.llm_model
@@ -508,6 +520,7 @@ class XHSTaskRunner:
                     config=config,
                     browser=browser,
                     media=media,
+                    watch_runtime=watch_runtime,
                     manage_bridge_lifecycle=False,
                 )
                 t0 = time.time()
@@ -537,6 +550,7 @@ class XHSTaskRunner:
                     config=config,
                     browser=browser,
                     media=media,
+                    watch_runtime=watch_runtime,
                     manage_bridge_lifecycle=False,
                 )
                 t0 = time.time()
@@ -620,6 +634,12 @@ class XHSTaskRunner:
                 "payload": task.payload,
                 "questions": task.questions,
                 "success_criteria": task.success_criteria,
+            },
+            "model_policy": {
+                "mode": self.model_policy.mode,
+                "label": self.model_policy.label,
+                "reasoning_backend": self.model_policy.reasoning_backend,
+                "vision_backend": self.model_policy.vision_backend,
             },
             "understanding": understanding.__dict__,
             "workflow_name": workflow_name,

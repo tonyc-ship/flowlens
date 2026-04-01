@@ -96,3 +96,39 @@ class ComposerAutomationTest(IsolatedAsyncioTestCase):
 
         self.assertEqual(result.status, "ambiguous")
         self.assertEqual(result.attempts[-1].outcome, "ambiguous")
+
+    async def test_submit_with_dom_verification_can_use_vision_to_resolve_ambiguous_dom(self) -> None:
+        tab = SimpleNamespace(
+            click_at=mock.AsyncMock(return_value={}),
+            press_key=mock.AsyncMock(return_value={}),
+            click_chat_submit=mock.AsyncMock(return_value={"clicked": True}),
+            get_chat_input_state=mock.AsyncMock(
+                return_value={"found": True, "empty": False, "text": "partial draft", "textLength": 13}
+            ),
+        )
+        spec = ComposerSpec(
+            input_selectors=("textarea",),
+            submit_selectors=("button",),
+            submit_mode="button",
+        )
+
+        async def _vision_verifier(attempt_result, dom_result):
+            self.assertEqual(attempt_result.assessment.status, "ambiguous")
+            self.assertEqual(dom_result.status, "ambiguous")
+            from clawvision.core.verification import VerificationResult
+
+            return VerificationResult(status="passed", source="vision", detail="generation visible")
+
+        result = await submit_with_dom_verification(
+            tab,
+            spec,
+            "hello world",
+            input_result={"x": 12, "y": 34},
+            focus_settle_s=0,
+            post_submit_settle_s=0,
+            vision_verifier=_vision_verifier,
+        )
+
+        self.assertEqual(result.status, "sent")
+        self.assertEqual(result.attempts[-1].verification_source, "vision")
+        self.assertEqual(result.attempts[-1].verification_status, "passed")

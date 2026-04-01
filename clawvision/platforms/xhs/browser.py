@@ -64,6 +64,8 @@ import random
 import urllib.parse
 
 from ...core.bridge import ExtensionBridge
+from ...core.executor import ActionAttemptSpec, execute_action_plan
+from ...core.verification import VerificationResult
 
 
 class XHSBrowser:
@@ -524,9 +526,13 @@ class XHSBrowser:
             await self.navigate("https://www.xiaohongshu.com", wait_ms=5000)
             await asyncio.sleep(2.5)
 
-        submit = await self.submit_search_query(keyword)
-        self.last_search_submit = submit
-        if submit.get("ok"):
+        final_url = expected_url
+
+        async def _verify_dom_submit(submit: dict) -> VerificationResult:
+            self.last_search_submit = submit
+            if not submit.get("ok"):
+                return VerificationResult(status="retry", source="dom", detail="Search submit did not transition")
+
             state = await self.wait_for_search_results(timeout_s=20, poll_s=1.5)
             try:
                 post_submit_url = (await self.get_tab_info()).get("url", "")
@@ -537,12 +543,45 @@ class XHSBrowser:
                 expected_url,
                 keyword,
             ):
+                nonlocal final_url
+                final_url = post_submit_url
                 self.last_search_route = "dom_submit"
-                return post_submit_url
+                return VerificationResult(status="passed", source="dom", detail="Search reached matching results")
+            return VerificationResult(status="retry", source="dom", detail="Search results stayed on stale context")
 
-        self.last_search_route = "url_fallback"
-        await self.navigate(expected_url, wait_ms=5000)
-        await asyncio.sleep(3)
+        async def _navigate_fallback() -> dict:
+            await self.navigate(expected_url, wait_ms=5000)
+            return {"ok": True, "url": expected_url}
+
+        async def _after_url_fallback(_result: dict) -> None:
+            await asyncio.sleep(3)
+
+        async def _verify_url_fallback(_result: dict) -> VerificationResult:
+            state = await self.wait_for_search_results(timeout_s=20, poll_s=1.5)
+            if state.get("page_state") == "search_results":
+                self.last_search_route = "url_fallback"
+                return VerificationResult(status="passed", source="navigation", detail="URL fallback reached search results")
+            return VerificationResult(status="failed", source="navigation", detail="URL fallback did not reach search results")
+
+        execution = await execute_action_plan(
+            (
+                ActionAttemptSpec(
+                    name="dom_submit",
+                    strategy="dom_submit",
+                    action=lambda: self.submit_search_query(keyword),
+                    verify=_verify_dom_submit,
+                ),
+                ActionAttemptSpec(
+                    name="url_fallback",
+                    strategy="url_fallback",
+                    action=_navigate_fallback,
+                    after=_after_url_fallback,
+                    verify=_verify_url_fallback,
+                ),
+            )
+        )
+        if execution.final_verification.status == "passed":
+            return final_url
         return expected_url
 
     async def restore_search_context(self, keyword: str, expected_url: str) -> dict:

@@ -7,6 +7,7 @@ from .llm import VisionLLM, VisionRequestConfig
 from .local_llm import DEFAULT_LOCAL_MODEL, LocalLLM
 from .media import BACKEND_QWEN_LOCAL, BACKEND_SONNET, DEFAULT_MODEL, MediaConfig, MediaProcessor
 from .ocr import OCREngine, TextRegion
+from .policy import BACKEND_CLOUD, BACKEND_LOCAL, TaskModelPolicy, normalize_backend_choice
 from .transcriber import WhisperTranscriber
 
 __all__ = [
@@ -16,6 +17,7 @@ __all__ = [
     "VisionLLM", "VisionRequestConfig",
     "DEFAULT_LOCAL_MODEL", "LocalLLM",
     "DEFAULT_MODEL", "BACKEND_SONNET", "BACKEND_QWEN_LOCAL", "MediaConfig", "MediaProcessor",
+    "BACKEND_CLOUD", "BACKEND_LOCAL", "TaskModelPolicy", "normalize_backend_choice",
     "OCREngine", "TextRegion",
     "WhisperTranscriber",
 ]
