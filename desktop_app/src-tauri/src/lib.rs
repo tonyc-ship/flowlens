@@ -43,6 +43,10 @@ struct TaskStub {
     assessment_complete: Option<bool>,
     #[serde(default)]
     assessment_confidence: Option<f64>,
+    #[serde(default)]
+    model_mode: Option<String>,
+    #[serde(default)]
+    model_label: Option<String>,
 }
 
 #[derive(Default)]
@@ -213,6 +217,8 @@ fn make_task_stub(
     log_path: PathBuf,
     output_root: PathBuf,
     pid: u32,
+    model_mode: Option<String>,
+    model_label: Option<String>,
 ) -> TaskStub {
     TaskStub {
         id,
@@ -227,6 +233,8 @@ fn make_task_stub(
         result_kind: None,
         assessment_complete: None,
         assessment_confidence: None,
+        model_mode,
+        model_label,
     }
 }
 
@@ -300,6 +308,8 @@ fn spawn_clawvision(
     output_segment: &str,
     args: &[OsString],
     output_flag: &str,
+    model_mode: Option<String>,
+    model_label: Option<String>,
 ) -> Result<TaskStub, String> {
     let runtime = resolve_runtime(app)?;
     let now = SystemTime::now()
@@ -352,6 +362,8 @@ fn spawn_clawvision(
         log_path,
         output_root,
         child.id(),
+        model_mode,
+        model_label,
     ))
 }
 
@@ -733,13 +745,23 @@ fn infer_kind(prompt: &str) -> Result<&'static str, String> {
     Ok("topic_research")
 }
 
+fn parse_xhs_model_mode(model_mode: &str) -> Result<(&'static str, &'static str, &'static str), String> {
+    match model_mode.trim() {
+        "" | "cloud" => Ok(("cloud", "Cloud Claude Sonnet", "sonnet")),
+        "local9b" => Ok(("local9b", "Local Qwen 3.5 9B", "qwen-local")),
+        other => Err(format!("Unsupported XHS model mode: {other}")),
+    }
+}
+
 #[tauri::command]
-fn start_task(app: AppHandle, prompt: String) -> Result<TaskStub, String> {
+fn start_task(app: AppHandle, prompt: String, model_mode: Option<String>) -> Result<TaskStub, String> {
     let trimmed = prompt.trim();
     if trimmed.is_empty() {
         return Err("Task prompt is empty".to_string());
     }
 
+    let model_mode = model_mode.unwrap_or_else(|| "cloud".to_string());
+    let (model_mode_value, model_label, llm_backend) = parse_xhs_model_mode(&model_mode)?;
     let kind = infer_kind(trimmed)?.to_string();
     // Stop the chatbots companion if running — it holds the WebSocket port
     // the task runner needs for the Chrome extension bridge.
@@ -756,8 +778,12 @@ fn start_task(app: AppHandle, prompt: String) -> Result<TaskStub, String> {
             OsString::from("run"),
             OsString::from("--prompt"),
             OsString::from(trimmed),
+            OsString::from("--llm-backend"),
+            OsString::from(llm_backend),
         ],
         "--output-root",
+        Some(model_mode_value.to_string()),
+        Some(model_label.to_string()),
     )?;
 
     if let Ok(mut guard) = app.state::<RunningTasks>().0.lock() {
@@ -816,7 +842,7 @@ pub fn run() {
 
 #[cfg(test)]
 mod tests {
-    use super::{extract_profile_url, extract_question_from_deep_link, infer_kind, task_status_from_log};
+    use super::{extract_profile_url, extract_question_from_deep_link, infer_kind, parse_xhs_model_mode, task_status_from_log};
     use std::fs;
     use url::Url;
 
@@ -853,5 +879,12 @@ mod tests {
         fs::write(&path, "hello\nTASK COMPLETE — 10.1s\n").expect("write temp log");
         assert_eq!(task_status_from_log(path.to_string_lossy().as_ref()).as_deref(), Some("done"));
         let _ = fs::remove_file(path);
+    }
+
+    #[test]
+    fn parses_xhs_model_modes() {
+        assert_eq!(parse_xhs_model_mode("cloud").unwrap().2, "sonnet");
+        assert_eq!(parse_xhs_model_mode("local9b").unwrap().2, "qwen-local");
+        assert!(parse_xhs_model_mode("unknown").is_err());
     }
 }

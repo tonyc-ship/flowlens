@@ -24,9 +24,12 @@ type TaskStub = {
   resultKind?: string | null;
   assessmentComplete?: boolean | null;
   assessmentConfidence?: number | null;
+  modelMode?: string | null;
+  modelLabel?: string | null;
 };
 
 type AppMode = "xhs" | "chatbots";
+type XhsModelMode = "cloud" | "local9b";
 
 type State = {
   health: HealthStatus | null;
@@ -41,6 +44,7 @@ type State = {
   chatbotsError: string;
   chatbotsQuestion: string;
   chatbotsResult: TaskStub | null;
+  xhsModelMode: XhsModelMode;
 };
 
 const state: State = {
@@ -56,6 +60,7 @@ const state: State = {
   chatbotsError: "",
   chatbotsQuestion: "",
   chatbotsResult: null,
+  xhsModelMode: "cloud",
 };
 
 const xhsPresets = [
@@ -147,6 +152,15 @@ function renderXhsMode(): string {
         <h1>What should ClawVision do?</h1>
 
         <div class="composer">
+          <div class="xhs-model-tabs">
+            <button class="model-tab ${state.xhsModelMode === "cloud" ? "active" : ""}" data-xhs-model="cloud">
+              Cloud Claude Sonnet
+            </button>
+            <button class="model-tab ${state.xhsModelMode === "local9b" ? "active" : ""}" data-xhs-model="local9b">
+              Local Qwen 3.5 9B
+            </button>
+          </div>
+
           <textarea
             id="task-input"
             rows="5"
@@ -190,6 +204,7 @@ function renderXhsMode(): string {
                     <div class="task-meta">
                       <span class="task-status ${task.status === "running" ? "status-running" : "status-done"}">${escapeHtml(task.status.toUpperCase())}</span>
                       <span>${escapeHtml(task.id)}</span>
+                      ${task.modelLabel ? `<span class="task-model-pill">${escapeHtml(task.modelLabel)}</span>` : ""}
                       ${task.status === "running" ? `<button class="stop-btn" data-task-id="${escapeHtmlAttr(task.id)}">Stop</button>` : ""}
                     </div>
                     <p>${escapeHtml(task.prompt)}</p>
@@ -263,6 +278,13 @@ function bindXhsEvents(app: HTMLElement) {
       state.prompt = button.dataset.preset || "";
       render();
       app.querySelector<HTMLTextAreaElement>("#task-input")?.focus();
+    });
+  }
+
+  for (const button of app.querySelectorAll<HTMLButtonElement>("[data-xhs-model]")) {
+    button.addEventListener("click", () => {
+      state.xhsModelMode = (button.dataset.xhsModel as XhsModelMode) || "cloud";
+      render();
     });
   }
 
@@ -360,7 +382,10 @@ async function startTask() {
   render();
 
   try {
-    const task = await invoke<TaskStub>("start_task", { prompt: state.prompt.trim() });
+    const task = await invoke<TaskStub>("start_task", {
+      prompt: state.prompt.trim(),
+      modelMode: state.xhsModelMode,
+    });
     state.recentTasks = [task, ...state.recentTasks].slice(0, 4);
     state.prompt = "";
     startTaskPolling();

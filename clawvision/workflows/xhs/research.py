@@ -27,7 +27,7 @@ from pathlib import Path
 
 from ...core.bridge import ExtensionBridge, ensure_extension_connection
 from ...core.reporting import markdown_styles, render_markdown_block
-from ...perception.media import MediaProcessor
+from ...perception.media import MediaConfig, MediaProcessor
 from ...platforms.xhs.browser import XHSBrowser
 from ...platforms.xhs.capabilities import NoteExtractionPlan, deep_note_plan, lite_note_plan
 from ...platforms.xhs.entities import Comment, NoteCard, NoteEntity, NoteType, parse_count_text
@@ -882,9 +882,15 @@ async def run_research(
     output_dir: str = "research_output",
     port: int = 8765,
     watch: bool = False,
+    llm_backend: str = "sonnet",
 ):
     """Convenience function to run a research session."""
-    agent = XHSResearchAgent(output_dir=output_dir, port=port)
+    media_config = MediaConfig(backend=llm_backend)
+    agent = XHSResearchAgent(
+        output_dir=output_dir,
+        port=port,
+        media=MediaProcessor(media_config),
+    )
     if watch:
         agent._watch = True
     report = await agent.research(topic=topic, keywords=keywords)

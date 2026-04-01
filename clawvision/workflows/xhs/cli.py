@@ -17,10 +17,16 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--output", "-o", default=None, help="Output directory")
     parser.add_argument("--port", "-p", type=int, default=8765, help="WebSocket port")
     parser.add_argument(
+        "--llm-backend",
+        choices=["sonnet", "qwen-local"],
+        default="sonnet",
+        help="Reasoning/vision backend for the workflow.",
+    )
+    parser.add_argument(
         "--watch",
         "-w",
         action="store_true",
-        help="Watch mode: foreground window with real-time activity sidebar",
+        help="Watch mode: foreground window with real-time activity overlay",
     )
     return parser
 
@@ -37,6 +43,7 @@ def main(argv: list[str] | None = None) -> int:
                 output_dir=output,
                 port=args.port,
                 watch=args.watch,
+                llm_backend=args.llm_backend,
             )
         )
         return 0
@@ -60,6 +67,7 @@ def main(argv: list[str] | None = None) -> int:
             output_dir=output,
             port=args.port,
             watch=args.watch,
+            llm_backend=args.llm_backend,
         )
     )
     return 0

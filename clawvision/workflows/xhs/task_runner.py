@@ -17,7 +17,7 @@ from pathlib import Path
 from ...core.bridge import ExtensionBridge, ensure_extension_connection
 from ...core.recorder import SessionRecorder
 from ...core.reporting import markdown_styles, render_markdown_block
-from ...perception.media import MediaProcessor
+from ...perception.media import MediaConfig, MediaProcessor
 from ...platforms.xhs.browser import XHSBrowser
 from ...platforms.xhs.capabilities import capability_catalog_markdown, capabilities_for_task
 from ...reasoning.task_agent import ExecutionStrategy, TaskAgent, TaskAssessment, TaskUnderstanding
@@ -366,11 +366,22 @@ pre.json{{background:#f6f8fa;color:#222;padding:14px;border-radius:8px;font-size
 class XHSTaskRunner:
     """Runs structured XHS tasks via generic task planning + XHS workflows."""
 
-    def __init__(self, output_root: str = "task_runs", port: int = 8765, record_interval: float = 1.0, watch: bool = False):
+    def __init__(
+        self,
+        output_root: str = "task_runs",
+        port: int = 8765,
+        record_interval: float = 1.0,
+        watch: bool = False,
+        *,
+        llm_backend: str = "sonnet",
+        llm_model: str | None = None,
+    ):
         self.output_root = Path(output_root)
         self.port = port
         self.record_interval = record_interval
         self.watch = watch
+        self.llm_backend = llm_backend
+        self.llm_model = llm_model
 
     async def run(self, task: StructuredTask) -> dict:
         task_dir = self.output_root / f"{task.slug()}_{_task_now_slug()}"
@@ -381,7 +392,10 @@ class XHSTaskRunner:
         bridge = ExtensionBridge(port=self.port)
         action = ActionLog(bridge=bridge)
         reasoning = ReasoningLog(bridge=bridge)
-        media = MediaProcessor()
+        media_config = MediaConfig(backend=self.llm_backend)
+        if self.llm_model:
+            media_config.model = self.llm_model
+        media = MediaProcessor(media_config)
         task_agent = TaskAgent(media, site_context=SITE_CONTEXT)
         bridge.on_log(lambda a, d="": action.log(f"bridge:{a}", d))
         browser = XHSBrowser(bridge)

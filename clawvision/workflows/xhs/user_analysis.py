@@ -20,7 +20,7 @@ from pathlib import Path
 
 from ...core.bridge import ExtensionBridge, ensure_extension_connection
 from ...core.reporting import markdown_styles, render_markdown_block
-from ...perception.media import MediaProcessor
+from ...perception.media import MediaConfig, MediaProcessor
 from ...platforms.xhs.browser import XHSBrowser
 from ...platforms.xhs.capabilities import NoteExtractionPlan, deep_note_plan, lite_note_plan
 from ...platforms.xhs.entities import (
@@ -791,9 +791,16 @@ async def run_user_analysis(
     port: int = 8765,
     config: UserAnalysisConfig | None = None,
     watch: bool = False,
+    llm_backend: str = "sonnet",
 ) -> dict:
     """Convenience function to run user analysis."""
-    analyzer = XHSUserAnalyzer(config=config, output_dir=output_dir, port=port)
+    media_config = MediaConfig(backend=llm_backend)
+    analyzer = XHSUserAnalyzer(
+        config=config,
+        output_dir=output_dir,
+        port=port,
+        media=MediaProcessor(media_config),
+    )
     if watch:
         analyzer._watch = True
     report = await analyzer.analyze(user_url)

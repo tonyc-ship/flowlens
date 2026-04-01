@@ -23,6 +23,7 @@ class DesktopTaskRequest:
     prompt: str
     topic: str = ""
     profile_url: str = ""
+    llm_backend: str = "sonnet"
 
 
 def _clean_topic(prompt: str) -> str:
@@ -60,7 +61,13 @@ async def _run_request(request: DesktopTaskRequest, *, output_root: str, port: i
         else make_topic_research_task(request.topic)
     )
 
-    runner = XHSTaskRunner(output_root=output_root, port=port, record_interval=1.5, watch=True)
+    runner = XHSTaskRunner(
+        output_root=output_root,
+        port=port,
+        record_interval=1.5,
+        watch=True,
+        llm_backend=request.llm_backend,
+    )
     result = await runner.run(task)
     return {
         "request": asdict(request),
@@ -77,12 +84,19 @@ def main(argv: list[str] | None = None) -> int:
     run_parser.add_argument("--prompt", required=True, help="Free-form task prompt from the desktop app.")
     run_parser.add_argument("--output-root", default="task_runs/desktop_app", help="Task output root.")
     run_parser.add_argument("--port", type=int, default=8765, help="Extension websocket port.")
+    run_parser.add_argument(
+        "--llm-backend",
+        choices=["sonnet", "qwen-local"],
+        default="sonnet",
+        help="Reasoning/vision backend for the XHS workflow.",
+    )
     run_parser.add_argument("--dry-run", action="store_true", help="Only infer the request; do not run.")
 
     args = parser.parse_args(argv)
 
     if args.command == "run":
         request = infer_desktop_task(args.prompt)
+        request.llm_backend = args.llm_backend
         if args.dry_run:
             print(json.dumps(asdict(request), ensure_ascii=False, indent=2))
             return 0
