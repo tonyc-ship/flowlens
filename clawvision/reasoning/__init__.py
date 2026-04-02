@@ -13,6 +13,7 @@ from .tasks import (
     TaskKind,
     make_creator_growth_breakdown_task,
     make_topic_research_task,
+    make_wechat_chat_summary_task,
 )
 
 __all__ = [
@@ -26,4 +27,5 @@ __all__ = [
     "TaskKind",
     "make_creator_growth_breakdown_task",
     "make_topic_research_task",
+    "make_wechat_chat_summary_task",
 ]

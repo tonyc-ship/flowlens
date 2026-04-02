@@ -3,8 +3,10 @@
 from __future__ import annotations
 
 import asyncio
+import json
 from collections.abc import Mapping
 from dataclasses import dataclass, field
+from pathlib import Path
 from typing import Any, Protocol
 
 
@@ -27,6 +29,24 @@ class WatchEvent:
     target: str = ""
     metadata: Mapping[str, Any] = field(default_factory=dict)
 
+    def to_dict(self) -> dict[str, Any]:
+        return {
+            "level": self.level,
+            "message": self.message,
+            "phase": self.phase,
+            "detail": self.detail,
+            "observation": self.observation,
+            "reasoning": self.reasoning,
+            "decision": self.decision,
+            "evidence": self.evidence,
+            "action_name": self.action_name,
+            "duration": self.duration,
+            "x": self.x,
+            "y": self.y,
+            "target": self.target,
+            "metadata": dict(self.metadata),
+        }
+
 
 class WatchSink(Protocol):
     async def emit(self, event: WatchEvent) -> None: ...
@@ -40,6 +60,18 @@ class MemoryWatchSink:
 
     async def emit(self, event: WatchEvent) -> None:
         self.events.append(event)
+
+
+class JSONLWatchSink:
+    """Persist watch events to a JSONL file for later UI polling."""
+
+    def __init__(self, path: str | Path):
+        self.path = Path(path)
+        self.path.parent.mkdir(parents=True, exist_ok=True)
+
+    async def emit(self, event: WatchEvent) -> None:
+        with self.path.open("a", encoding="utf-8") as handle:
+            handle.write(json.dumps(event.to_dict(), ensure_ascii=False) + "\n")
 
 
 class BridgeWatchSink:

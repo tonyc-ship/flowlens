@@ -26,9 +26,23 @@ type TaskStub = {
   assessmentConfidence?: number | null;
   modelMode?: string | null;
   modelLabel?: string | null;
+  watchPath?: string | null;
+  watchEvents?: WatchEvent[];
+  controlActive?: boolean | null;
 };
 
-type AppMode = "xhs" | "chatbots";
+type WatchEvent = {
+  level: string;
+  message: string;
+  phase?: string;
+  detail?: string;
+  observation?: string;
+  reasoning?: string;
+  decision?: string;
+  actionName?: string;
+};
+
+type AppMode = "xhs" | "chatbots" | "wechat";
 type XhsModelMode = "cloud" | "local9b";
 
 type State = {
@@ -45,6 +59,9 @@ type State = {
   chatbotsQuestion: string;
   chatbotsResult: TaskStub | null;
   xhsModelMode: XhsModelMode;
+  wechatConversation: string;
+  wechatLaunching: boolean;
+  wechatLaunchError: string;
 };
 
 const state: State = {
@@ -61,6 +78,9 @@ const state: State = {
   chatbotsQuestion: "",
   chatbotsResult: null,
   xhsModelMode: "cloud",
+  wechatConversation: "",
+  wechatLaunching: false,
+  wechatLaunchError: "",
 };
 
 const xhsPresets = [
@@ -68,6 +88,8 @@ const xhsPresets = [
   "研究露营",
   "拆解 https://www.xiaohongshu.com/user/profile/665e81660000000003033638",
 ];
+
+const wechatPresets = ["冬虫夏草", ""];
 
 function render() {
   const app = document.querySelector("#app");
@@ -93,12 +115,15 @@ function render() {
         <button class="mode-tab ${state.mode === "chatbots" ? "active" : ""}" data-mode="chatbots">
           Ask All Chatbots
         </button>
+        <button class="mode-tab ${state.mode === "wechat" ? "active" : ""}" data-mode="wechat">
+          WeChat Summary
+        </button>
         <button class="mode-tab ${state.mode === "xhs" ? "active" : ""}" data-mode="xhs">
           XHS Research
         </button>
       </nav>
 
-      ${state.mode === "chatbots" ? renderChatbotsMode() : renderXhsMode()}
+      ${state.mode === "chatbots" ? renderChatbotsMode() : state.mode === "wechat" ? renderWeChatMode() : renderXhsMode()}
     </main>
   `;
 
@@ -106,6 +131,8 @@ function render() {
 
   if (state.mode === "chatbots") {
     bindChatbotsEvents(app);
+  } else if (state.mode === "wechat") {
+    bindWeChatEvents(app);
   } else {
     bindXhsEvents(app);
   }
@@ -143,11 +170,85 @@ function renderChatbotsMode(): string {
   `;
 }
 
+function renderWeChatMode(): string {
+  const launchDisabled = state.wechatLaunching;
+  const latestTask = state.recentTasks.find((task) => task.kind === "wechat_chat_summary") || null;
+  const promptPreview = state.wechatConversation.trim()
+    ? `请总结微信会话 "${state.wechatConversation.trim()}" 的聊天记录`
+    : "请总结当前微信已打开会话的聊天记录";
+
+  return `
+    <section class="wechat-workbench">
+      <div class="composer-wrap">
+        <h1>Summarize WeChat Chat</h1>
+
+        <div class="composer wechat-composer">
+          <div class="wechat-stack-pill">Local Qwen 2B UI + 9B Agent</div>
+
+          <textarea
+            id="wechat-conversation-input"
+            rows="3"
+            placeholder="Conversation name, or leave empty to reuse the currently open chat..."
+          >${escapeHtml(state.wechatConversation)}</textarea>
+
+          <p class="wechat-helper">
+            ${escapeHtml(promptPreview)}
+          </p>
+
+          <div class="composer-actions">
+            <div class="preset-row">
+              ${wechatPresets
+                .map((preset, index) =>
+                  `<button class="preset" data-wechat-preset="${escapeHtmlAttr(preset)}">${
+                    preset ? escapeHtml(preset) : index === 1 ? "Current open chat" : "Current chat"
+                  }</button>`,
+                )
+                .join("")}
+            </div>
+
+            <button id="start-wechat-task" class="start-button" ${launchDisabled ? "disabled" : ""}>
+              ${state.wechatLaunching ? "Starting..." : "Start WeChat Summary"}
+            </button>
+          </div>
+
+          ${
+            state.wechatLaunchError
+              ? `<p class="inline-error">${escapeHtml(state.wechatLaunchError)}</p>`
+              : ""
+          }
+        </div>
+      </div>
+
+      ${renderWeChatMonitor(latestTask)}
+    </section>
+
+    ${
+      latestTask
+        ? `
+          <section class="recent recent-wechat">
+            <article class="task-card">
+              <div class="task-meta">
+                <span class="task-status ${latestTask.status === "running" ? "status-running" : "status-done"}">${escapeHtml(latestTask.status.toUpperCase())}</span>
+                <span>${escapeHtml(latestTask.id)}</span>
+                ${latestTask.modelLabel ? `<span class="task-model-pill">${escapeHtml(latestTask.modelLabel)}</span>` : ""}
+                ${latestTask.status === "running" ? `<button class="stop-btn" data-task-id="${escapeHtmlAttr(latestTask.id)}">Stop</button>` : ""}
+              </div>
+              <p>${escapeHtml(latestTask.prompt)}</p>
+              ${renderTaskOutcome(latestTask)}
+            </article>
+          </section>
+        `
+        : ""
+    }
+  `;
+}
+
 function renderXhsMode(): string {
+  const xhsTasks = state.recentTasks.filter((task) => task.kind !== "wechat_chat_summary");
   const launchDisabled = state.launchingTask || !state.prompt.trim();
 
   return `
-    <section class="hero ${state.recentTasks.length ? "hero-compact" : ""}">
+    <section class="hero ${xhsTasks.length ? "hero-compact" : ""}">
       <div class="composer-wrap">
         <h1>What should ClawVision do?</h1>
 
@@ -194,10 +295,10 @@ function renderXhsMode(): string {
     </section>
 
     ${
-      state.recentTasks.length
+      xhsTasks.length
         ? `
           <section class="recent">
-            ${state.recentTasks
+            ${xhsTasks
               .map(
                 (task) => `
                   <article class="task-card">
@@ -254,6 +355,61 @@ function bindChatbotsEvents(app: HTMLElement) {
   app.querySelector<HTMLButtonElement>("#ask-all")?.addEventListener("click", () => {
     void askChatbots();
   });
+}
+
+function bindWeChatEvents(app: HTMLElement) {
+  const input = app.querySelector<HTMLTextAreaElement>("#wechat-conversation-input");
+  input?.addEventListener("input", (event) => {
+    state.wechatConversation = (event.target as HTMLTextAreaElement).value;
+    syncWeChatStartButton();
+  });
+  input?.addEventListener("keydown", (event) => {
+    if ((event.metaKey || event.ctrlKey) && event.key === "Enter") {
+      event.preventDefault();
+      void startWeChatTask();
+    }
+  });
+
+  app.querySelector<HTMLButtonElement>("#start-wechat-task")?.addEventListener("click", () => {
+    void startWeChatTask();
+  });
+
+  for (const button of app.querySelectorAll<HTMLButtonElement>("[data-wechat-preset]")) {
+    button.addEventListener("click", () => {
+      state.wechatConversation = button.dataset.wechatPreset || "";
+      render();
+      app.querySelector<HTMLTextAreaElement>("#wechat-conversation-input")?.focus();
+    });
+  }
+
+  for (const button of app.querySelectorAll<HTMLButtonElement>(".stop-btn")) {
+    button.addEventListener("click", async () => {
+      const taskId = button.dataset.taskId;
+      if (!taskId) return;
+      button.disabled = true;
+      button.textContent = "Stopping...";
+      try {
+        await invoke("stop_task", { taskId });
+        const task = state.recentTasks.find((t) => t.id === taskId);
+        if (task) task.status = "stopped";
+      } catch (error) {
+        console.warn("stop_task failed:", error);
+      }
+      render();
+    });
+  }
+
+  for (const button of app.querySelectorAll<HTMLButtonElement>(".reveal-btn")) {
+    button.addEventListener("click", async () => {
+      const path = button.dataset.path;
+      if (!path) return;
+      try {
+        await invoke("reveal_path", { path });
+      } catch (error) {
+        console.warn("reveal_path failed:", error);
+      }
+    });
+  }
 }
 
 function bindXhsEvents(app: HTMLElement) {
@@ -322,6 +478,12 @@ function syncStartButton() {
   const button = document.querySelector<HTMLButtonElement>("#start-task");
   if (!button) return;
   button.disabled = state.launchingTask || !state.prompt.trim();
+}
+
+function syncWeChatStartButton() {
+  const button = document.querySelector<HTMLButtonElement>("#start-wechat-task");
+  if (!button) return;
+  button.disabled = state.wechatLaunching;
 }
 
 function syncAskButton() {
@@ -397,6 +559,32 @@ async function startTask() {
   }
 }
 
+async function startWeChatTask() {
+  if (state.wechatLaunching) return;
+
+  state.wechatLaunching = true;
+  state.wechatLaunchError = "";
+  render();
+
+  const prompt = state.wechatConversation.trim()
+    ? `请总结微信会话 "${state.wechatConversation.trim()}" 的聊天记录`
+    : "请总结当前微信已打开会话的聊天记录";
+
+  try {
+    const task = await invoke<TaskStub>("start_task", {
+      prompt,
+      modelMode: "local9b",
+    });
+    state.recentTasks = [task, ...state.recentTasks.filter((item) => item.id !== task.id)].slice(0, 8);
+    startTaskPolling();
+  } catch (error) {
+    state.wechatLaunchError = String(error);
+  } finally {
+    state.wechatLaunching = false;
+    render();
+  }
+}
+
 async function askChatbots() {
   if (!state.chatbotsQuestion.trim() || state.chatbotsLaunching) return;
 
@@ -454,6 +642,40 @@ function renderTaskOutcome(task: TaskStub): string {
         </div>
       ` : ""}
     </div>
+  `;
+}
+
+function renderWeChatMonitor(task: TaskStub | null): string {
+  const events = task?.watchEvents || [];
+  const caution = task?.controlActive
+    ? `<div class="control-banner">ClawVision is controlling WeChat. Do not fight for the mouse or keyboard.</div>`
+    : "";
+  const body = events.length
+    ? events
+        .map(
+          (event) => `
+            <article class="watch-event watch-${escapeHtmlAttr(event.level || "info")}">
+              <div class="watch-event-top">
+                <span>${escapeHtml((event.phase || event.actionName || event.level || "event").toUpperCase())}</span>
+              </div>
+              <p>${escapeHtml(event.message || event.detail || event.decision || "")}</p>
+              ${event.detail ? `<p class="watch-detail">${escapeHtml(event.detail)}</p>` : ""}
+              ${event.decision ? `<p class="watch-detail">${escapeHtml(event.decision)}</p>` : ""}
+            </article>
+          `,
+        )
+        .join("")
+    : `<p class="watch-empty">Launch a WeChat task to see scrolling, parsing, and summary status here.</p>`;
+
+  return `
+    <aside class="watch-panel">
+      <div class="watch-panel-top">
+        <h2>Run Monitor</h2>
+        ${task?.status ? `<span class="watch-status">${escapeHtml(task.status)}</span>` : ""}
+      </div>
+      ${caution}
+      <div class="watch-list">${body}</div>
+    </aside>
   `;
 }
 

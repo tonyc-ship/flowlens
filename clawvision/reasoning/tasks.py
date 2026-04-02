@@ -14,6 +14,7 @@ import re
 class TaskKind(StrEnum):
     TOPIC_RESEARCH = "topic_research"
     CREATOR_GROWTH_BREAKDOWN = "creator_growth_breakdown"
+    WECHAT_CHAT_SUMMARY = "wechat_chat_summary"
 
 
 @dataclass
@@ -127,4 +128,34 @@ def make_creator_growth_breakdown_task(
             "结合详细帖子和评论，不只停留在主页浅层信息",
             "对可能的增长路径给出有证据的推断",
         ],
+    )
+
+
+def make_wechat_chat_summary_task(
+    conversation: str = "",
+    *,
+    max_scroll_rounds: int = 12,
+    min_capture_rounds: int = 3,
+) -> StructuredTask:
+    target = conversation or "当前会话"
+    return StructuredTask(
+        kind=TaskKind.WECHAT_CHAT_SUMMARY,
+        title=f"微信会话总结：{target}",
+        objective=f"在微信 macOS 客户端里打开“{target}”，向上滚动读取聊天记录，并输出结构化总结报告。",
+        payload={
+            "conversation": conversation,
+            "max_scroll_rounds": max_scroll_rounds,
+            "min_capture_rounds": min_capture_rounds,
+        },
+        questions=[
+            "这个会话最近主要在讨论什么主题？",
+            "有哪些明确结论、待办、分歧或风险点？",
+            "可以按时间顺序还原出哪些关键节点？",
+        ],
+        success_criteria=[
+            "读取多个可见屏的历史，而不是只总结当前一屏",
+            "尽量标注说话人、日期分隔和关键消息",
+            "最终报告能让未读过聊天的人快速理解上下文",
+        ],
+        site="wechat_desktop",
     )

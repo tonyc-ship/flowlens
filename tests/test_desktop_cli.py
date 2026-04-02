@@ -16,6 +16,11 @@ class DesktopCliTests(unittest.TestCase):
         self.assertEqual(req.kind, "creator_growth_breakdown")
         self.assertTrue(req.profile_url.endswith("665e81660000000003033638"))
 
+    def test_infer_wechat_summary_task(self):
+        req = infer_desktop_task('请总结微信会话 "冬虫夏草" 的聊天记录')
+        self.assertEqual(req.kind, "wechat_chat_summary")
+        self.assertEqual(req.conversation, "冬虫夏草")
+
 
 if __name__ == "__main__":
     unittest.main()

@@ -26,6 +26,25 @@ struct HealthStatus {
 
 #[derive(Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
+struct WatchEventStub {
+    level: String,
+    message: String,
+    #[serde(default)]
+    phase: String,
+    #[serde(default)]
+    detail: String,
+    #[serde(default)]
+    observation: String,
+    #[serde(default)]
+    reasoning: String,
+    #[serde(default)]
+    decision: String,
+    #[serde(default)]
+    action_name: String,
+}
+
+#[derive(Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
 struct TaskStub {
     id: String,
     kind: String,
@@ -47,6 +66,12 @@ struct TaskStub {
     model_mode: Option<String>,
     #[serde(default)]
     model_label: Option<String>,
+    #[serde(default)]
+    watch_path: Option<String>,
+    #[serde(default)]
+    watch_events: Vec<WatchEventStub>,
+    #[serde(default)]
+    control_active: Option<bool>,
 }
 
 #[derive(Default)]
@@ -131,9 +156,18 @@ fn resolve_runtime(app: &AppHandle) -> Result<RuntimePaths, String> {
     let dev_repo = repo_root().ok();
 
     if let Ok(resource_dir) = app.path().resource_dir() {
-        let bundled_root = if resource_dir.join("runtime_bundle").join("clawvision").exists() {
+        let bundled_root = if resource_dir
+            .join("runtime_bundle")
+            .join("clawvision")
+            .exists()
+        {
             Some(resource_dir.join("runtime_bundle"))
-        } else if resource_dir.join("_up_").join("runtime_bundle").join("clawvision").exists() {
+        } else if resource_dir
+            .join("_up_")
+            .join("runtime_bundle")
+            .join("clawvision")
+            .exists()
+        {
             Some(resource_dir.join("_up_").join("runtime_bundle"))
         } else {
             None
@@ -141,16 +175,17 @@ fn resolve_runtime(app: &AppHandle) -> Result<RuntimePaths, String> {
 
         if let Some(bundled_root) = bundled_root {
             let bundled_binary = bundled_root.join("bin").join("clawvision");
-            let (launcher, launcher_kind) = if let Some(executable) = env_nonempty("CLAWVISION_EXECUTABLE") {
-                (executable, LauncherKind::Binary)
-            } else if bundled_binary.exists() {
-                (bundled_binary.into_os_string(), LauncherKind::Binary)
-            } else {
-                (
-                    resolve_python(&bundled_root, dev_repo.as_deref()),
-                    LauncherKind::Python,
-                )
-            };
+            let (launcher, launcher_kind) =
+                if let Some(executable) = env_nonempty("CLAWVISION_EXECUTABLE") {
+                    (executable, LauncherKind::Binary)
+                } else if bundled_binary.exists() {
+                    (bundled_binary.into_os_string(), LauncherKind::Binary)
+                } else {
+                    (
+                        resolve_python(&bundled_root, dev_repo.as_deref()),
+                        LauncherKind::Python,
+                    )
+                };
             let output_root = app
                 .path()
                 .app_data_dir()
@@ -167,16 +202,17 @@ fn resolve_runtime(app: &AppHandle) -> Result<RuntimePaths, String> {
 
     if let Some(runtime_root) = dev_runtime_root() {
         let runtime_binary = runtime_root.join("bin").join("clawvision");
-        let (launcher, launcher_kind) = if let Some(executable) = env_nonempty("CLAWVISION_EXECUTABLE") {
-            (executable, LauncherKind::Binary)
-        } else if runtime_binary.exists() {
-            (runtime_binary.into_os_string(), LauncherKind::Binary)
-        } else {
-            (
-                resolve_python(&runtime_root, dev_repo.as_deref()),
-                LauncherKind::Python,
-            )
-        };
+        let (launcher, launcher_kind) =
+            if let Some(executable) = env_nonempty("CLAWVISION_EXECUTABLE") {
+                (executable, LauncherKind::Binary)
+            } else if runtime_binary.exists() {
+                (runtime_binary.into_os_string(), LauncherKind::Binary)
+            } else {
+                (
+                    resolve_python(&runtime_root, dev_repo.as_deref()),
+                    LauncherKind::Python,
+                )
+            };
         let output_root = dev_repo
             .clone()
             .unwrap_or(runtime_root.clone())
@@ -235,6 +271,9 @@ fn make_task_stub(
         assessment_confidence: None,
         model_mode,
         model_label,
+        watch_path: None,
+        watch_events: vec![],
+        control_active: None,
     }
 }
 
@@ -276,6 +315,84 @@ fn hydrate_task_artifacts(task: &mut TaskStub) {
         return;
     }
 
+    let mut watch_logs = Vec::new();
+    collect_named_files(root, "watch_events.jsonl", 5, &mut watch_logs);
+    if let Some(watch_path) = choose_preferred_report(&mut watch_logs) {
+        task.watch_path = Some(watch_path.to_string_lossy().into_owned());
+        if let Ok(contents) = fs::read_to_string(&watch_path) {
+            let mut events = Vec::new();
+            let mut control_active = None;
+            for line in contents
+                .lines()
+                .rev()
+                .take(24)
+                .collect::<Vec<_>>()
+                .into_iter()
+                .rev()
+            {
+                if let Ok(value) = serde_json::from_str::<Value>(line) {
+                    if let Some(active) = value
+                        .get("metadata")
+                        .and_then(|meta| meta.get("control_active"))
+                        .and_then(Value::as_bool)
+                    {
+                        control_active = Some(active);
+                    }
+                    events.push(WatchEventStub {
+                        level: value
+                            .get("level")
+                            .and_then(Value::as_str)
+                            .unwrap_or("")
+                            .to_string(),
+                        message: value
+                            .get("message")
+                            .and_then(Value::as_str)
+                            .unwrap_or("")
+                            .to_string(),
+                        phase: value
+                            .get("phase")
+                            .and_then(Value::as_str)
+                            .unwrap_or("")
+                            .to_string(),
+                        detail: value
+                            .get("detail")
+                            .and_then(Value::as_str)
+                            .unwrap_or("")
+                            .to_string(),
+                        observation: value
+                            .get("observation")
+                            .and_then(Value::as_str)
+                            .unwrap_or("")
+                            .to_string(),
+                        reasoning: value
+                            .get("reasoning")
+                            .and_then(Value::as_str)
+                            .unwrap_or("")
+                            .to_string(),
+                        decision: value
+                            .get("decision")
+                            .and_then(Value::as_str)
+                            .unwrap_or("")
+                            .to_string(),
+                        action_name: value
+                            .get("action_name")
+                            .and_then(Value::as_str)
+                            .unwrap_or("")
+                            .to_string(),
+                    });
+                }
+            }
+            task.watch_events = events;
+            task.control_active = control_active.or_else(|| {
+                (task.kind == "wechat_chat_summary" && task.status == "running").then_some(true)
+            });
+        }
+    } else {
+        task.watch_path = None;
+        task.watch_events.clear();
+        task.control_active = None;
+    }
+
     let mut report_htmls = Vec::new();
     collect_named_files(root, "report.html", 5, &mut report_htmls);
     if let Some(report_path) = choose_preferred_report(&mut report_htmls) {
@@ -293,7 +410,8 @@ fn hydrate_task_artifacts(task: &mut TaskStub) {
             if let Ok(value) = serde_json::from_str::<Value>(&contents) {
                 if let Some(assessment) = value.get("assessment") {
                     task.assessment_complete = assessment.get("complete").and_then(Value::as_bool);
-                    task.assessment_confidence = assessment.get("confidence").and_then(Value::as_f64);
+                    task.assessment_confidence =
+                        assessment.get("confidence").and_then(Value::as_f64);
                 }
             }
         }
@@ -318,9 +436,11 @@ fn spawn_clawvision(
     let millis = now.as_millis();
     let id = format!("{id_prefix}-{millis}");
     let output_root = runtime.output_root.join(output_segment).join(&id);
-    fs::create_dir_all(&output_root).map_err(|err| format!("Failed to create output dir: {err}"))?;
+    fs::create_dir_all(&output_root)
+        .map_err(|err| format!("Failed to create output dir: {err}"))?;
     let log_path = output_root.join("desktop.log");
-    let stdout = File::create(&log_path).map_err(|err| format!("Failed to create log file: {err}"))?;
+    let stdout =
+        File::create(&log_path).map_err(|err| format!("Failed to create log file: {err}"))?;
     let stderr = stdout
         .try_clone()
         .map_err(|err| format!("Failed to clone log file handle: {err}"))?;
@@ -393,9 +513,11 @@ fn spawn_chatbots_companion(app: &AppHandle) -> Result<ChatbotsCompanionHandle, 
         .app_data_dir()
         .map_err(|err| format!("Failed to resolve app data dir: {err}"))?
         .join("companion");
-    fs::create_dir_all(&companion_dir).map_err(|err| format!("Failed to create companion dir: {err}"))?;
+    fs::create_dir_all(&companion_dir)
+        .map_err(|err| format!("Failed to create companion dir: {err}"))?;
     let log_path = companion_dir.join("chatbots-companion.log");
-    let stderr = File::create(&log_path).map_err(|err| format!("Failed to create companion log: {err}"))?;
+    let stderr =
+        File::create(&log_path).map_err(|err| format!("Failed to create companion log: {err}"))?;
 
     let mut child = Command::new(&runtime.launcher);
     child
@@ -424,7 +546,9 @@ fn spawn_chatbots_companion(app: &AppHandle) -> Result<ChatbotsCompanionHandle, 
         .arg("--output-root-base")
         .arg(runtime.output_root.join("multi_chat"));
 
-    let mut child = child.spawn().map_err(|err| format!("Failed to start chatbot companion: {err}"))?;
+    let mut child = child
+        .spawn()
+        .map_err(|err| format!("Failed to start chatbot companion: {err}"))?;
     let stdin = child
         .stdin
         .take()
@@ -472,7 +596,11 @@ fn spawn_chatbots_companion(app: &AppHandle) -> Result<ChatbotsCompanionHandle, 
         ));
     }
 
-    Ok(ChatbotsCompanionHandle { child, stdin, stdout })
+    Ok(ChatbotsCompanionHandle {
+        child,
+        stdin,
+        stdout,
+    })
 }
 
 fn with_chatbots_companion<T>(
@@ -549,13 +677,11 @@ fn spawn_chatbots_task(
         }),
     )?;
     if response.get("ok").and_then(Value::as_bool) != Some(true) {
-        return Err(
-            response
-                .get("error")
-                .and_then(Value::as_str)
-                .unwrap_or("Chatbots companion request failed")
-                .to_string(),
-        );
+        return Err(response
+            .get("error")
+            .and_then(Value::as_str)
+            .unwrap_or("Chatbots companion request failed")
+            .to_string());
     }
     let task = parse_task_stub(
         response
@@ -612,8 +738,13 @@ fn handle_deep_links(app: &AppHandle, urls: &[Url]) {
 }
 
 #[tauri::command]
-fn latest_chatbots_task(app: AppHandle, state: State<'_, LatestChatbotsTask>) -> Result<Option<TaskStub>, String> {
-    if let Ok(response) = request_chatbots_companion(&app, serde_json::json!({ "action": "latest_task" })) {
+fn latest_chatbots_task(
+    app: AppHandle,
+    state: State<'_, LatestChatbotsTask>,
+) -> Result<Option<TaskStub>, String> {
+    if let Ok(response) =
+        request_chatbots_companion(&app, serde_json::json!({ "action": "latest_task" }))
+    {
         if response.get("ok").and_then(Value::as_bool) == Some(true) {
             let task = match response.get("task") {
                 Some(value) if !value.is_null() => Some(parse_task_stub(value)?),
@@ -662,18 +793,14 @@ fn check_task_status(state: State<'_, RunningTasks>) -> Vec<TaskStub> {
         Err(_) => return vec![],
     };
     for task in guard.iter_mut() {
-        if task.status != "running" {
-            hydrate_task_artifacts(task);
-            continue;
+        if task.status == "running" {
+            if let Some(status) = task_status_from_log(&task.log_path) {
+                task.status = status;
+            } else if reap_pid_if_exited(task.pid) || !is_pid_alive(task.pid) {
+                task.status = "done".to_string();
+            }
         }
-        if let Some(status) = task_status_from_log(&task.log_path) {
-            task.status = status;
-        } else if reap_pid_if_exited(task.pid) || !is_pid_alive(task.pid) {
-            task.status = "done".to_string();
-        }
-        if task.status != "running" {
-            hydrate_task_artifacts(task);
-        }
+        hydrate_task_artifacts(task);
     }
     guard.clone()
 }
@@ -712,11 +839,15 @@ fn stop_task(task_id: String, state: State<'_, RunningTasks>) -> Result<String, 
     }
     let pid = task.pid as i32;
     // Send SIGTERM first for graceful shutdown
-    unsafe { libc::kill(pid, libc::SIGTERM); }
+    unsafe {
+        libc::kill(pid, libc::SIGTERM);
+    }
     // Give it a moment, then force kill
     std::thread::sleep(std::time::Duration::from_millis(500));
     if is_pid_alive(task.pid) {
-        unsafe { libc::kill(pid, libc::SIGKILL); }
+        unsafe {
+            libc::kill(pid, libc::SIGKILL);
+        }
     }
     task.status = "stopped".to_string();
     Ok(format!("Task {task_id} stopped"))
@@ -731,6 +862,17 @@ fn extract_profile_url(prompt: &str) -> Option<String> {
 }
 
 fn infer_kind(prompt: &str) -> Result<&'static str, String> {
+    let lower = prompt.to_lowercase();
+    let looks_like_wechat = (prompt.contains("微信") || lower.contains("wechat"))
+        && (prompt.contains("会话")
+            || prompt.contains("聊天")
+            || prompt.contains("聊天记录")
+            || prompt.contains("对话"))
+        && (prompt.contains("总结") || prompt.contains("摘要") || prompt.contains("梳理"));
+    if looks_like_wechat {
+        return Ok("wechat_chat_summary");
+    }
+
     if extract_profile_url(prompt).is_some() {
         return Ok("creator_growth_breakdown");
     }
@@ -745,7 +887,9 @@ fn infer_kind(prompt: &str) -> Result<&'static str, String> {
     Ok("topic_research")
 }
 
-fn parse_xhs_model_mode(model_mode: &str) -> Result<(&'static str, &'static str, &'static str), String> {
+fn parse_xhs_model_mode(
+    model_mode: &str,
+) -> Result<(&'static str, &'static str, &'static str), String> {
     match model_mode.trim() {
         "" | "cloud" => Ok(("cloud", "Cloud Claude Sonnet", "sonnet")),
         "local9b" => Ok(("local9b", "Local Qwen 3.5 9B", "qwen-local")),
@@ -754,15 +898,23 @@ fn parse_xhs_model_mode(model_mode: &str) -> Result<(&'static str, &'static str,
 }
 
 #[tauri::command]
-fn start_task(app: AppHandle, prompt: String, model_mode: Option<String>) -> Result<TaskStub, String> {
+fn start_task(
+    app: AppHandle,
+    prompt: String,
+    model_mode: Option<String>,
+) -> Result<TaskStub, String> {
     let trimmed = prompt.trim();
     if trimmed.is_empty() {
         return Err("Task prompt is empty".to_string());
     }
 
-    let model_mode = model_mode.unwrap_or_else(|| "cloud".to_string());
-    let (model_mode_value, model_label, llm_backend) = parse_xhs_model_mode(&model_mode)?;
     let kind = infer_kind(trimmed)?.to_string();
+    let requested_model_mode = model_mode.unwrap_or_else(|| "cloud".to_string());
+    let (model_mode_value, model_label, llm_backend) = if kind == "wechat_chat_summary" {
+        ("local_qwen_wechat", "Local Qwen 2B + 9B", "qwen-local")
+    } else {
+        parse_xhs_model_mode(&requested_model_mode)?
+    };
     // Stop the chatbots companion if running — it holds the WebSocket port
     // the task runner needs for the Chrome extension bridge.
     stop_chatbots_companion(&app);
@@ -772,7 +924,11 @@ fn start_task(app: AppHandle, prompt: String, model_mode: Option<String>) -> Res
         "task",
         &kind,
         trimmed,
-        "desktop_app",
+        if kind == "wechat_chat_summary" {
+            "desktop_app_wechat"
+        } else {
+            "desktop_app"
+        },
         &[
             OsString::from("desktop"),
             OsString::from("run"),
@@ -842,7 +998,10 @@ pub fn run() {
 
 #[cfg(test)]
 mod tests {
-    use super::{extract_profile_url, extract_question_from_deep_link, infer_kind, parse_xhs_model_mode, task_status_from_log};
+    use super::{
+        extract_profile_url, extract_question_from_deep_link, infer_kind, parse_xhs_model_mode,
+        task_status_from_log,
+    };
     use std::fs;
     use url::Url;
 
@@ -856,6 +1015,14 @@ mod tests {
     #[test]
     fn infers_topic_task_without_creator_url() {
         assert_eq!(infer_kind("研究护肤干货").unwrap(), "topic_research");
+    }
+
+    #[test]
+    fn infers_wechat_summary_task() {
+        assert_eq!(
+            infer_kind("请总结微信会话“冬虫夏草”的聊天记录").unwrap(),
+            "wechat_chat_summary"
+        );
     }
 
     #[test]
@@ -877,7 +1044,10 @@ mod tests {
     fn detects_completed_task_from_log_marker() {
         let path = std::env::temp_dir().join("clawvision-task-status-test.log");
         fs::write(&path, "hello\nTASK COMPLETE — 10.1s\n").expect("write temp log");
-        assert_eq!(task_status_from_log(path.to_string_lossy().as_ref()).as_deref(), Some("done"));
+        assert_eq!(
+            task_status_from_log(path.to_string_lossy().as_ref()).as_deref(),
+            Some("done")
+        );
         let _ = fs::remove_file(path);
     }
 

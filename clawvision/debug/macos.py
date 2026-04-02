@@ -602,6 +602,15 @@ function run(argv) {
         subprocess.run(["open", "-a", browser, url], check=True)
         time.sleep(0.5)
 
+    def display_notification(self, title: str, message: str, *, subtitle: str = "") -> None:
+        script = (
+            f'display notification "{_escape_applescript(message)}" '
+            f'with title "{_escape_applescript(title)}"'
+        )
+        if subtitle:
+            script += f' subtitle "{_escape_applescript(subtitle)}"'
+        subprocess.run(["osascript", "-e", script], check=False)
+
     def keystroke(self, key: str, *, modifiers: list[str] | None = None) -> None:
         mods = modifiers or []
         using_clause = ""
@@ -622,6 +631,12 @@ function run(argv) {
             "space": 49,
             "escape": 53,
             "esc": 53,
+            "home": 115,
+            "pageup": 116,
+            "page_up": 116,
+            "end": 119,
+            "pagedown": 121,
+            "page_down": 121,
             "left": 123,
             "right": 124,
             "down": 125,
@@ -695,6 +710,33 @@ function run(argv) {
         )
         Quartz.CGEventPost(Quartz.kCGHIDEventTap, move)
         time.sleep(0.05)
+
+    def scroll(self, line_delta: int, *, x: int | None = None, y: int | None = None, repeats: int = 1) -> None:
+        """Send a mouse-wheel event.
+
+        Positive ``line_delta`` scrolls upward to reveal older content.
+        If ``x``/``y`` are provided, move the pointer there first so the
+        target scroll view captures the wheel event.
+        """
+        if x is not None and y is not None:
+            self.move_mouse(x, y)
+
+        pyautogui = self._pyautogui()
+        if pyautogui is not None:
+            for _ in range(max(repeats, 1)):
+                pyautogui.scroll(line_delta, x=x, y=y)
+                time.sleep(0.05)
+            return
+
+        for _ in range(max(repeats, 1)):
+            event = Quartz.CGEventCreateScrollWheelEvent(
+                None,
+                Quartz.kCGScrollEventUnitLine,
+                1,
+                int(line_delta),
+            )
+            Quartz.CGEventPost(Quartz.kCGHIDEventTap, event)
+            time.sleep(0.05)
 
     def paste_text(self, text: str) -> None:
         subprocess.run(["pbcopy"], input=text.encode("utf-8"), check=True)
