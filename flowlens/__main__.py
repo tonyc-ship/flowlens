@@ -1,4 +1,4 @@
-"""Allow `python -m clawvision` to run the primary agent CLI."""
+"""Allow `python -m flowlens` to run the primary agent CLI."""
 
 from __future__ import annotations
 

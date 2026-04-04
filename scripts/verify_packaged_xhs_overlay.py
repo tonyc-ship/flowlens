@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Smoke-test the installed ClawVision Desktop app with the XHS watch overlay.
+"""Smoke-test the installed FlowLens Desktop app with the XHS watch overlay.
 
 This drives the installed macOS app through Accessibility, launches the
 pre-filled `研究露营` preset in the XHS view, waits for a new desktop task dir,
@@ -16,12 +16,12 @@ import time
 from datetime import datetime
 from pathlib import Path
 
-from clawvision.debug.macos import MacOSController
+from flowlens.debug.macos import MacOSController
 
-APP_PATH = Path("/Applications/ClawVision Desktop.app")
-TASK_ROOT = Path("/Users/tonychong/Library/Application Support/com.clawvision.desktop/task_runs/desktop_app")
+APP_PATH = Path("/Applications/FlowLens Desktop.app")
+TASK_ROOT = Path("/Users/tonychong/Library/Application Support/com.flowlens.desktop/task_runs/desktop_app")
 OUTPUT_ROOT = Path("task_runs")
-APP_BINARY = APP_PATH / "Contents/MacOS/clawvision_desktop"
+APP_BINARY = APP_PATH / "Contents/MacOS/flowlens_desktop"
 TASK_TIMEOUT_S = 480.0
 
 
@@ -47,7 +47,7 @@ def latest_task_dir() -> Path | None:
 def click_button(title: str) -> None:
     script = f'''
 tell application "System Events"
-  tell process "ClawVision Desktop"
+  tell process "FlowLens Desktop"
     set uiElems to entire contents of window 1
     repeat with e in uiElems
       try
@@ -101,13 +101,13 @@ def main() -> int:
     previous = latest_task_dir()
 
     subprocess.run(["pkill", "-f", str(APP_BINARY)], check=False)
-    subprocess.run(["pkill", "-f", "python -m clawvision desktop run"], check=False)
+    subprocess.run(["pkill", "-f", "python -m flowlens desktop run"], check=False)
     subprocess.run(["pkill", "-f", "chatbots-companion"], check=False)
     subprocess.run(["open", "-a", str(APP_PATH)], check=True)
     time.sleep(3)
 
     controller = MacOSController()
-    controller.activate_app("ClawVision Desktop")
+    controller.activate_app("FlowLens Desktop")
     capture_screen(output_dir / "01_app_open.png")
 
     # Switch to XHS view and launch the preset task. The preset avoids
@@ -129,7 +129,7 @@ def main() -> int:
     capture_screen(output_dir / "02_browser_overlay.png")
 
     complete_line = wait_for_log_line(task_dir, "TASK COMPLETE", timeout_s=TASK_TIMEOUT_S)
-    controller.activate_app("ClawVision Desktop")
+    controller.activate_app("FlowLens Desktop")
     time.sleep(1)
     capture_screen(output_dir / "03_final_state.png")
 

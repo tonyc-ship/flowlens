@@ -9,7 +9,7 @@ from .extension_ops import run_extension_reload_sync
 
 
 def build_parser() -> argparse.ArgumentParser:
-    parser = argparse.ArgumentParser(description="ClawVision extension operations")
+    parser = argparse.ArgumentParser(description="FlowLens extension operations")
     subparsers = parser.add_subparsers(dest="command", required=True)
 
     reload_parser = subparsers.add_parser("reload", help="Reload the unpacked Chrome extension through the live bridge")

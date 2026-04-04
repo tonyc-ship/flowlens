@@ -1,27 +1,29 @@
-# ClawVision
+# FlowLens
 
-ClawVision is currently maintained as a layered browser automation framework built on:
+FlowLens is currently maintained as a layered browser automation framework built on:
 
-- Core browser/runtime primitives in `clawvision.core`
-- Perception utilities in `clawvision.perception`
-- Task understanding and knowledge in `clawvision.reasoning`
-- Platform adapters in `clawvision.platforms`
-- Task workflows in `clawvision.workflows`
-- A Chrome Extension in `chrome_extension/`
+- Core browser/runtime primitives in `flowlens.core`
+- Background desktop observation in `flowlens.observer`
+- Perception utilities in `flowlens.perception`
+- Task understanding and knowledge in `flowlens.reasoning`
+- Platform adapters in `flowlens.platforms`
+- Task workflows in `flowlens.workflows`
+- A Chrome extension in `chrome_extension/`
+- A thin Tauri desktop shell in `desktop_app/`
 
 The old screen-level MCP route has been archived under `archive/legacy_mcp/`.
 
 ## Current Architecture
 
 ```
-clawvision/
+flowlens/
 ├── chrome_extension/                 # MV3 extension: websocket, CDP, DOM extraction, watch mode
 ├── desktop_app/                      # Minimal Tauri desktop shell / future desktop control plane
-├── clawvision/
+├── flowlens/
 │   ├── cli.py                        # Primary CLI entry
-│   ├── __main__.py                   # `python -m clawvision`
+│   ├── __main__.py                   # `python -m flowlens`
 │   ├── desktop_cli.py                # Desktop shell -> Python task bridge
-│   ├── extension_cli.py              # `python -m clawvision extension ...`
+│   ├── extension_cli.py              # `python -m flowlens extension ...`
 │   ├── extension_ops.py              # Generic extension operational reports / commands
 │   ├── server.py                     # Archived-route compatibility stub
 │   ├── core/
@@ -31,6 +33,12 @@ clawvision/
 │   │   ├── recorder.py               # Session recording
 │   │   ├── reporting.py              # Shared markdown/html rendering
 │   │   └── runtime.py                # Local env / path discovery
+│   ├── observer/
+│   │   ├── cli.py                    # `python -m flowlens observer ...`
+│   │   ├── paths.py                  # Observer data root / logs / screenshot paths
+│   │   ├── store.py                  # SQLite storage for captures + project memory
+│   │   ├── service.py                # Capture loop, screenshots, diffing, launchd
+│   │   └── analysis.py               # Summaries, journals, memories, capture Q&A
 │   ├── perception/
 │   │   ├── local_llm.py              # Local MLX inference
 │   │   ├── media.py                  # LLM calls (text+vision), OCR, transcription
@@ -60,6 +68,7 @@ clawvision/
 │   ├── test_task_agent.py            # Task-agent parsing tests
 │   ├── test_xhs_capabilities.py      # Capability / extraction-plan tests
 │   ├── test_extension_ops.py         # Extension operation report tests
+│   ├── test_observer.py              # Observer capture / storage / diff tests
 │   └── test_reporting.py             # Shared report rendering tests
 └── archive/
     └── legacy_mcp/                   # Archived screen-level MCP route
@@ -81,14 +90,14 @@ When a change materially affects architecture, runtime flow, testing entry point
 
 ### Always rebuild and reinstall the desktop app after relevant changes
 
-Whenever you modify the Tauri app under `desktop_app/` **or** any Python code that the installed app bundles (the `runtime_bundle/` copy of `clawvision/`), produce a fresh macOS `.app` bundle and install it in the same working session.
+Whenever you modify the Tauri app under `desktop_app/` **or** any Python code that the installed app bundles (the `runtime_bundle/` copy of `flowlens/`), produce a fresh macOS `.app` bundle and install it in the same working session.
 
 - Do not stop at `cargo check` / `npm run build` alone for Tauri changes.
 - Do not stop at editing Python source — the installed `.app` bundles its own copy under `Contents/Resources/_up_/runtime_bundle/`, so source edits only take effect after a rebuild.
 - Run the repo packaging path so the real desktop artifact exists after the change.
 - Prefer `bash scripts/build_desktop_app.sh` unless the user explicitly asks for a different packaging flow.
 
-After changes that affect the installed app + Chrome extension workflow together (for example `desktop_app/`, `chrome_extension/`, `clawvision/core/bridge.py`, or XHS watch-mode workflow code), run the packaged end-to-end verification path too:
+After changes that affect the installed app + Chrome extension workflow together (for example `desktop_app/`, `chrome_extension/`, `flowlens/core/bridge.py`, or XHS watch-mode workflow code), run the packaged end-to-end verification path too:
 
 ```bash
 python3 scripts/verify_packaged_xhs_overlay.py
@@ -136,10 +145,10 @@ Every task run must produce:
 
 ### Self-unblock with Accessibility tools
 
-When blocked by something that needs manual browser/UI interaction (reload Chrome extension, click dialogs, navigate chrome:// pages, approve permissions), use macOS Accessibility APIs (screen.py, pyautogui, AppleScript) to do it instead of asking the user. This also serves as self-hosting validation of ClawVision's own capabilities.
+When blocked by something that needs manual browser/UI interaction (reload Chrome extension, click dialogs, navigate chrome:// pages, approve permissions), use macOS Accessibility APIs (screen.py, pyautogui, AppleScript) to do it instead of asking the user. This also serves as self-hosting validation of FlowLens's own capabilities.
 
 For extension reload specifically:
-- Prefer the built-in runtime path first: `bridge.reload_extension()` or `python -m clawvision extension reload`
+- Prefer the built-in runtime path first: `bridge.reload_extension()` or `python -m flowlens extension reload`
 - If the extension is too broken or disconnected to reload itself, then fall back to macOS Accessibility on `chrome://extensions/`
 
 ### Autonomous long-horizon work
@@ -178,12 +187,13 @@ Prefer semantic understanding over pixel math. Don't use pixel-level heuristics 
 
 ### Strategic architecture
 
-The project's goal is **robust agentic browser automation**, not a single-site scraper. Architecture is layered:
-1. **Core layer** (`clawvision.core`) — bridge, tab/window control, DOM-first composer helpers, verification, recording, shared reports, runtime.
-2. **Perception layer** (`clawvision.perception`) — hosted/local vision, OCR, grounding, transcription, image preprocessing.
-3. **Reasoning layer** (`clawvision.reasoning`) — structured tasks, planning, evaluation, and reusable knowledge extraction.
-4. **Platform layer** (`clawvision.platforms`) — site-specific DOM extraction, navigation patterns, entity models, capability catalogs.
-5. **Workflow layer** (`clawvision.workflows`) — concrete task orchestration such as XHS research and multi-chat fanout.
+The project's goal is **robust agentic browser automation plus local desktop observation**, not a single-site scraper. Architecture is layered:
+1. **Core layer** (`flowlens.core`) — bridge, tab/window control, DOM-first composer helpers, verification, recording, shared reports, runtime.
+2. **Observer layer** (`flowlens.observer`) — background desktop capture, SQLite storage, screenshot archival, diff-based OCR / vision, journals, and recall.
+3. **Perception layer** (`flowlens.perception`) — hosted/local vision, OCR, grounding, transcription, image preprocessing.
+4. **Reasoning layer** (`flowlens.reasoning`) — structured tasks, planning, evaluation, and reusable knowledge extraction.
+5. **Platform layer** (`flowlens.platforms`) — site-specific DOM extraction, navigation patterns, entity models, capability catalogs.
+6. **Workflow layer** (`flowlens.workflows`) — concrete task orchestration such as XHS research and multi-chat fanout.
 
 New generic capabilities (background windows, dedup, session recording) belong in the generic layer. Site-specific DOM selectors and navigation belong in site skill modules.
 
@@ -191,19 +201,29 @@ New generic capabilities (background windows, dedup, session recording) belong i
 
 1. Python starts a local WebSocket server.
 2. The Chrome extension connects from the logged-in browser profile.
-3. `clawvision.platforms.xhs.XHSBrowser` issues DOM extraction and CDP-backed interaction commands.
+3. `flowlens.platforms.xhs.XHSBrowser` issues DOM extraction and CDP-backed interaction commands.
 4. The reasoning layer chooses a bounded execution strategy (`coverage_first` / `balanced` / `deep_focus`) using the available capability catalog.
-5. `clawvision.workflows.xhs` orchestrates note collection using `lite` and `deep` extraction plans.
-6. `clawvision.platforms.xhs.processor` enriches notes with OCR, image descriptions, and video transcription when the chosen plan requires it.
+5. `flowlens.workflows.xhs` orchestrates note collection using `lite` and `deep` extraction plans.
+6. `flowlens.platforms.xhs.processor` enriches notes with OCR, image descriptions, and video transcription when the chosen plan requires it.
 7. The agent writes JSON + HTML reports plus a session GIF to `task_runs/` or a custom output dir.
+
+Observer runtime flow:
+
+1. `python -m flowlens observer capture-loop` resolves an observer data root.
+2. `ObserverCaptureService` polls the frontmost macOS app/window and browser URL.
+3. Screenshots are captured across all active displays, concatenated horizontally, and archived by date.
+4. The current screenshot is diffed against the previous cached frame. When the changed area ratio stays under the configured threshold, OCR and local vision operate on the diff crop instead of the full frame.
+5. Apple OCR extracts text, local Qwen vision adds lightweight screen understanding, and both timing metrics and capture metadata are recorded.
+6. `ObserverStore` persists captures, summaries, project memory, and timing data in `observer.db`.
+7. The analysis layer can later generate journals, project memory, and capture Q&A without blocking the background capture loop.
 
 ## Extension Ops
 
 Generic extension operational commands live outside the XHS task layer.
 
-- `python -m clawvision extension reload`
+- `python -m flowlens extension reload`
 
-This path exercises the real ClawVision bridge:
+This path exercises the real FlowLens bridge:
 1. Python starts a local bridge server.
 2. The running extension connects back.
 3. Python sends `reload_extension`.
@@ -218,8 +238,12 @@ This is the preferred path for “reload the extension” because it validates t
 
 ```bash
 pip install -e .
-pip install -e ".[detect]"   # optional local detection models
-pip install -e ".[local-llm]" # optional local MLX backend
+```
+
+This default install now includes the runtime Python dependencies for OCR, local MLX vision, and observer capture. Only development tooling stays optional:
+
+```bash
+pip install -e ".[dev]"
 ```
 
 ### Chrome Extension
@@ -239,7 +263,7 @@ Current scope:
 - Basic navigation shell
 - One Rust health-check command invoked from the frontend
 - A multi-chat input that launches visible Chrome windows for ChatGPT, Gemini, and Claude via the Python runtime
-- A `clawvision://ask?question=...` deep-link entry so the installed desktop app can be opened directly from the Chrome side panel
+- A `flowlens://ask?question=...` deep-link entry so the installed desktop app can be opened directly from the Chrome side panel
 - Placeholder views for XHS tasks, live runs, and settings
 
 This path is intentionally separate from the Python runtime for now; treat it as
@@ -247,15 +271,15 @@ an app-shell spike, not the final packaging architecture.
 
 The current bridge path is:
 
-`desktop_app` -> Tauri command `start_task` -> `python -m clawvision desktop run ...`
+`desktop_app` -> Tauri command `start_task` -> `python -m flowlens desktop run ...`
 
 The multi-chat bridge path is:
 
-`desktop_app` -> Tauri command `ask_chatbots` -> `python -m clawvision chatbots ...`
+`desktop_app` -> Tauri command `ask_chatbots` -> `python -m flowlens chatbots ...`
 
 The Chrome side-panel shortcut path is:
 
-`chrome sidepanel` -> `clawvision://ask?...` -> installed `ClawVision Desktop.app` -> Tauri deep-link handler -> `ask_chatbots`
+`chrome sidepanel` -> `flowlens://ask?...` -> installed `FlowLens Desktop.app` -> Tauri deep-link handler -> `ask_chatbots`
 
 Packaging helper:
 
@@ -267,7 +291,7 @@ Packaging helper:
 
 ### Local Config
 
-ClawVision loads runtime settings in this order:
+FlowLens loads runtime settings in this order:
 
 1. Process env
 2. `.env.local`
@@ -284,28 +308,41 @@ Supported keys:
 
 ```bash
 ANTHROPIC_API_KEY=...
-CLAWVISION_LLM_BACKEND=...           # "sonnet" (default) or "qwen-local"
-CLAWVISION_WHISPER_CLI=...
-CLAWVISION_WHISPER_MODELS_DIR=...
+FLOWLENS_LLM_BACKEND=...           # "sonnet" (default) or "qwen-local"
+FLOWLENS_WHISPER_CLI=...
+FLOWLENS_WHISPER_MODELS_DIR=...
+FLOWLENS_APP_DATA_DIR=...
+FLOWLENS_OBSERVER_ROOT=...
+FLOWLENS_OBSERVER_CHECK_INTERVAL=...
+FLOWLENS_OBSERVER_FORCE_CAPTURE_INTERVAL=...
+FLOWLENS_OBSERVER_SCREENSHOT_STRATEGY=...
+FLOWLENS_OBSERVER_DIFF_THRESHOLD=...   # default 0.30
+FLOWLENS_OBSERVER_VISION_ENABLED=...
+FLOWLENS_OBSERVER_VISION_MODEL=...
 ```
 
 ### Local LLM (optional)
 
-ClawVision supports local inference via MLX as an alternative to the Anthropic API:
+FlowLens supports local inference via MLX as an alternative to the Anthropic API:
 
 ```bash
-# Download model (~6.3GB)
+# Download the default lightweight observer model
+modelscope download --model mlx-community/Qwen3.5-2B-6bit \
+  --local_dir ~/.flowlens/weights/Qwen3.5-2B-6bit
+
+# Optional larger model for heavier local reasoning / vision
 modelscope download --model mlx-community/Qwen3.5-9B-MLX-4bit \
-  --local_dir ~/.clawvision/weights/Qwen3.5-9B-MLX-4bit
+  --local_dir ~/.flowlens/weights/Qwen3.5-9B-MLX-4bit
 
 # Switch to local backend
-export CLAWVISION_LLM_BACKEND=qwen-local
+export FLOWLENS_LLM_BACKEND=qwen-local
 ```
 
-The local backend uses **Qwen3.5-9B-MLX-4bit** via `mlx-vlm`, which is natively
-multimodal (early-fusion) — the same model handles both text reasoning and
-vision/screenshot understanding. Requires the `local-llm` extra or equivalent
-manual installation of `mlx-lm`, `mlx-vlm`, and `modelscope`.
+The local backend uses Qwen MLX models via `mlx-vlm`, which are natively
+multimodal (early-fusion). Observer defaults to **Qwen3.5-2B-6bit** for
+background screenshot understanding so the steady-state cost is lower. Long-lived
+observer processes keep the chosen local model loaded in-process after the first
+request; one-shot CLI runs will pay the load cost each time.
 
 Backend can also be set per-instance via `MediaConfig(backend="qwen-local")` or
 `VisionLLM(backend="qwen-local")`.
@@ -315,24 +352,27 @@ Backend can also be set per-instance via `MediaConfig(backend="qwen-local")` or
 Primary CLI:
 
 ```bash
-clawvision "露营装备"
-clawvision "露营装备" --keywords "露营装备推荐,露营好物"
-clawvision --user "https://www.xiaohongshu.com/user/profile/xxx"
-clawvision extension reload
+flowlens "露营装备"
+flowlens "露营装备" --keywords "露营装备推荐,露营好物"
+flowlens --user "https://www.xiaohongshu.com/user/profile/xxx"
+flowlens extension reload
 ```
 
 Equivalent:
 
 ```bash
-python -m clawvision "露营装备"
-python -m clawvision --user <user_id>
-python -m clawvision extension reload
+python -m flowlens "露营装备"
+python -m flowlens --user <user_id>
+python -m flowlens extension reload
+python -m flowlens observer status
+python -m flowlens observer capture-once
+python -m flowlens observer install-agent
 ```
 
 Watch-mode live debugging:
 
 ```bash
-python -m clawvision extension watch
+python -m flowlens extension watch
 ```
 
 ## Manual Integration Scripts
@@ -381,12 +421,25 @@ Runtime implications:
 
 The active product path is still DOM-first browser automation with vision/perception as verification and fallback.
 
-The shared perception layer in `clawvision.perception` currently supports:
+The shared perception layer in `flowlens.perception` currently supports:
 
 - Apple OCR on downloaded note images
+- Apple OCR on observer screenshots and diff crops
 - Hosted vision fallback when DOM extraction is weak
+- Local Qwen MLX screenshot understanding reused by observer capture and analysis
 - Optional local UI detection / grounding experiments
 - Local whisper.cpp video transcription
+
+## Observer Status
+
+`flowlens.observer` is now the active desktop-observation subsystem. Current behavior:
+
+- SQLite-backed durable storage in `observer_data/observer.db` by default
+- Screenshot archival plus per-capture timing metrics in `observer_data/logs/capture.log`
+- 5-second context polling with a 300-second forced capture fallback
+- Multi-display screenshots concatenated horizontally
+- Diff-aware OCR and visual understanding when the changed area ratio stays under the configured threshold
+- `launchd` install/uninstall helpers via `python -m flowlens observer install-agent`
 
 ## Archive
 

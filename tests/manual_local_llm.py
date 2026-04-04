@@ -22,7 +22,7 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
-from clawvision.perception import LocalLLM, MediaConfig, MediaProcessor, VisionLLM
+from flowlens.perception import LocalLLM, MediaConfig, MediaProcessor, VisionLLM
 
 
 def test_text(backend: str, prompt: str) -> dict:
@@ -104,7 +104,7 @@ def main():
     if not LocalLLM.is_available():
         print("ERROR: Local model not found. Download it first:")
         print("  modelscope download --model mlx-community/Qwen3.5-9B-MLX-4bit \\")
-        print("    --local_dir ~/.clawvision/weights/Qwen3.5-9B-MLX-4bit")
+        print("    --local_dir ~/.flowlens/weights/Qwen3.5-9B-MLX-4bit")
         sys.exit(1)
 
     text_prompt = (

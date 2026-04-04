@@ -21,7 +21,7 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).parent.parent))
 
-from clawvision.core.bridge import ExtensionBridge
+from flowlens.core.bridge import ExtensionBridge
 
 OUTPUT_DIR = Path("task_runs/verify_fixes_v2")
 OUTPUT_DIR.mkdir(parents=True, exist_ok=True)

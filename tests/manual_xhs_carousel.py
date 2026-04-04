@@ -24,12 +24,12 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).parent.parent))
 
-from clawvision.core.bridge import ExtensionBridge
-from clawvision.core.reporting import markdown_styles, render_markdown_block
-from clawvision.perception.media import MediaProcessor
-from clawvision.platforms.xhs.browser import XHSBrowser
-from clawvision.platforms.xhs.entities import Comment, NoteCard, NoteEntity, NoteType
-from clawvision.platforms.xhs.processor import NoteProcessor, ProcessorConfig
+from flowlens.core.bridge import ExtensionBridge
+from flowlens.core.reporting import markdown_styles, render_markdown_block
+from flowlens.perception.media import MediaProcessor
+from flowlens.platforms.xhs.browser import XHSBrowser
+from flowlens.platforms.xhs.entities import Comment, NoteCard, NoteEntity, NoteType
+from flowlens.platforms.xhs.processor import NoteProcessor, ProcessorConfig
 
 
 DEFAULT_OUTPUT_DIR = Path("test_carousel_output")

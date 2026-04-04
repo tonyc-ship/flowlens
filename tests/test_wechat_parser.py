@@ -5,8 +5,8 @@ import unittest
 
 from PIL import Image
 
-from clawvision.core.ocr_layout import OCRPage
-from clawvision.platforms.wechat.parser import WeChatConversationParser
+from flowlens.core.ocr_layout import OCRPage
+from flowlens.platforms.wechat.parser import WeChatConversationParser
 
 
 class _FakeVision:

@@ -5,8 +5,8 @@ from unittest import mock
 
 from PIL import Image
 
-from clawvision.perception.llm import VisionLLM, VisionRequestConfig
-from clawvision.perception.local_llm import LocalLLM
+from flowlens.perception.llm import VisionLLM, VisionRequestConfig
+from flowlens.perception.local_llm import LocalLLM
 
 
 class VisionRequestConfigTest(unittest.TestCase):
@@ -25,7 +25,7 @@ class VisionRequestConfigTest(unittest.TestCase):
 
     def test_explicit_local_model_name_is_not_forced_back_to_default(self) -> None:
         llm = VisionLLM(backend="qwen-local")
-        with mock.patch("clawvision.perception.local_llm.LocalLLM.is_available", return_value=False):
+        with mock.patch("flowlens.perception.local_llm.LocalLLM.is_available", return_value=False):
             local = llm._get_local_llm("mlx-community/Qwen3.5-4B-MLX-4bit")
 
         self.assertEqual(local.model_name, "mlx-community/Qwen3.5-4B-MLX-4bit")
@@ -38,5 +38,5 @@ class VisionRequestConfigTest(unittest.TestCase):
             (model_dir / "model.safetensors").write_bytes(b"x" * 1024)
             (model_dir / "model.safetensors.index.json").write_text('{"metadata": {"total_size": 1000000}}')
 
-            with mock.patch("clawvision.perception.local_llm.WEIGHTS_DIR", weights_dir):
+            with mock.patch("flowlens.perception.local_llm.WEIGHTS_DIR", weights_dir):
                 self.assertFalse(LocalLLM.is_available("Qwen3.5-4B-MLX-4bit"))

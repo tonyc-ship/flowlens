@@ -23,7 +23,7 @@ from datetime import datetime
 from html import escape
 from pathlib import Path
 
-from clawvision.core.reporting import markdown_styles, render_markdown_block
+from flowlens.core.reporting import markdown_styles, render_markdown_block
 
 # ── Configuration ──────────────────────────────────────────────
 
@@ -288,13 +288,13 @@ async def run_task(task: str):
     import sys
     sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
-    from clawvision.core.bridge import ExtensionBridge
-    from clawvision.core.recorder import SessionRecorder
-    from clawvision.perception.media import MediaProcessor
-    from clawvision.platforms.xhs.browser import XHSBrowser
-    from clawvision.platforms.xhs.entities import Comment, NoteEntity
-    from clawvision.platforms.xhs.processor import NoteProcessor, ProcessorConfig
-    from clawvision.reasoning.task_agent import TaskAgent
+    from flowlens.core.bridge import ExtensionBridge
+    from flowlens.core.recorder import SessionRecorder
+    from flowlens.perception.media import MediaProcessor
+    from flowlens.platforms.xhs.browser import XHSBrowser
+    from flowlens.platforms.xhs.entities import Comment, NoteEntity
+    from flowlens.platforms.xhs.processor import NoteProcessor, ProcessorConfig
+    from flowlens.reasoning.task_agent import TaskAgent
 
     OUTPUT_DIR.mkdir(parents=True, exist_ok=True)
     (OUTPUT_DIR / "screenshots").mkdir(exist_ok=True)

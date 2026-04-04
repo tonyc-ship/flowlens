@@ -17,7 +17,7 @@ def _default_save_dir() -> Path:
 
 
 def build_parser() -> argparse.ArgumentParser:
-    parser = argparse.ArgumentParser(description="ClawVision visual debugging tools")
+    parser = argparse.ArgumentParser(description="FlowLens visual debugging tools")
     subparsers = parser.add_subparsers(dest="command", required=True)
 
     displays = subparsers.add_parser("displays", help="List detected displays")
@@ -45,7 +45,7 @@ def build_parser() -> argparse.ArgumentParser:
     click.add_argument("--button", default="left", choices=["left", "right"])
     click.add_argument("--clicks", type=int, default=1)
 
-    demo = subparsers.add_parser("demo-sidepanel", help="Open and visually verify the ClawVision side panel in Chrome")
+    demo = subparsers.add_parser("demo-sidepanel", help="Open and visually verify the FlowLens side panel in Chrome")
     demo.add_argument("--output-dir", default=None, help="Directory for demo artifacts")
     demo.add_argument("--json", action="store_true", help="Emit machine-readable JSON")
 

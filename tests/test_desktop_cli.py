@@ -1,6 +1,6 @@
 import unittest
 
-from clawvision.desktop_cli import infer_desktop_task
+from flowlens.desktop_cli import infer_desktop_task
 
 
 class DesktopCliTests(unittest.TestCase):

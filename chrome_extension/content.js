@@ -17,7 +17,7 @@ function watchHighlightElement(el) {
   if (!el) return;
   const rect = el.getBoundingClientRect();
   const overlay = document.createElement('div');
-  overlay.className = 'clawvision-element-highlight';
+  overlay.className = 'flowlens-element-highlight';
   overlay.style.cssText = [
     'position: fixed',
     `left: ${rect.left - 3}px`,
@@ -75,7 +75,7 @@ function ensureWatchOverlay() {
   if (watchOverlayHost) return watchOverlayHost;
 
   watchOverlayHost = document.createElement('div');
-  watchOverlayHost.id = 'clawvision-watch-overlay';
+  watchOverlayHost.id = 'flowlens-watch-overlay';
   watchOverlayHost.style.cssText = [
     'position: fixed',
     'top: 88px',
@@ -222,7 +222,7 @@ function ensureWatchOverlay() {
     <div class="header">
       <span class="dot" id="cvWatchDot"></span>
       <div class="grow">
-        <div class="title">ClawVision Live</div>
+        <div class="title">FlowLens Live</div>
         <div class="subtitle" id="cvWatchStatus">Waiting for agent activity...</div>
       </div>
       <span class="count" id="cvWatchCount">0 events</span>
@@ -389,21 +389,21 @@ function recordMediaRequest(entry) {
 function installMediaRequestHook() {
   window.addEventListener('message', (event) => {
     if (event.source !== window) return;
-    if (event.data?.type !== 'clawvision_media_request') return;
+    if (event.data?.type !== 'flowlens_media_request') return;
     recordMediaRequest(event.data.payload);
   });
 
   const script = document.createElement('script');
-  script.dataset.clawvisionMediaHook = 'true';
+  script.dataset.flowlensMediaHook = 'true';
   script.textContent = `
     (() => {
-      if (window.__clawvisionMediaHookInstalled) return;
-      window.__clawvisionMediaHookInstalled = true;
+      if (window.__flowlensMediaHookInstalled) return;
+      window.__flowlensMediaHookInstalled = true;
 
       const emit = (payload) => {
         try {
           window.postMessage({
-            type: 'clawvision_media_request',
+            type: 'flowlens_media_request',
             payload: { ...payload, ts: Date.now(), href: location.href }
           }, '*');
         } catch {}
@@ -1675,7 +1675,7 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
   if (msg.type === 'watch_highlight') {
     if (msg.mode === 'coords') {
       const overlay = document.createElement('div');
-      overlay.className = 'clawvision-element-highlight';
+      overlay.className = 'flowlens-element-highlight';
       overlay.style.cssText = [
         'position: fixed',
         `left: ${(msg.x || 0) - 14}px`,

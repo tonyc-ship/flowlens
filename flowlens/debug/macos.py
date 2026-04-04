@@ -1,7 +1,7 @@
 """macOS screen capture and UI automation helpers.
 
 This module intentionally avoids pyautogui so it can run on a minimal
-ClawVision install as long as Quartz/AppKit are available.
+FlowLens install as long as Quartz/AppKit are available.
 """
 
 from __future__ import annotations
@@ -198,6 +198,60 @@ class MacOSController:
         if app is None:
             return None
         return str(app.localizedName())
+
+    def frontmost_window_info(self) -> WindowInfo | None:
+        """Return the actual frontmost user-visible window.
+
+        Quartz window lists are ordered front-to-back, which is more reliable
+        than ``frontmostApplication()`` when fullscreen windows or separate
+        Spaces are involved.
+        """
+        window_list = self._quartz_window_list(on_screen_only=True) or []
+        system_owners = {
+            "Window Server",
+            "Dock",
+            "SystemUIServer",
+            "Control Center",
+            "Spotlight",
+            "NotificationCenter",
+        }
+        for win in window_list:
+            owner = str(win.get("kCGWindowOwnerName") or "")
+            bounds = dict(win.get("kCGWindowBounds") or {})
+            width = int(bounds.get("Width", 0) or 0)
+            height = int(bounds.get("Height", 0) or 0)
+            layer = int(win.get("kCGWindowLayer") or -1)
+            if not owner or owner in system_owners:
+                continue
+            if layer != 0 or width < 80 or height < 80:
+                continue
+            return WindowInfo(
+                window_id=int(win.get("kCGWindowNumber") or 0),
+                owner=owner,
+                title=str(win.get("kCGWindowName") or ""),
+                x=int(bounds.get("X", 0) or 0),
+                y=int(bounds.get("Y", 0) or 0),
+                width=width,
+                height=height,
+                layer=layer,
+                on_screen=bool(win.get("kCGWindowIsOnscreen") or False),
+                capture_backend="quartz",
+            )
+
+        app_name = self.frontmost_app_name()
+        if not app_name:
+            return None
+        front = self.front_window(app_name)
+        if front is None:
+            return None
+        matched = self._match_quartz_window(front, app_name=app_name)
+        return matched or front
+
+    def is_screen_locked(self) -> bool:
+        session = Quartz.CGSessionCopyCurrentDictionary()
+        if not session:
+            return False
+        return bool(session.get("CGSSessionScreenIsLocked", False))
 
     def front_window(self, app_name: str) -> WindowInfo | None:
         script = """

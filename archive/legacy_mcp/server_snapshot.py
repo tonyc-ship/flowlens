@@ -1,10 +1,10 @@
-"""Archived ClawVision MCP server snapshot.
+"""Archived FlowLens MCP server snapshot.
 
 Exposes screen-level visual perception tools that any MCP-compatible
 AI agent can call. Focused on precise UI understanding and interaction.
 
 This file is preserved for reference only. The active runtime path now
-uses the Chrome Extension + `clawvision.agent.xhs` workflow instead.
+uses the Chrome Extension + `flowlens.agent.xhs` workflow instead.
 """
 
 from __future__ import annotations
@@ -21,7 +21,7 @@ from .vision.llm import VisionLLM
 from .vision.ocr import OCREngine
 from .workflows.xiaohongshu import XiaohongshuWorkflow
 
-mcp = FastMCP("ClawVision")
+mcp = FastMCP("FlowLens")
 
 # Lazy-initialized singletons
 _screen: ScreenController | None = None
@@ -211,7 +211,7 @@ def detect_ui_elements(app_name: str = "Google Chrome", confidence: float = 0.25
     """Detect all interactive UI elements on screen using local YOLO model.
 
     Fast (~100ms), no API calls. Detects buttons, icons, text fields, cards, etc.
-    Requires: pip install clawvision[detect] and OmniParser weights downloaded.
+    Requires: pip install flowlens[detect] and OmniParser weights downloaded.
 
     Args:
         app_name: Application to analyze. Defaults to Chrome.
@@ -258,7 +258,7 @@ def find_elements_by_query(
     Slower than detect_ui_elements (~1s) but can find any element by description.
     No predefined classes needed — describe what you want in natural language.
 
-    Requires: pip install clawvision[detect]
+    Requires: pip install flowlens[detect]
 
     Args:
         queries: List of element descriptions to search for,

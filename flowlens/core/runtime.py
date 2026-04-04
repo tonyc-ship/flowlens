@@ -21,9 +21,17 @@ SHELL_EXPORT_FILES = (
 )
 RUNTIME_KEYS = (
     "ANTHROPIC_API_KEY",
-    "CLAWVISION_LLM_BACKEND",
-    "CLAWVISION_WHISPER_CLI",
-    "CLAWVISION_WHISPER_MODELS_DIR",
+    "FLOWLENS_LLM_BACKEND",
+    "FLOWLENS_WHISPER_CLI",
+    "FLOWLENS_WHISPER_MODELS_DIR",
+    "FLOWLENS_APP_DATA_DIR",
+    "FLOWLENS_OBSERVER_ROOT",
+    "FLOWLENS_OBSERVER_CHECK_INTERVAL",
+    "FLOWLENS_OBSERVER_FORCE_CAPTURE_INTERVAL",
+    "FLOWLENS_OBSERVER_SCREENSHOT_STRATEGY",
+    "FLOWLENS_OBSERVER_DIFF_THRESHOLD",
+    "FLOWLENS_OBSERVER_VISION_ENABLED",
+    "FLOWLENS_OBSERVER_VISION_MODEL",
 )
 
 _LOADED = False
@@ -99,7 +107,7 @@ def find_whisper_cli(explicit: str | None = None) -> Path | None:
 
     candidates = [
         explicit,
-        os.environ.get("CLAWVISION_WHISPER_CLI"),
+        os.environ.get("FLOWLENS_WHISPER_CLI"),
         shutil.which("whisper-cli"),
         str(Path.home() / "whisper.cpp" / "build" / "bin" / "whisper-cli"),
         "/opt/homebrew/bin/whisper-cli",
@@ -120,7 +128,7 @@ def find_whisper_models_dir(explicit: str | None = None) -> Path:
 
     candidates = [
         explicit,
-        os.environ.get("CLAWVISION_WHISPER_MODELS_DIR"),
+        os.environ.get("FLOWLENS_WHISPER_MODELS_DIR"),
         str(Path.home() / "whisper.cpp" / "models"),
     ]
     for candidate in candidates:

@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import unittest
 
-from clawvision.platforms.xhs.capabilities import (
+from flowlens.platforms.xhs.capabilities import (
     capability_catalog,
     deep_note_plan,
     lite_note_plan,

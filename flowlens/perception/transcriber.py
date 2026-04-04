@@ -29,7 +29,7 @@ class WhisperTranscriber:
 
         if self.whisper_cli is None:
             raise FileNotFoundError(
-                "whisper-cli not found. Set CLAWVISION_WHISPER_CLI or install whisper.cpp."
+                "whisper-cli not found. Set FLOWLENS_WHISPER_CLI or install whisper.cpp."
             )
         if not self.model_path.exists():
             raise FileNotFoundError(f"Whisper model not found: {self.model_path}")
@@ -71,7 +71,7 @@ class WhisperTranscriber:
     ) -> list[str]:
         """Sample representative JPEG frames from a local or remote video."""
         if output_dir is None:
-            output_dir = tempfile.mkdtemp(prefix="clawvision_frames_")
+            output_dir = tempfile.mkdtemp(prefix="flowlens_frames_")
 
         frame_dir = Path(output_dir)
         frame_dir.mkdir(parents=True, exist_ok=True)

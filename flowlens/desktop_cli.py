@@ -131,7 +131,7 @@ def main(argv: list[str] | None = None) -> int:
     logging.getLogger("httpx").setLevel(logging.WARNING)
     logging.getLogger("anthropic").setLevel(logging.WARNING)
 
-    parser = argparse.ArgumentParser(description="Desktop bridge for ClawVision.")
+    parser = argparse.ArgumentParser(description="Desktop bridge for FlowLens.")
     subparsers = parser.add_subparsers(dest="command", required=True)
 
     run_parser = subparsers.add_parser("run", help="Run a prompt through the XHS task layer.")

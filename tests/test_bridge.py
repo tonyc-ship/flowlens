@@ -1,7 +1,7 @@
 import unittest
 from unittest import IsolatedAsyncioTestCase, mock
 
-from clawvision.core.bridge import ExtensionBridge, ensure_extension_connection
+from flowlens.core.bridge import ExtensionBridge, ensure_extension_connection
 
 
 class BridgeHelpersTest(unittest.TestCase):
@@ -19,7 +19,7 @@ class EnsureExtensionConnectionTest(IsolatedAsyncioTestCase):
         bridge = ExtensionBridge()
         bridge.wait_for_connection = mock.AsyncMock(return_value=None)
 
-        with mock.patch("clawvision.core.bridge.subprocess.run") as run:
+        with mock.patch("flowlens.core.bridge.subprocess.run") as run:
             woke = await ensure_extension_connection(bridge, fast_timeout=0.5, timeout=5)
 
         self.assertFalse(woke)
@@ -30,7 +30,7 @@ class EnsureExtensionConnectionTest(IsolatedAsyncioTestCase):
         bridge = ExtensionBridge()
         bridge.wait_for_connection = mock.AsyncMock(side_effect=[RuntimeError("timeout"), None])
 
-        with mock.patch("clawvision.core.bridge.subprocess.run") as run:
+        with mock.patch("flowlens.core.bridge.subprocess.run") as run:
             woke = await ensure_extension_connection(bridge, fast_timeout=0.5, timeout=5)
 
         self.assertTrue(woke)

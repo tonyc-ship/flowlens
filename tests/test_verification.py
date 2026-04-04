@@ -1,7 +1,7 @@
 import unittest
 from unittest import IsolatedAsyncioTestCase
 
-from clawvision.core.verification import (
+from flowlens.core.verification import (
     VerificationResult,
     assess_expected_text_state,
     compact_text,

@@ -1,6 +1,6 @@
-# ClawVision Desktop
+# FlowLens Desktop
 
-Minimal Tauri 2.x desktop shell for ClawVision.
+Minimal Tauri 2.x desktop shell for FlowLens.
 
 This spike intentionally keeps the UI small:
 

@@ -3,11 +3,12 @@
 Provides LLM calls (text + vision), Apple OCR, whisper transcription,
 and image utilities. Reusable across platforms.
 
-LLM backend is selected via ``CLAWVISION_LLM_BACKEND`` env var or
-``MediaConfig.backend``:
+LLM backend is selected via ``FLOWLENS_LLM_BACKEND`` env var or
+``MediaConfig.backend``. For the local backend, ``MediaConfig.model``
+selects the concrete MLX model name:
 
 - ``"sonnet"`` (default) — Anthropic Claude Sonnet API
-- ``"qwen-local"`` — local Qwen3.5-9B-MLX-4bit via mlx-vlm
+- ``"qwen-local"`` — local Qwen MLX model via mlx-vlm
 """
 
 from __future__ import annotations
@@ -37,7 +38,7 @@ BACKEND_QWEN_LOCAL = "qwen-local"
 
 def _resolve_backend(explicit: str | None = None) -> str:
     """Return the active LLM backend name."""
-    val = explicit or os.environ.get("CLAWVISION_LLM_BACKEND", "")
+    val = explicit or os.environ.get("FLOWLENS_LLM_BACKEND", "")
     val = val.strip().lower()
     if val in (BACKEND_QWEN_LOCAL, "qwen", "local"):
         return BACKEND_QWEN_LOCAL
@@ -79,7 +80,7 @@ class MediaProcessor:
         """Lazy local LLM — only loaded when the qwen-local backend is used."""
         if self._local_llm is None:
             from .local_llm import LocalLLM
-            self._local_llm = LocalLLM()
+            self._local_llm = LocalLLM(self.config.model)
         return self._local_llm
 
     # ── LLM Calls ───────────────────────────────────────────────
