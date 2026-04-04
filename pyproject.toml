@@ -5,39 +5,30 @@ description = "Xiaohongshu research agent with Chrome extension browser automati
 license = "MIT"
 requires-python = ">=3.11"
 authors = [{ name = "Tony Chong" }]
-
-[project.urls]
-Homepage = "https://github.com/tonyc-ship/clawvision"
-Repository = "https://github.com/tonyc-ship/clawvision"
-Issues = "https://github.com/tonyc-ship/clawvision/issues"
 dependencies = [
     "anthropic>=0.40.0",
+    "numpy>=1.26.0",
+    "ultralytics>=8.2.0",
+    "transformers>=4.40.0",
+    "torch>=2.2.0",
+    "huggingface_hub>=0.20.0",
+    "paddleocr>=2.7.0",
+    "opencv-python>=4.9.0",
+    "mlx-lm>=0.31.0",
+    "mlx-vlm>=0.4.0",
+    "modelscope>=1.28.0",
     "pyobjc-framework-Quartz>=10.0",
     "pyobjc-framework-Vision>=10.0",
     "Pillow>=10.0.0",
     "websockets>=13.0",
 ]
 
+[project.urls]
+Homepage = "https://github.com/tonyc-ship/clawvision"
+Repository = "https://github.com/tonyc-ship/clawvision"
+Issues = "https://github.com/tonyc-ship/clawvision/issues"
+
 [project.optional-dependencies]
-detect = [
-    "numpy>=1.26.0",
-    "ultralytics>=8.2.0",        # YOLOv8 (OmniParser UI detector)
-    "transformers>=4.40.0",       # OWLv2 open-vocabulary detector
-    "torch>=2.2.0",               # PyTorch with MPS support
-    "huggingface_hub>=0.20.0",   # Auto-download model weights
-]
-ocr = [
-    "paddleocr>=2.7.0",
-    "opencv-python>=4.9.0",
-]
-local-llm = [
-    "mlx-lm>=0.31.0",
-    "mlx-vlm>=0.4.0",
-    "modelscope>=1.28.0",
-]
-all = [
-    "clawvision[detect,ocr]",
-]
 dev = [
     "pytest>=8.0",
     "ruff>=0.4.0",

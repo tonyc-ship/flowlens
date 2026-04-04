@@ -1,10 +1,64 @@
 from __future__ import annotations
 
+import io
 import tempfile
 import unittest
 from datetime import datetime, timedelta
+from types import SimpleNamespace
 
-from clawvision.observer import ObserverPaths, ObserverStore, generate_work_journal
+from PIL import Image, ImageDraw
+
+from clawvision.observer import ObserverCaptureService, ObserverConfig, ObserverPaths, ObserverStore, generate_work_journal
+
+
+class FakeController:
+    def __init__(self, images: list[Image.Image]):
+        self.images = [image.copy() for image in images]
+        self._index = 0
+
+    def frontmost_window_info(self):
+        return SimpleNamespace(owner="Cursor", title="observer test")
+
+    def frontmost_app_name(self):
+        return "Cursor"
+
+    def list_displays(self):
+        image = self.images[min(self._index, len(self.images) - 1)]
+        return [
+            SimpleNamespace(
+                index=0,
+                display_id=1,
+                x=0,
+                y=0,
+                width=image.width,
+                height=image.height,
+                is_main=True,
+                scale=1.0,
+            )
+        ]
+
+    def capture_display(self, _display_id: int):
+        image = self.images[min(self._index, len(self.images) - 1)].copy()
+        self._index += 1
+        return image
+
+    def is_screen_locked(self):
+        return False
+
+
+class FakeOCR:
+    def extract_text(self, source):
+        if isinstance(source, (bytes, bytearray)):
+            image = Image.open(io.BytesIO(source))
+        else:
+            image = Image.open(source)
+        return f"ocr:{image.width}x{image.height}"
+
+
+class FakeVisualMedia:
+    def describe_image(self, img_bytes: bytes, _prompt: str, max_tokens: int = 120):
+        image = Image.open(io.BytesIO(img_bytes))
+        return f"vision:{image.width}x{image.height}:{max_tokens}"
 
 
 class ObserverTests(unittest.TestCase):
@@ -84,6 +138,51 @@ class ObserverTests(unittest.TestCase):
             self.assertIn("ClawVision Observer Review", report)
             self.assertIn("Captures: 2", report)
             self.assertIn("Cursor", report)
+
+    def test_capture_uses_diff_ocr_and_diff_visual_summary_for_small_changes(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            paths = ObserverPaths.resolve(tmp)
+            base = Image.new("RGB", (240, 120), "white")
+            changed = base.copy()
+            draw = ImageDraw.Draw(changed)
+            draw.rectangle((12, 14, 42, 44), fill="black")
+
+            service = ObserverCaptureService(
+                paths,
+                config=ObserverConfig(
+                    capture_all_displays=False,
+                    diff_threshold=0.30,
+                    enable_visual_summary=True,
+                    vision_model="Qwen3.5-2B-6bit",
+                ),
+                controller=FakeController([base, changed]),
+                ocr=FakeOCR(),
+                visual_media=FakeVisualMedia(),
+            )
+
+            first = service.capture_once(reason="manual", is_keyframe=True)
+            self.assertEqual(first["ocr_scope"], "full")
+            self.assertEqual(first["visual_scope"], "full")
+
+            second = service.capture_once(reason="manual", is_keyframe=True)
+            self.assertEqual(second["ocr_scope"], "diff")
+            self.assertEqual(second["visual_scope"], "diff")
+            self.assertGreater(second["diff_region_count"], 0)
+            self.assertLess(second["changed_area_ratio"], 0.30)
+            self.assertIn("vision:", second["visual_summary"])
+            self.assertGreaterEqual(second["timings_ms"]["total_ms"], 0.0)
+            self.assertGreaterEqual(second["timings_ms"]["ocr_ms"], 0.0)
+
+            store = ObserverStore(paths)
+            latest = store.latest_capture()
+            self.assertEqual(latest["visual_model"], "Qwen3.5-2B-6bit")
+            self.assertEqual(latest["ocr_scope"], "diff")
+            self.assertIn('"x"', latest["diff_regions_json"])
+            self.assertIsNotNone(latest["total_ms"])
+            self.assertIsNotNone(latest["ocr_ms"])
+            stats = store.stats()
+            self.assertIn("avg_total_ms", stats)
+            self.assertGreaterEqual(float(stats["avg_total_ms"]), 0.0)
 
 
 if __name__ == "__main__":

@@ -3,11 +3,13 @@
 ClawVision is currently maintained as a layered browser automation framework built on:
 
 - Core browser/runtime primitives in `clawvision.core`
+- Background desktop observation in `clawvision.observer`
 - Perception utilities in `clawvision.perception`
 - Task understanding and knowledge in `clawvision.reasoning`
 - Platform adapters in `clawvision.platforms`
 - Task workflows in `clawvision.workflows`
-- A Chrome Extension in `chrome_extension/`
+- A Chrome extension in `chrome_extension/`
+- A thin Tauri desktop shell in `desktop_app/`
 
 The old screen-level MCP route has been archived under `archive/legacy_mcp/`.
 
@@ -31,6 +33,12 @@ clawvision/
 │   │   ├── recorder.py               # Session recording
 │   │   ├── reporting.py              # Shared markdown/html rendering
 │   │   └── runtime.py                # Local env / path discovery
+│   ├── observer/
+│   │   ├── cli.py                    # `python -m clawvision observer ...`
+│   │   ├── paths.py                  # Observer data root / logs / screenshot paths
+│   │   ├── store.py                  # SQLite storage for captures + project memory
+│   │   ├── service.py                # Capture loop, screenshots, diffing, launchd
+│   │   └── analysis.py               # Summaries, journals, memories, capture Q&A
 │   ├── perception/
 │   │   ├── local_llm.py              # Local MLX inference
 │   │   ├── media.py                  # LLM calls (text+vision), OCR, transcription
@@ -60,6 +68,7 @@ clawvision/
 │   ├── test_task_agent.py            # Task-agent parsing tests
 │   ├── test_xhs_capabilities.py      # Capability / extraction-plan tests
 │   ├── test_extension_ops.py         # Extension operation report tests
+│   ├── test_observer.py              # Observer capture / storage / diff tests
 │   └── test_reporting.py             # Shared report rendering tests
 └── archive/
     └── legacy_mcp/                   # Archived screen-level MCP route
@@ -178,12 +187,13 @@ Prefer semantic understanding over pixel math. Don't use pixel-level heuristics 
 
 ### Strategic architecture
 
-The project's goal is **robust agentic browser automation**, not a single-site scraper. Architecture is layered:
+The project's goal is **robust agentic browser automation plus local desktop observation**, not a single-site scraper. Architecture is layered:
 1. **Core layer** (`clawvision.core`) — bridge, tab/window control, DOM-first composer helpers, verification, recording, shared reports, runtime.
-2. **Perception layer** (`clawvision.perception`) — hosted/local vision, OCR, grounding, transcription, image preprocessing.
-3. **Reasoning layer** (`clawvision.reasoning`) — structured tasks, planning, evaluation, and reusable knowledge extraction.
-4. **Platform layer** (`clawvision.platforms`) — site-specific DOM extraction, navigation patterns, entity models, capability catalogs.
-5. **Workflow layer** (`clawvision.workflows`) — concrete task orchestration such as XHS research and multi-chat fanout.
+2. **Observer layer** (`clawvision.observer`) — background desktop capture, SQLite storage, screenshot archival, diff-based OCR / vision, journals, and recall.
+3. **Perception layer** (`clawvision.perception`) — hosted/local vision, OCR, grounding, transcription, image preprocessing.
+4. **Reasoning layer** (`clawvision.reasoning`) — structured tasks, planning, evaluation, and reusable knowledge extraction.
+5. **Platform layer** (`clawvision.platforms`) — site-specific DOM extraction, navigation patterns, entity models, capability catalogs.
+6. **Workflow layer** (`clawvision.workflows`) — concrete task orchestration such as XHS research and multi-chat fanout.
 
 New generic capabilities (background windows, dedup, session recording) belong in the generic layer. Site-specific DOM selectors and navigation belong in site skill modules.
 
@@ -196,6 +206,16 @@ New generic capabilities (background windows, dedup, session recording) belong i
 5. `clawvision.workflows.xhs` orchestrates note collection using `lite` and `deep` extraction plans.
 6. `clawvision.platforms.xhs.processor` enriches notes with OCR, image descriptions, and video transcription when the chosen plan requires it.
 7. The agent writes JSON + HTML reports plus a session GIF to `task_runs/` or a custom output dir.
+
+Observer runtime flow:
+
+1. `python -m clawvision observer capture-loop` resolves an observer data root.
+2. `ObserverCaptureService` polls the frontmost macOS app/window and browser URL.
+3. Screenshots are captured across all active displays, concatenated horizontally, and archived by date.
+4. The current screenshot is diffed against the previous cached frame. When the changed area ratio stays under the configured threshold, OCR and local vision operate on the diff crop instead of the full frame.
+5. Apple OCR extracts text, local Qwen vision adds lightweight screen understanding, and both timing metrics and capture metadata are recorded.
+6. `ObserverStore` persists captures, summaries, project memory, and timing data in `observer.db`.
+7. The analysis layer can later generate journals, project memory, and capture Q&A without blocking the background capture loop.
 
 ## Extension Ops
 
@@ -218,8 +238,12 @@ This is the preferred path for “reload the extension” because it validates t
 
 ```bash
 pip install -e .
-pip install -e ".[detect]"   # optional local detection models
-pip install -e ".[local-llm]" # optional local MLX backend
+```
+
+This default install now includes the runtime Python dependencies for OCR, local MLX vision, and observer capture. Only development tooling stays optional:
+
+```bash
+pip install -e ".[dev]"
 ```
 
 ### Chrome Extension
@@ -287,6 +311,14 @@ ANTHROPIC_API_KEY=...
 CLAWVISION_LLM_BACKEND=...           # "sonnet" (default) or "qwen-local"
 CLAWVISION_WHISPER_CLI=...
 CLAWVISION_WHISPER_MODELS_DIR=...
+CLAWVISION_APP_DATA_DIR=...
+CLAWVISION_OBSERVER_ROOT=...
+CLAWVISION_OBSERVER_CHECK_INTERVAL=...
+CLAWVISION_OBSERVER_FORCE_CAPTURE_INTERVAL=...
+CLAWVISION_OBSERVER_SCREENSHOT_STRATEGY=...
+CLAWVISION_OBSERVER_DIFF_THRESHOLD=...   # default 0.30
+CLAWVISION_OBSERVER_VISION_ENABLED=...
+CLAWVISION_OBSERVER_VISION_MODEL=...
 ```
 
 ### Local LLM (optional)
@@ -294,7 +326,11 @@ CLAWVISION_WHISPER_MODELS_DIR=...
 ClawVision supports local inference via MLX as an alternative to the Anthropic API:
 
 ```bash
-# Download model (~6.3GB)
+# Download the default lightweight observer model
+modelscope download --model mlx-community/Qwen3.5-2B-6bit \
+  --local_dir ~/.clawvision/weights/Qwen3.5-2B-6bit
+
+# Optional larger model for heavier local reasoning / vision
 modelscope download --model mlx-community/Qwen3.5-9B-MLX-4bit \
   --local_dir ~/.clawvision/weights/Qwen3.5-9B-MLX-4bit
 
@@ -302,10 +338,11 @@ modelscope download --model mlx-community/Qwen3.5-9B-MLX-4bit \
 export CLAWVISION_LLM_BACKEND=qwen-local
 ```
 
-The local backend uses **Qwen3.5-9B-MLX-4bit** via `mlx-vlm`, which is natively
-multimodal (early-fusion) — the same model handles both text reasoning and
-vision/screenshot understanding. Requires the `local-llm` extra or equivalent
-manual installation of `mlx-lm`, `mlx-vlm`, and `modelscope`.
+The local backend uses Qwen MLX models via `mlx-vlm`, which are natively
+multimodal (early-fusion). Observer defaults to **Qwen3.5-2B-6bit** for
+background screenshot understanding so the steady-state cost is lower. Long-lived
+observer processes keep the chosen local model loaded in-process after the first
+request; one-shot CLI runs will pay the load cost each time.
 
 Backend can also be set per-instance via `MediaConfig(backend="qwen-local")` or
 `VisionLLM(backend="qwen-local")`.
@@ -327,6 +364,9 @@ Equivalent:
 python -m clawvision "露营装备"
 python -m clawvision --user <user_id>
 python -m clawvision extension reload
+python -m clawvision observer status
+python -m clawvision observer capture-once
+python -m clawvision observer install-agent
 ```
 
 Watch-mode live debugging:
@@ -384,9 +424,22 @@ The active product path is still DOM-first browser automation with vision/percep
 The shared perception layer in `clawvision.perception` currently supports:
 
 - Apple OCR on downloaded note images
+- Apple OCR on observer screenshots and diff crops
 - Hosted vision fallback when DOM extraction is weak
+- Local Qwen MLX screenshot understanding reused by observer capture and analysis
 - Optional local UI detection / grounding experiments
 - Local whisper.cpp video transcription
+
+## Observer Status
+
+`clawvision.observer` is now the active desktop-observation subsystem. Current behavior:
+
+- SQLite-backed durable storage in `observer_data/observer.db` by default
+- Screenshot archival plus per-capture timing metrics in `observer_data/logs/capture.log`
+- 5-second context polling with a 300-second forced capture fallback
+- Multi-display screenshots concatenated horizontally
+- Diff-aware OCR and visual understanding when the changed area ratio stays under the configured threshold
+- `launchd` install/uninstall helpers via `python -m clawvision observer install-agent`
 
 ## Archive
 

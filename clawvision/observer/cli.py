@@ -63,12 +63,31 @@ def build_parser() -> argparse.ArgumentParser:
 def _print_status(paths: ObserverPaths) -> None:
     store = ObserverStore(paths)
     stats = store.stats()
+    latest = store.latest_capture() or {}
     launchd = launch_agent_status(paths)
     screenshot_count = sum(1 for _ in paths.screenshots_dir.rglob("screen_*.*"))
     payload = {
         "root": str(paths.root),
         "db_path": str(paths.db_path),
         "stats": stats,
+        "latest_capture": (
+            {
+                "timestamp": latest.get("timestamp"),
+                "app_name": latest.get("app_name"),
+                "changed_area_ratio": latest.get("changed_area_ratio"),
+                "ocr_scope": latest.get("ocr_scope"),
+                "visual_scope": latest.get("visual_scope"),
+                "visual_model": latest.get("visual_model"),
+                "capture_image_ms": latest.get("capture_image_ms"),
+                "diff_ms": latest.get("diff_ms"),
+                "save_ms": latest.get("save_ms"),
+                "ocr_ms": latest.get("ocr_ms"),
+                "visual_ms": latest.get("visual_ms"),
+                "total_ms": latest.get("total_ms"),
+            }
+            if latest
+            else None
+        ),
         "screenshot_file_count": screenshot_count,
         "launch_agent": launchd,
     }

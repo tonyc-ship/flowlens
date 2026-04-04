@@ -20,6 +20,7 @@ class ObserverPaths:
     db_path: Path
     screenshots_dir: Path
     logs_dir: Path
+    state_dir: Path
 
     @classmethod
     def resolve(cls, root: str | Path | None = None) -> "ObserverPaths":
@@ -35,13 +36,16 @@ class ObserverPaths:
 
         screenshots_dir = base / "screenshots"
         logs_dir = base / "logs"
+        state_dir = base / "state"
         screenshots_dir.mkdir(parents=True, exist_ok=True)
         logs_dir.mkdir(parents=True, exist_ok=True)
+        state_dir.mkdir(parents=True, exist_ok=True)
         return cls(
             root=base,
             db_path=base / "observer.db",
             screenshots_dir=screenshots_dir,
             logs_dir=logs_dir,
+            state_dir=state_dir,
         )
 
     @property
@@ -55,3 +59,7 @@ class ObserverPaths:
     @property
     def launch_agent_path(self) -> Path:
         return Path.home() / "Library" / "LaunchAgents" / f"{LAUNCH_AGENT_LABEL}.plist"
+
+    @property
+    def latest_capture_path(self) -> Path:
+        return self.state_dir / "latest_capture.png"

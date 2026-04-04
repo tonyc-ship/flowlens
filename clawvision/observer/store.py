@@ -37,6 +37,17 @@ class ObserverStore:
                     visual_summary TEXT,
                     capture_reason TEXT,
                     is_keyframe INTEGER NOT NULL DEFAULT 0,
+                    diff_regions_json TEXT,
+                    changed_area_ratio REAL,
+                    ocr_scope TEXT,
+                    visual_scope TEXT,
+                    visual_model TEXT,
+                    capture_image_ms REAL,
+                    diff_ms REAL,
+                    save_ms REAL,
+                    ocr_ms REAL,
+                    visual_ms REAL,
+                    total_ms REAL,
                     source TEXT NOT NULL DEFAULT 'observer',
                     created_at TEXT
                 )
@@ -68,6 +79,17 @@ class ObserverStore:
             "visual_summary": "TEXT",
             "capture_reason": "TEXT",
             "is_keyframe": "INTEGER NOT NULL DEFAULT 0",
+            "diff_regions_json": "TEXT",
+            "changed_area_ratio": "REAL",
+            "ocr_scope": "TEXT",
+            "visual_scope": "TEXT",
+            "visual_model": "TEXT",
+            "capture_image_ms": "REAL",
+            "diff_ms": "REAL",
+            "save_ms": "REAL",
+            "ocr_ms": "REAL",
+            "visual_ms": "REAL",
+            "total_ms": "REAL",
             "source": "TEXT NOT NULL DEFAULT 'observer'",
             "created_at": "TEXT",
         }
@@ -84,8 +106,21 @@ class ObserverStore:
         browser_url: str,
         ocr_text: str,
         screenshot_path: str | None,
+        content_summary: str | None = None,
+        visual_summary: str | None = None,
         capture_reason: str,
         is_keyframe: bool,
+        diff_regions_json: str | None = None,
+        changed_area_ratio: float | None = None,
+        ocr_scope: str | None = None,
+        visual_scope: str | None = None,
+        visual_model: str | None = None,
+        capture_image_ms: float | None = None,
+        diff_ms: float | None = None,
+        save_ms: float | None = None,
+        ocr_ms: float | None = None,
+        visual_ms: float | None = None,
+        total_ms: float | None = None,
         source: str = "observer",
     ) -> int:
         with self.connect() as conn:
@@ -93,9 +128,12 @@ class ObserverStore:
                 """
                 INSERT INTO captures (
                     timestamp, app_name, window_title, browser_url, ocr_text,
-                    screenshot_path, capture_reason, is_keyframe, source, created_at
+                    screenshot_path, content_summary, visual_summary, capture_reason, is_keyframe,
+                    diff_regions_json, changed_area_ratio, ocr_scope, visual_scope, visual_model,
+                    capture_image_ms, diff_ms, save_ms, ocr_ms, visual_ms, total_ms,
+                    source, created_at
                 )
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 """,
                 (
                     timestamp,
@@ -104,8 +142,21 @@ class ObserverStore:
                     browser_url,
                     ocr_text,
                     screenshot_path,
+                    content_summary,
+                    visual_summary,
                     capture_reason,
                     1 if is_keyframe else 0,
+                    diff_regions_json,
+                    changed_area_ratio,
+                    ocr_scope,
+                    visual_scope,
+                    visual_model,
+                    capture_image_ms,
+                    diff_ms,
+                    save_ms,
+                    ocr_ms,
+                    visual_ms,
+                    total_ms,
                     source,
                     datetime.now().isoformat(),
                 ),
@@ -126,6 +177,22 @@ class ObserverStore:
                 SELECT ocr_text, content_summary, visual_summary
                 FROM captures
                 WHERE content_summary IS NOT NULL
+                ORDER BY id DESC
+                LIMIT 1
+                """
+            ).fetchone()
+        return dict(row) if row else None
+
+    def latest_capture(self) -> dict | None:
+        with self.connect() as conn:
+            row = conn.execute(
+                """
+                SELECT id, timestamp, app_name, window_title, browser_url, ocr_text, screenshot_path,
+                       content_summary, visual_summary, diff_regions_json, changed_area_ratio,
+                       ocr_scope, visual_scope, visual_model,
+                       capture_image_ms, diff_ms, save_ms, ocr_ms, visual_ms, total_ms,
+                       capture_reason, is_keyframe
+                FROM captures
                 ORDER BY id DESC
                 LIMIT 1
                 """
@@ -155,7 +222,9 @@ class ObserverStore:
     def get_timeline(self, hours: int | None = None) -> list[dict]:
         query = [
             "SELECT id, timestamp, app_name, window_title, browser_url, ocr_text,",
-            "       content_summary, visual_summary, screenshot_path",
+            "       content_summary, visual_summary, screenshot_path, diff_regions_json,",
+            "       changed_area_ratio, ocr_scope, visual_scope, visual_model,",
+            "       capture_image_ms, diff_ms, save_ms, ocr_ms, visual_ms, total_ms",
             "FROM captures",
         ]
         params: list[object] = []
@@ -196,7 +265,8 @@ class ObserverStore:
             rows = conn.execute(
                 f"""
                 SELECT id, timestamp, app_name, window_title, browser_url,
-                       content_summary, visual_summary,
+                       content_summary, visual_summary, changed_area_ratio,
+                       total_ms, ocr_ms, visual_ms,
                        SUBSTR(ocr_text, 1, 300) AS ocr_preview, screenshot_path
                 FROM captures
                 WHERE {where}
@@ -207,14 +277,18 @@ class ObserverStore:
             ).fetchall()
         return [dict(row) for row in rows]
 
-    def stats(self) -> dict[str, int]:
+    def stats(self) -> dict[str, int | float]:
         with self.connect() as conn:
             row = conn.execute(
                 """
                 SELECT
                     COUNT(*) AS capture_count,
                     COUNT(content_summary) AS content_summary_count,
-                    COUNT(visual_summary) AS visual_summary_count
+                    COUNT(visual_summary) AS visual_summary_count,
+                    AVG(total_ms) AS avg_total_ms,
+                    AVG(ocr_ms) AS avg_ocr_ms,
+                    AVG(visual_ms) AS avg_visual_ms,
+                    MAX(total_ms) AS max_total_ms
                 FROM captures
                 """
             ).fetchone()
@@ -226,6 +300,10 @@ class ObserverStore:
             "content_summary_count": int(row["content_summary_count"] if row else 0),
             "visual_summary_count": int(row["visual_summary_count"] if row else 0),
             "project_memory_count": int(memory_count),
+            "avg_total_ms": round(float(row["avg_total_ms"] or 0), 1) if row else 0,
+            "avg_ocr_ms": round(float(row["avg_ocr_ms"] or 0), 1) if row else 0,
+            "avg_visual_ms": round(float(row["avg_visual_ms"] or 0), 1) if row else 0,
+            "max_total_ms": round(float(row["max_total_ms"] or 0), 1) if row else 0,
         }
 
     def upsert_project_memories(self, new_memories: dict) -> dict:

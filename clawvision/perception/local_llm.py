@@ -1,7 +1,7 @@
 """Local LLM inference via MLX for Apple Silicon.
 
 Provides a drop-in backend that matches MediaProcessor's call_text / call_vision
-interface using Qwen3.5-9B-MLX-4bit (natively multimodal via early fusion).
+interface using a local Qwen MLX model (natively multimodal via early fusion).
 
 Usage:
     from clawvision.perception.local_llm import LocalLLM
@@ -101,7 +101,7 @@ class LocalLLM:
             except ImportError as exc:
                 raise RuntimeError(
                     "Local LLM backend requires mlx-vlm. Install with "
-                    '`pip install -e ".[local-llm]"` or install `mlx-vlm`, `mlx-lm`, and `modelscope` manually.'
+                    '`pip install -e .` or install `mlx-vlm`, `mlx-lm`, and `modelscope` manually.'
                 ) from exc
 
             path = _resolve_model_path(self.model_name)

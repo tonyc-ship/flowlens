@@ -36,20 +36,30 @@ def _make_media(*, backend: str | None, model: str) -> MediaProcessor:
     )
 
 
-def _extract_content_summary(media: MediaProcessor, ocr_text: str, prev_summary: str = "") -> str:
+def _extract_content_summary(
+    media: MediaProcessor,
+    ocr_text: str,
+    *,
+    visual_summary: str = "",
+    prev_summary: str = "",
+) -> str:
     context_block = ""
     if prev_summary and prev_summary not in ("[no content]", "[minimal content]"):
         context_block = f"\n\nPrevious screen summary:\n{prev_summary}"
-    prompt = f"""Summarize this desktop capture OCR in 2-3 sentences.
+    visual_block = ""
+    if visual_summary and visual_summary not in {"[no visible change]", "[minimal content]"}:
+        visual_block = f"\n\nVisual understanding:\n{visual_summary}"
+    prompt = f"""Summarize this desktop capture in 2-3 sentences.
 
 Rules:
 - Keep key terms, names, and quotes in their original language
 - Include a few exact original phrases in quotes so they remain searchable
+- Prefer OCR text for exact strings, and use the visual note for layout, images, or non-text UI state
 - Focus on net-new information compared with the previous summary
 - If this is mostly menus, chrome, or UI noise, return exactly: [minimal content]
 
 OCR text:
-{ocr_text}{context_block}
+{ocr_text or "[no OCR text]"}{visual_block}{context_block}
 """
     return media.call_text(prompt, max_tokens=200).strip()
 
@@ -121,7 +131,7 @@ def extract_summaries(
 
         if existing_summary:
             content_summary = str(existing_summary)
-        elif len(ocr_text.strip()) < 20:
+        elif len(ocr_text.strip()) < 20 and not str(visual_summary or "").strip():
             content_summary = "[no content]"
             stats["skipped_empty"] += 1
         elif _is_similar_to_previous(ocr_text, prev_ocr):
@@ -133,10 +143,21 @@ def extract_summaries(
             content_summary = None
             stats["llm_calls"] += 1
         else:
-            content_summary = _extract_content_summary(text_media, ocr_text, prev_summary)
+            content_summary = _extract_content_summary(
+                text_media,
+                ocr_text,
+                visual_summary=str(visual_summary or ""),
+                prev_summary=prev_summary,
+            )
             stats["llm_calls"] += 1
 
-        if use_vision and not is_dedup and screenshot_path and os.path.exists(screenshot_path):
+        if (
+            use_vision
+            and not is_dedup
+            and not str(visual_summary or "").strip()
+            and screenshot_path
+            and os.path.exists(screenshot_path)
+        ):
             if dry_run:
                 stats["visual_calls"] += 1
             else:
@@ -177,6 +198,8 @@ def generate_semantic_analysis(activities: list[dict], *, llm_backend: str | Non
             item["url"] = str(act["browser_url"])[:120]
         if act.get("ocr_text"):
             item["screen_text"] = str(act["ocr_text"])[:220]
+        if act.get("visual_summary"):
+            item["visual_note"] = str(act["visual_summary"])[:180]
         activity_summary.append(item)
 
     prompt = f"""Analyze these desktop activity records and produce a concise work review.
