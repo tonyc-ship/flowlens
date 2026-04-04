@@ -16,7 +16,7 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
-from clawvision.debug import VisualDebugger
+from flowlens.debug import VisualDebugger
 
 
 def main() -> int:

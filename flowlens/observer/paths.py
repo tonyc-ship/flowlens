@@ -8,7 +8,7 @@ from pathlib import Path
 
 from ..core.runtime import PROJECT_ROOT, load_runtime_env
 
-LAUNCH_AGENT_LABEL = "com.clawvision.observer"
+LAUNCH_AGENT_LABEL = "com.flowlens.observer"
 REPO_ROOT = PROJECT_ROOT.parent if (PROJECT_ROOT / "__init__.py").exists() else PROJECT_ROOT
 
 
@@ -27,10 +27,10 @@ class ObserverPaths:
         load_runtime_env()
         if root:
             base = Path(root).expanduser()
-        elif os.environ.get("CLAWVISION_OBSERVER_ROOT"):
-            base = Path(os.environ["CLAWVISION_OBSERVER_ROOT"]).expanduser()
-        elif os.environ.get("CLAWVISION_APP_DATA_DIR"):
-            base = Path(os.environ["CLAWVISION_APP_DATA_DIR"]).expanduser() / "observer"
+        elif os.environ.get("FLOWLENS_OBSERVER_ROOT"):
+            base = Path(os.environ["FLOWLENS_OBSERVER_ROOT"]).expanduser()
+        elif os.environ.get("FLOWLENS_APP_DATA_DIR"):
+            base = Path(os.environ["FLOWLENS_APP_DATA_DIR"]).expanduser() / "observer"
         else:
             base = REPO_ROOT / "observer_data"
 

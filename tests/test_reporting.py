@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import unittest
 
-from clawvision.core.reporting import render_markdown, render_markdown_block
+from flowlens.core.reporting import render_markdown, render_markdown_block
 
 
 class ReportingMarkdownTests(unittest.TestCase):

@@ -88,7 +88,7 @@ class WeChatChatSummaryRunner:
         min_capture_rounds = max(1, int(payload.get("min_capture_rounds", 3)))
         try:
             self._notify_user(
-                title="ClawVision 正在接管微信",
+                title="FlowLens 正在接管微信",
                 message="即将控制鼠标和键盘采集聊天记录，请暂时不要操作微信窗口。",
                 subtitle=conversation or "当前会话",
             )
@@ -294,7 +294,7 @@ class WeChatChatSummaryRunner:
                 )
             )
             self._notify_user(
-                title="ClawVision 已释放微信控制",
+                title="FlowLens 已释放微信控制",
                 message="聊天采集阶段已结束，现在可以恢复手动操作。",
                 subtitle=conversation or "当前会话",
             )

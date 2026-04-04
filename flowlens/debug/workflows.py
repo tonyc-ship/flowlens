@@ -26,7 +26,7 @@ class WorkflowResult:
 
 
 def run_sidepanel_demo_sync(output_dir: Path | None = None) -> WorkflowResult:
-    """Run a small end-to-end visual-debug task around the ClawVision side panel."""
+    """Run a small end-to-end visual-debug task around the FlowLens side panel."""
     timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
     output_dir = output_dir or Path("task_runs") / "visual_debug" / f"sidepanel_demo_{timestamp}"
     output_dir.mkdir(parents=True, exist_ok=True)
@@ -48,7 +48,7 @@ def run_sidepanel_demo_sync(output_dir: Path | None = None) -> WorkflowResult:
     before = _inspect_visible_chrome(
         debugger,
         output_dir / "01_before",
-        "Verify that this is the currently visible Chrome window before opening the ClawVision side panel.",
+        "Verify that this is the currently visible Chrome window before opening the FlowLens side panel.",
     )
     report["steps"].append({"name": "before", "record": before})
 
@@ -67,7 +67,7 @@ def run_sidepanel_demo_sync(output_dir: Path | None = None) -> WorkflowResult:
         after_close = _inspect_visible_chrome(
             debugger,
             output_dir / "03_after_close",
-            "Did the existing ClawVision side panel close after clicking the toolbar icon?",
+            "Did the existing FlowLens side panel close after clicking the toolbar icon?",
         )
         report["steps"].append({"name": "after_close", "record": after_close})
     else:
@@ -86,7 +86,7 @@ def run_sidepanel_demo_sync(output_dir: Path | None = None) -> WorkflowResult:
     after_click = _inspect_visible_chrome(
         debugger,
         output_dir / "05_after_open_click",
-        "Did the ClawVision side panel open on the right side of this visible Chrome window after clicking the toolbar icon?",
+        "Did the FlowLens side panel open on the right side of this visible Chrome window after clicking the toolbar icon?",
     )
     report["steps"].append({"name": "after_open_click", "record": after_click})
 
@@ -97,15 +97,15 @@ def run_sidepanel_demo_sync(output_dir: Path | None = None) -> WorkflowResult:
         after_hotkey = _inspect_visible_chrome(
             debugger,
             output_dir / "06_after_hotkey",
-            "Did the ClawVision side panel open on the right side of this visible Chrome window after the shortcut?",
+            "Did the FlowLens side panel open on the right side of this visible Chrome window after the shortcut?",
         )
         report["steps"].append({"name": "after_hotkey", "record": after_hotkey})
         success = _side_panel_visible(after_hotkey)
 
     summary = (
-        "Clicked the Chrome toolbar XHS Research Agent icon and visually verified the ClawVision side panel."
+        "Clicked the Chrome toolbar XHS Research Agent icon and visually verified the FlowLens side panel."
         if success
-        else "The workflow ran but the final screenshot did not verify a visible ClawVision side panel."
+        else "The workflow ran but the final screenshot did not verify a visible FlowLens side panel."
     )
     report["success"] = success
     report["summary"] = summary

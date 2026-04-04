@@ -5,8 +5,8 @@ from pathlib import Path
 import tempfile
 import unittest
 
-from clawvision.extension_ops import ExtensionOperationResult
-from clawvision.extension_ops import _write_report
+from flowlens.extension_ops import ExtensionOperationResult
+from flowlens.extension_ops import _write_report
 
 
 class ExtensionOpsReportTests(unittest.TestCase):
@@ -33,7 +33,7 @@ class ExtensionOpsReportTests(unittest.TestCase):
 
         self.assertEqual(report_json["operation"], "reload")
         self.assertTrue(report_json["success"])
-        self.assertIn("ClawVision Extension Operation Report", report_html)
+        self.assertIn("FlowLens Extension Operation Report", report_html)
         self.assertIn("Bridge Logs", report_html)
 
 

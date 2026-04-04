@@ -71,12 +71,12 @@ Set matches_target=false if the screenshot is mostly another app, the target is 
 
 RIGHT_PANEL_VERIFY_PROMPT = """This image is only the right edge of a Chrome window.
 Decide whether it shows a distinct browser side panel, not just normal webpage content.
-Treat "XHS Research Agent" as the ClawVision panel identity.
+Treat "XHS Research Agent" as the FlowLens panel identity.
 
 Return JSON only with this schema:
 {
   "side_panel_visible": true,
-  "panel_identity": "ClawVision|other|none",
+  "panel_identity": "FlowLens|other|none",
   "looks_like_regular_page_content": true
 }
 

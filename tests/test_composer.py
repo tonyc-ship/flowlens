@@ -2,7 +2,7 @@ import unittest
 from types import SimpleNamespace
 from unittest import IsolatedAsyncioTestCase, mock
 
-from clawvision.core.composer import ComposerSpec, enter_text, submit_attempt_order, submit_with_dom_verification
+from flowlens.core.composer import ComposerSpec, enter_text, submit_attempt_order, submit_with_dom_verification
 
 
 class ComposerHelpersTest(unittest.TestCase):
@@ -115,7 +115,7 @@ class ComposerAutomationTest(IsolatedAsyncioTestCase):
         async def _vision_verifier(attempt_result, dom_result):
             self.assertEqual(attempt_result.assessment.status, "ambiguous")
             self.assertEqual(dom_result.status, "ambiguous")
-            from clawvision.core.verification import VerificationResult
+            from flowlens.core.verification import VerificationResult
 
             return VerificationResult(status="passed", source="vision", detail="generation visible")
 

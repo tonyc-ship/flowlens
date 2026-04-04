@@ -8,6 +8,6 @@ This folder keeps the old screen-level MCP approach out of the active code path.
 
 These files are not part of the supported runtime anymore. The maintained path is:
 
-- Python orchestration in `clawvision.agent.xhs`
+- Python orchestration in `flowlens.agent.xhs`
 - Browser execution via `chrome_extension/`
-- Shared media / vision utilities in `clawvision.agent.media` and `clawvision.vision`
+- Shared media / vision utilities in `flowlens.agent.media` and `flowlens.vision`

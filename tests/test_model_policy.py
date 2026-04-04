@@ -1,6 +1,6 @@
 import unittest
 
-from clawvision.perception.policy import BACKEND_CLOUD, BACKEND_LOCAL, TaskModelPolicy, normalize_backend_choice
+from flowlens.perception.policy import BACKEND_CLOUD, BACKEND_LOCAL, TaskModelPolicy, normalize_backend_choice
 
 
 class TaskModelPolicyTest(unittest.TestCase):

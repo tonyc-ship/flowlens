@@ -1,7 +1,7 @@
 """macOS screen capture and UI automation helpers.
 
 This module intentionally avoids pyautogui so it can run on a minimal
-ClawVision install as long as Quartz/AppKit are available.
+FlowLens install as long as Quartz/AppKit are available.
 """
 
 from __future__ import annotations

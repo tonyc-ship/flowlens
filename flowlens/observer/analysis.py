@@ -275,7 +275,7 @@ def generate_work_journal(
             store.upsert_project_memories(semantic["project_memories"])
 
     lines = [
-        "# ClawVision Observer Review",
+        "# FlowLens Observer Review",
         f"Duration: {total_minutes:.0f} min | Captures: {len(activities)}",
         "",
     ]
@@ -499,9 +499,9 @@ def ask_question(paths: ObserverPaths, question: str, *, llm_backend: str = BACK
     store = ObserverStore(paths)
     stats = store.stats()
     if stats["content_summary_count"] == 0:
-        raise RuntimeError("No content summaries found. Run `clawvision observer extract` first.")
+        raise RuntimeError("No content summaries found. Run `flowlens observer extract` first.")
 
-    system_prompt = f"""You are ClawVision Observer, a personal workflow assistant.
+    system_prompt = f"""You are FlowLens Observer, a personal workflow assistant.
 
 Current time: {datetime.now().strftime("%Y-%m-%d %H:%M")}
 Total captures: {stats['capture_count']}, with summaries: {stats['content_summary_count']}
@@ -523,16 +523,16 @@ def run_query_repl(paths: ObserverPaths, *, llm_backend: str = BACKEND_SONNET) -
     store = ObserverStore(paths)
     stats = store.stats()
     if stats["content_summary_count"] == 0:
-        print("No content summaries found. Run `clawvision observer extract` first.")
+        print("No content summaries found. Run `flowlens observer extract` first.")
         return
     if (llm_backend or BACKEND_SONNET).strip().lower() != BACKEND_SONNET:
         raise ValueError("Observer ask currently requires the sonnet backend.")
 
-    print(f"ClawVision Observer Q&A ({stats['content_summary_count']} captures indexed)")
+    print(f"FlowLens Observer Q&A ({stats['content_summary_count']} captures indexed)")
     print("Ask questions about your workflow. Type 'quit' to exit.\n")
 
     client = anthropic.Anthropic()
-    system_prompt = f"""You are ClawVision Observer, a personal workflow assistant.
+    system_prompt = f"""You are FlowLens Observer, a personal workflow assistant.
 
 Current time: {datetime.now().strftime("%Y-%m-%d %H:%M")}
 Total captures: {stats['capture_count']}, with summaries: {stats['content_summary_count']}

@@ -1,4 +1,4 @@
-"""CLI for ClawVision Observer."""
+"""CLI for FlowLens Observer."""
 
 from __future__ import annotations
 
@@ -25,7 +25,7 @@ from .store import ObserverStore
 
 
 def build_parser() -> argparse.ArgumentParser:
-    parser = argparse.ArgumentParser(description="Observer subsystem for ClawVision.")
+    parser = argparse.ArgumentParser(description="Observer subsystem for FlowLens.")
     parser.add_argument("--root", default=None, help="Override observer data root.")
     subparsers = parser.add_subparsers(dest="command", required=True)
 

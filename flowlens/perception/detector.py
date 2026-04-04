@@ -59,7 +59,7 @@ class YOLOUIDetector:
 
     def _download_weights(self) -> Path:
         """Download OmniParser YOLOv8 weights from HuggingFace."""
-        weights_dir = Path.home() / ".clawvision" / "weights" / "icon_detect"
+        weights_dir = Path.home() / ".flowlens" / "weights" / "icon_detect"
         # Check both possible filenames
         for fname in ("model.pt", "best.pt"):
             weights_file = weights_dir / fname
@@ -92,8 +92,8 @@ class YOLOUIDetector:
             candidates = [
                 Path("weights/icon_detect/model.pt"),
                 Path("weights/icon_detect/best.pt"),
-                Path.home() / ".clawvision" / "weights" / "icon_detect" / "model.pt",
-                Path.home() / ".clawvision" / "weights" / "icon_detect" / "best.pt",
+                Path.home() / ".flowlens" / "weights" / "icon_detect" / "model.pt",
+                Path.home() / ".flowlens" / "weights" / "icon_detect" / "best.pt",
             ]
             for path in candidates:
                 if path.exists():

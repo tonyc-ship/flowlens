@@ -18,10 +18,10 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).parent.parent))
 
-from clawvision.core.bridge import ExtensionBridge
-from clawvision.perception.media import MediaProcessor
-from clawvision.reasoning.knowledge.extractor import KnowledgeExtractor
-from clawvision.reasoning.knowledge.loader import KnowledgeLoader
+from flowlens.core.bridge import ExtensionBridge
+from flowlens.perception.media import MediaProcessor
+from flowlens.reasoning.knowledge.extractor import KnowledgeExtractor
+from flowlens.reasoning.knowledge.loader import KnowledgeLoader
 
 
 async def pull_observer_data(port: int = 8765) -> dict:

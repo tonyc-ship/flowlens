@@ -19,9 +19,9 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).parent.parent))
 
-from clawvision.core.bridge import ExtensionBridge
-from clawvision.platforms.xhs import XHSBrowser
-from clawvision.workflows.xhs import run_research
+from flowlens.core.bridge import ExtensionBridge
+from flowlens.platforms.xhs import XHSBrowser
+from flowlens.workflows.xhs import run_research
 
 
 async def test_basic_connection():

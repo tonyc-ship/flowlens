@@ -3,7 +3,7 @@
 Provides LLM calls (text + vision), Apple OCR, whisper transcription,
 and image utilities. Reusable across platforms.
 
-LLM backend is selected via ``CLAWVISION_LLM_BACKEND`` env var or
+LLM backend is selected via ``FLOWLENS_LLM_BACKEND`` env var or
 ``MediaConfig.backend``. For the local backend, ``MediaConfig.model``
 selects the concrete MLX model name:
 
@@ -38,7 +38,7 @@ BACKEND_QWEN_LOCAL = "qwen-local"
 
 def _resolve_backend(explicit: str | None = None) -> str:
     """Return the active LLM backend name."""
-    val = explicit or os.environ.get("CLAWVISION_LLM_BACKEND", "")
+    val = explicit or os.environ.get("FLOWLENS_LLM_BACKEND", "")
     val = val.strip().lower()
     if val in (BACKEND_QWEN_LOCAL, "qwen", "local"):
         return BACKEND_QWEN_LOCAL

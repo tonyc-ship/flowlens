@@ -124,20 +124,20 @@ class ObserverConfig:
     def from_env(cls) -> "ObserverConfig":
         load_runtime_env()
         return cls(
-            check_interval=max(1, int(os.environ.get("CLAWVISION_OBSERVER_CHECK_INTERVAL", "5"))),
+            check_interval=max(1, int(os.environ.get("FLOWLENS_OBSERVER_CHECK_INTERVAL", "5"))),
             force_capture_interval=max(
-                30, int(os.environ.get("CLAWVISION_OBSERVER_FORCE_CAPTURE_INTERVAL", "300"))
+                30, int(os.environ.get("FLOWLENS_OBSERVER_FORCE_CAPTURE_INTERVAL", "300"))
             ),
             diff_threshold=min(
                 0.95,
-                max(0.01, float(os.environ.get("CLAWVISION_OBSERVER_DIFF_THRESHOLD", "0.30"))),
+                max(0.01, float(os.environ.get("FLOWLENS_OBSERVER_DIFF_THRESHOLD", "0.30"))),
             ),
             screenshot_strategy=os.environ.get(
-                "CLAWVISION_OBSERVER_SCREENSHOT_STRATEGY", "app_switch"
+                "FLOWLENS_OBSERVER_SCREENSHOT_STRATEGY", "app_switch"
             ).strip() or "app_switch",
-            enable_visual_summary=_env_flag("CLAWVISION_OBSERVER_VISION_ENABLED", True),
+            enable_visual_summary=_env_flag("FLOWLENS_OBSERVER_VISION_ENABLED", True),
             vision_model=os.environ.get(
-                "CLAWVISION_OBSERVER_VISION_MODEL", OBSERVER_VISION_MODEL
+                "FLOWLENS_OBSERVER_VISION_MODEL", OBSERVER_VISION_MODEL
             ).strip()
             or OBSERVER_VISION_MODEL,
         )
@@ -333,7 +333,7 @@ class ObserverCaptureService:
         is_keyframe: bool,
     ) -> tuple[Path, Path | None]:
         should_save = self._screenshot_should_save(reason=reason, is_keyframe=is_keyframe)
-        fd, temp_raw = tempfile.mkstemp(prefix="clawvision_observer_", suffix=".png")
+        fd, temp_raw = tempfile.mkstemp(prefix="flowlens_observer_", suffix=".png")
         os.close(fd)
         temp_path = Path(temp_raw)
         final_path: Path | None = None
@@ -455,7 +455,7 @@ class ObserverCaptureService:
         try:
             return self.controller.capture_display(display.display_id).convert("RGB")
         except Exception:
-            fd, temp_raw = tempfile.mkstemp(prefix=f"clawvision_display_{display.index}_", suffix=".png")
+            fd, temp_raw = tempfile.mkstemp(prefix=f"flowlens_display_{display.index}_", suffix=".png")
             os.close(fd)
             temp_path = Path(temp_raw)
             try:
@@ -603,7 +603,7 @@ class ObserverCaptureService:
         sys.stdout.reconfigure(line_buffering=True)
         sys.stderr.reconfigure(line_buffering=True)
 
-        print("ClawVision Observer capture loop started")
+        print("FlowLens Observer capture loop started")
         print(f"  data_root: {self.paths.root}")
         print(f"  check_interval: {self.config.check_interval}s")
         print(f"  force_capture_interval: {self.config.force_capture_interval}s")
@@ -715,7 +715,7 @@ def install_launch_agent(paths: ObserverPaths) -> Path:
     environment = {
         "PATH": os.environ.get("PATH", "/usr/local/bin:/usr/bin:/bin"),
         "PYTHONPATH": str(REPO_ROOT),
-        "CLAWVISION_OBSERVER_ROOT": str(paths.root),
+        "FLOWLENS_OBSERVER_ROOT": str(paths.root),
     }
     plist = {
         "Label": LAUNCH_AGENT_LABEL,
@@ -723,7 +723,7 @@ def install_launch_agent(paths: ObserverPaths) -> Path:
             sys.executable,
             "-u",
             "-m",
-            "clawvision",
+            "flowlens",
             "observer",
             "--root",
             str(paths.root),

@@ -122,7 +122,7 @@ class GroundingModel:
             from mlx_vlm import load
             from mlx_vlm.utils import load_config
 
-            model_path = os.path.expanduser("~/.clawvision/weights/UI-TARS-1.5-7B-6bit")
+            model_path = os.path.expanduser("~/.flowlens/weights/UI-TARS-1.5-7B-6bit")
             if not os.path.exists(model_path):
                 raise RuntimeError(f"UI-TARS model not found at {model_path}")
             self._uitars_model, self._uitars_processor = load(model_path)
@@ -236,7 +236,7 @@ class GroundingModel:
             from mlx_vlm import load
             from mlx_vlm.utils import load_config
 
-            model_path = os.path.expanduser("~/.clawvision/weights/uground-v1-2b-mlx")
+            model_path = os.path.expanduser("~/.flowlens/weights/uground-v1-2b-mlx")
             if not os.path.exists(model_path):
                 raise RuntimeError(f"UGround model not found at {model_path}")
             self._uground_model, self._uground_processor = load(model_path)

@@ -8,7 +8,7 @@ from types import SimpleNamespace
 
 from PIL import Image, ImageDraw
 
-from clawvision.observer import ObserverCaptureService, ObserverConfig, ObserverPaths, ObserverStore, generate_work_journal
+from flowlens.observer import ObserverCaptureService, ObserverConfig, ObserverPaths, ObserverStore, generate_work_journal
 
 
 class FakeController:
@@ -100,7 +100,7 @@ class ObserverTests(unittest.TestCase):
                     "Observer": {
                         "status": "Implementing capture and journal features",
                         "key_decisions": ["Use SQLite for durable local storage"],
-                        "next_steps": ["Wire the CLI into clawvision observer"],
+                        "next_steps": ["Wire the CLI into flowlens observer"],
                         "blockers": [],
                     }
                 }
@@ -135,7 +135,7 @@ class ObserverTests(unittest.TestCase):
                 is_keyframe=False,
             )
             report = generate_work_journal(paths, use_llm=False)
-            self.assertIn("ClawVision Observer Review", report)
+            self.assertIn("FlowLens Observer Review", report)
             self.assertIn("Captures: 2", report)
             self.assertIn("Cursor", report)
 

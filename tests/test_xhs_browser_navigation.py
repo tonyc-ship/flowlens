@@ -4,7 +4,7 @@ import unittest
 from types import SimpleNamespace
 from unittest import IsolatedAsyncioTestCase, mock
 
-from clawvision.platforms.xhs.browser import XHSBrowser
+from flowlens.platforms.xhs.browser import XHSBrowser
 
 
 class XHSBrowserNavigationTest(IsolatedAsyncioTestCase):

@@ -1,6 +1,6 @@
 import unittest
 
-from clawvision.platforms.xhs.entities import (
+from flowlens.platforms.xhs.entities import (
     Comment,
     NoteEntity,
     NoteType,

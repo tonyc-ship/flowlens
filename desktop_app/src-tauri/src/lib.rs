@@ -104,7 +104,7 @@ struct RuntimePaths {
 #[tauri::command]
 fn app_health() -> HealthStatus {
     HealthStatus {
-        app_name: "ClawVision Desktop",
+        app_name: "FlowLens Desktop",
         version: env!("CARGO_PKG_VERSION"),
         os: std::env::consts::OS,
         arch: std::env::consts::ARCH,
@@ -122,7 +122,7 @@ fn repo_root() -> Result<PathBuf, String> {
 
 fn dev_runtime_root() -> Option<PathBuf> {
     let candidate = Path::new(env!("CARGO_MANIFEST_DIR")).join("../runtime_bundle");
-    if candidate.join("clawvision").exists() {
+    if candidate.join("flowlens").exists() {
         return candidate.canonicalize().ok();
     }
     None
@@ -133,7 +133,7 @@ fn env_nonempty(name: &str) -> Option<OsString> {
 }
 
 fn resolve_python(primary_root: &Path, fallback_root: Option<&Path>) -> OsString {
-    if let Some(python) = env_nonempty("CLAWVISION_PYTHON") {
+    if let Some(python) = env_nonempty("FLOWLENS_PYTHON") {
         return python;
     }
 
@@ -158,14 +158,14 @@ fn resolve_runtime(app: &AppHandle) -> Result<RuntimePaths, String> {
     if let Ok(resource_dir) = app.path().resource_dir() {
         let bundled_root = if resource_dir
             .join("runtime_bundle")
-            .join("clawvision")
+            .join("flowlens")
             .exists()
         {
             Some(resource_dir.join("runtime_bundle"))
         } else if resource_dir
             .join("_up_")
             .join("runtime_bundle")
-            .join("clawvision")
+            .join("flowlens")
             .exists()
         {
             Some(resource_dir.join("_up_").join("runtime_bundle"))
@@ -174,9 +174,9 @@ fn resolve_runtime(app: &AppHandle) -> Result<RuntimePaths, String> {
         };
 
         if let Some(bundled_root) = bundled_root {
-            let bundled_binary = bundled_root.join("bin").join("clawvision");
+            let bundled_binary = bundled_root.join("bin").join("flowlens");
             let (launcher, launcher_kind) =
-                if let Some(executable) = env_nonempty("CLAWVISION_EXECUTABLE") {
+                if let Some(executable) = env_nonempty("FLOWLENS_EXECUTABLE") {
                     (executable, LauncherKind::Binary)
                 } else if bundled_binary.exists() {
                     (bundled_binary.into_os_string(), LauncherKind::Binary)
@@ -201,9 +201,9 @@ fn resolve_runtime(app: &AppHandle) -> Result<RuntimePaths, String> {
     }
 
     if let Some(runtime_root) = dev_runtime_root() {
-        let runtime_binary = runtime_root.join("bin").join("clawvision");
+        let runtime_binary = runtime_root.join("bin").join("flowlens");
         let (launcher, launcher_kind) =
-            if let Some(executable) = env_nonempty("CLAWVISION_EXECUTABLE") {
+            if let Some(executable) = env_nonempty("FLOWLENS_EXECUTABLE") {
                 (executable, LauncherKind::Binary)
             } else if runtime_binary.exists() {
                 (runtime_binary.into_os_string(), LauncherKind::Binary)
@@ -226,7 +226,7 @@ fn resolve_runtime(app: &AppHandle) -> Result<RuntimePaths, String> {
     }
 
     let repo_root = dev_repo.ok_or_else(|| {
-        "Could not resolve a ClawVision runtime. Expected either bundled runtime resources or the repo checkout.".to_string()
+        "Could not resolve a FlowLens runtime. Expected either bundled runtime resources or the repo checkout.".to_string()
     })?;
 
     Ok(RuntimePaths {
@@ -418,7 +418,7 @@ fn hydrate_task_artifacts(task: &mut TaskStub) {
     }
 }
 
-fn spawn_clawvision(
+fn spawn_flowlens(
     app: &AppHandle,
     id_prefix: &str,
     kind: &str,
@@ -458,7 +458,7 @@ fn spawn_clawvision(
             child
                 .env("PYTHONPATH", build_pythonpath(&runtime.workdir)?)
                 .arg("-m")
-                .arg("clawvision");
+                .arg("flowlens");
         }
     }
 
@@ -469,7 +469,7 @@ fn spawn_clawvision(
 
     let child = child.spawn().map_err(|err| {
         format!(
-            "Failed to start ClawVision runtime with {:?}: {err}",
+            "Failed to start FlowLens runtime with {:?}: {err}",
             runtime.launcher
         )
     })?;
@@ -533,7 +533,7 @@ fn spawn_chatbots_companion(app: &AppHandle) -> Result<ChatbotsCompanionHandle, 
             child
                 .env("PYTHONPATH", build_pythonpath(&runtime.workdir)?)
                 .arg("-m")
-                .arg("clawvision");
+                .arg("flowlens");
         }
     }
 
@@ -919,7 +919,7 @@ fn start_task(
     // the task runner needs for the Chrome extension bridge.
     stop_chatbots_companion(&app);
 
-    let task = spawn_clawvision(
+    let task = spawn_flowlens(
         &app,
         "task",
         &kind,
@@ -1027,7 +1027,7 @@ mod tests {
 
     #[test]
     fn extracts_question_from_chatbots_deep_link() {
-        let url = Url::parse("clawvision://ask?question=Reply%20READY").expect("url");
+        let url = Url::parse("flowlens://ask?question=Reply%20READY").expect("url");
         assert_eq!(
             extract_question_from_deep_link(&url).as_deref(),
             Some("Reply READY")
@@ -1036,13 +1036,13 @@ mod tests {
 
     #[test]
     fn ignores_unrelated_deep_link() {
-        let url = Url::parse("clawvision://settings?question=ignored").expect("url");
+        let url = Url::parse("flowlens://settings?question=ignored").expect("url");
         assert!(extract_question_from_deep_link(&url).is_none());
     }
 
     #[test]
     fn detects_completed_task_from_log_marker() {
-        let path = std::env::temp_dir().join("clawvision-task-status-test.log");
+        let path = std::env::temp_dir().join("flowlens-task-status-test.log");
         fs::write(&path, "hello\nTASK COMPLETE — 10.1s\n").expect("write temp log");
         assert_eq!(
             task_status_from_log(path.to_string_lossy().as_ref()).as_deref(),

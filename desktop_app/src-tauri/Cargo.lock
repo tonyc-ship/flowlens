@@ -313,7 +313,7 @@ dependencies = [
 ]
 
 [[package]]
-name = "clawvision_desktop"
+name = "flowlens_desktop"
 version = "0.1.0"
 dependencies = [
  "libc",

@@ -1,8 +1,8 @@
 import unittest
 from unittest import IsolatedAsyncioTestCase
 
-from clawvision.core.executor import ActionAttemptSpec, execute_action_plan
-from clawvision.core.verification import VerificationResult
+from flowlens.core.executor import ActionAttemptSpec, execute_action_plan
+from flowlens.core.verification import VerificationResult
 
 
 class ActionExecutorTest(IsolatedAsyncioTestCase):

@@ -1,6 +1,6 @@
-# FlowLens: Computer Use Agent with Local Visual Learning
+# FlowLens: Privacy-First Computer Use Agent with Local Visual Memory
 
-ClawVision is a computer use and browser use framework with lightweight local multimodal models and observation-learning loop. These designs enable a fast, stable and privacy-first CUA compared to other frameworks. Clawvision comes with a Chrome extension and a thin desktop app. Currently there are task specific knowledge for Xiaohongshu research, WeChat use and AI chatbot comparison. 
+FlowLens is a computer use and browser use framework with lightweight local multimodal models and observation-learning loop. These designs enable a fast, stable and privacy-first CUA compared to other frameworks. FlowLens comes with a Chrome extension and a thin desktop app. Currently there are task specific knowledge for Xiaohongshu research, WeChat use and AI chatbot comparison. 
 
 ## Quickstart
 
@@ -22,8 +22,8 @@ uv sync
 
 Download Local Models:
 ```bash
-modelscope download --model mlx-community/Qwen3.5-2B-6bit --local_dir ~/.clawvision/weights/Qwen3.5-2B-6bit
-modelscope download --model mlx-community/Qwen3.5-9B-MLX-4bit --local_dir ~/.clawvision/weights/Qwen3.5-9B-MLX-4bit
+modelscope download --model mlx-community/Qwen3.5-2B-6bit --local_dir ~/.flowlens/weights/Qwen3.5-2B-6bit
+modelscope download --model mlx-community/Qwen3.5-9B-MLX-4bit --local_dir ~/.flowlens/weights/Qwen3.5-9B-MLX-4bit
 ```
 
 ## Desktop
@@ -42,7 +42,7 @@ PATH="$HOME/.cargo/bin:$PATH" npm run tauri dev
 
 macOS permissions you will likely need on first run:
 
-- `Screen Recording` for the Python interpreter / terminal app that launches ClawVision
+- `Screen Recording` for the Python interpreter / terminal app that launches FlowLens
 - `Accessibility` if you later use desktop automation flows
 - `Automation` if you want browser URL capture via Apple Events
 
@@ -63,12 +63,12 @@ ANTHROPIC_API_KEY=...
 Optional keys:
 
 ```bash
-CLAWVISION_LLM_BACKEND=sonnet
-CLAWVISION_WHISPER_CLI=
-CLAWVISION_WHISPER_MODELS_DIR=
-CLAWVISION_OBSERVER_DIFF_THRESHOLD=0.30
-CLAWVISION_OBSERVER_VISION_ENABLED=1
-CLAWVISION_OBSERVER_VISION_MODEL=Qwen3.5-2B-6bit
+FLOWLENS_LLM_BACKEND=sonnet
+FLOWLENS_WHISPER_CLI=
+FLOWLENS_WHISPER_MODELS_DIR=
+FLOWLENS_OBSERVER_DIFF_THRESHOLD=0.30
+FLOWLENS_OBSERVER_VISION_ENABLED=1
+FLOWLENS_OBSERVER_VISION_MODEL=Qwen3.5-2B-6bit
 ```
 
 ## Observer-Only Quickstart
@@ -76,8 +76,8 @@ CLAWVISION_OBSERVER_VISION_MODEL=Qwen3.5-2B-6bit
 If you want continuous desktop capture without the desktop app, this is the shortest path:
 
 ```bash
-python -m clawvision observer install-agent
-python -m clawvision observer status
+python -m flowlens observer install-agent
+python -m flowlens observer status
 ```
 
 You can check observer data in:
@@ -98,45 +98,45 @@ You can check observer data in:
 
 Canonical Python packages are now:
 
-- `clawvision.core`: bridge, runtime, recorder, reporting, DOM-first interaction + verification primitives
-- `clawvision.observer`: background desktop observation, storage, summarization, and recall
-- `clawvision.perception`: hosted/local vision, OCR, grounding, transcription, media preprocessing
-- `clawvision.reasoning`: task understanding, planning, evaluation, reusable knowledge extraction
-- `clawvision.platforms.xhs` / `clawvision.platforms.chat`: site-level adapters and platform knowledge
-- `clawvision.workflows.xhs` / `clawvision.workflows.chat`: concrete task flows and workflow CLIs
+- `flowlens.core`: bridge, runtime, recorder, reporting, DOM-first interaction + verification primitives
+- `flowlens.observer`: background desktop observation, storage, summarization, and recall
+- `flowlens.perception`: hosted/local vision, OCR, grounding, transcription, media preprocessing
+- `flowlens.reasoning`: task understanding, planning, evaluation, reusable knowledge extraction
+- `flowlens.platforms.xhs` / `flowlens.platforms.chat`: site-level adapters and platform knowledge
+- `flowlens.workflows.xhs` / `flowlens.workflows.chat`: concrete task flows and workflow CLIs
 
-Legacy `clawvision.agent`, `clawvision.chatbots`, and `clawvision.vision` paths have been removed.
+Legacy `flowlens.agent`, `flowlens.chatbots`, and `flowlens.vision` paths have been removed.
 
 ## Common Commands
 
 Smoke-test the desktop bridge without running a live XHS task:
 
 ```bash
-python -m clawvision desktop run --prompt "研究露营装备" --dry-run
+python -m flowlens desktop run --prompt "研究露营装备" --dry-run
 ```
 
 Start the chatbot fan-out CLI:
 
 ```bash
-python -m clawvision chatbots "Explain quantum computing simply"
+python -m flowlens chatbots "Explain quantum computing simply"
 ```
 
 Run an XHS topic research task:
 
 ```bash
-python -m clawvision "露营装备"
+python -m flowlens "露营装备"
 ```
 
 Reload the unpacked Chrome extension through the live bridge:
 
 ```bash
-python -m clawvision extension reload
+python -m flowlens extension reload
 ```
 
 Inspect the observer subsystem state:
 
 ```bash
-python -m clawvision observer status
+python -m flowlens observer status
 ```
 
 This now includes aggregate timing stats and the latest capture-stage timings (`capture_image_ms`, `diff_ms`, `ocr_ms`, `visual_ms`, `total_ms`).
@@ -144,19 +144,19 @@ This now includes aggregate timing stats and the latest capture-stage timings (`
 Capture the current desktop once into the observer database:
 
 ```bash
-python -m clawvision observer capture-once
+python -m flowlens observer capture-once
 ```
 
 Install the background observer agent:
 
 ```bash
-python -m clawvision observer install-agent
+python -m flowlens observer install-agent
 ```
 
 Generate a lightweight local journal without LLM calls:
 
 ```bash
-python -m clawvision observer journal --no-llm
+python -m flowlens observer journal --no-llm
 ```
 
 Run the installed desktop app end-to-end XHS watch-overlay smoke test:

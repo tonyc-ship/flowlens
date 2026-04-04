@@ -1,4 +1,4 @@
-"""Generic Chrome extension operational commands for ClawVision."""
+"""Generic Chrome extension operational commands for FlowLens."""
 
 from __future__ import annotations
 
@@ -60,7 +60,7 @@ def _write_report(result: ExtensionOperationResult, output_dir: Path) -> None:
 <html lang="en">
 <head>
   <meta charset="utf-8">
-  <title>ClawVision Extension Operation Report</title>
+  <title>FlowLens Extension Operation Report</title>
   <style>
     body{{font-family:ui-sans-serif,system-ui,-apple-system,sans-serif;margin:24px;background:#f7f7f5;color:#1f2937}}
     .wrap{{max-width:960px;margin:0 auto}}
@@ -72,7 +72,7 @@ def _write_report(result: ExtensionOperationResult, output_dir: Path) -> None:
 </head>
 <body>
   <div class="wrap">
-    <h1>ClawVision Extension Operation Report</h1>
+    <h1>FlowLens Extension Operation Report</h1>
     <div class="card">
       <h2>Summary</h2>
       {render_markdown_block(summary_md)}
@@ -96,7 +96,7 @@ async def run_extension_reload(
 ) -> ExtensionOperationResult:
     """Reload the Chrome extension through the live bridge.
 
-    This is the preferred path because it tests the actual ClawVision runtime:
+    This is the preferred path because it tests the actual FlowLens runtime:
     Python bridge -> background service worker -> chrome.runtime.reload().
     """
     out_dir = Path(output_dir or Path("task_runs") / f"{_safe_slug('extension_reload')}_{_timestamp()}")

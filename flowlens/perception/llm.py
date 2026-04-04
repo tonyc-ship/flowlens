@@ -1,6 +1,6 @@
 """Vision LLM for high-level page understanding.
 
-Supports two backends (selected via ``CLAWVISION_LLM_BACKEND`` env var or
+Supports two backends (selected via ``FLOWLENS_LLM_BACKEND`` env var or
 constructor ``backend`` kwarg):
 
 - ``"sonnet"`` (default) — Anthropic Claude Vision API
@@ -34,7 +34,7 @@ BACKEND_QWEN_LOCAL = "qwen-local"
 
 
 def _resolve_backend(explicit: str | None = None) -> str:
-    val = explicit or os.environ.get("CLAWVISION_LLM_BACKEND", "")
+    val = explicit or os.environ.get("FLOWLENS_LLM_BACKEND", "")
     val = val.strip().lower()
     if val in (BACKEND_QWEN_LOCAL, "qwen", "local"):
         return BACKEND_QWEN_LOCAL
