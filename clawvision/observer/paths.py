@@ -1,0 +1,57 @@
+"""Observer storage path helpers."""
+
+from __future__ import annotations
+
+import os
+from dataclasses import dataclass
+from pathlib import Path
+
+from ..core.runtime import PROJECT_ROOT, load_runtime_env
+
+LAUNCH_AGENT_LABEL = "com.clawvision.observer"
+REPO_ROOT = PROJECT_ROOT.parent if (PROJECT_ROOT / "__init__.py").exists() else PROJECT_ROOT
+
+
+@dataclass(frozen=True)
+class ObserverPaths:
+    """Resolved filesystem layout for the Observer subsystem."""
+
+    root: Path
+    db_path: Path
+    screenshots_dir: Path
+    logs_dir: Path
+
+    @classmethod
+    def resolve(cls, root: str | Path | None = None) -> "ObserverPaths":
+        load_runtime_env()
+        if root:
+            base = Path(root).expanduser()
+        elif os.environ.get("CLAWVISION_OBSERVER_ROOT"):
+            base = Path(os.environ["CLAWVISION_OBSERVER_ROOT"]).expanduser()
+        elif os.environ.get("CLAWVISION_APP_DATA_DIR"):
+            base = Path(os.environ["CLAWVISION_APP_DATA_DIR"]).expanduser() / "observer"
+        else:
+            base = REPO_ROOT / "observer_data"
+
+        screenshots_dir = base / "screenshots"
+        logs_dir = base / "logs"
+        screenshots_dir.mkdir(parents=True, exist_ok=True)
+        logs_dir.mkdir(parents=True, exist_ok=True)
+        return cls(
+            root=base,
+            db_path=base / "observer.db",
+            screenshots_dir=screenshots_dir,
+            logs_dir=logs_dir,
+        )
+
+    @property
+    def capture_log_path(self) -> Path:
+        return self.logs_dir / "capture.log"
+
+    @property
+    def capture_error_log_path(self) -> Path:
+        return self.logs_dir / "capture.error.log"
+
+    @property
+    def launch_agent_path(self) -> Path:
+        return Path.home() / "Library" / "LaunchAgents" / f"{LAUNCH_AGENT_LABEL}.plist"

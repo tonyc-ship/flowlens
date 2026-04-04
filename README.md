@@ -5,6 +5,7 @@ ClawVision is a macOS-first browser automation project for Xiaohongshu research,
 Current repo highlights:
 
 - `clawvision/core/`: browser bridge, runtime helpers, common interaction + verification primitives
+- `clawvision/observer/`: continuous desktop capture, local SQLite memory, work journals, and workflow recall
 - `clawvision/perception/`: vision, OCR, grounding, transcription, and local multimodal models
 - `clawvision/reasoning/`: task understanding, planning, evaluation, and reusable knowledge extraction
 - `clawvision/platforms/`: site-level adapters and platform knowledge for XHS and chat sites
@@ -74,6 +75,7 @@ CLAWVISION_WHISPER_MODELS_DIR=
 Canonical Python packages are now:
 
 - `clawvision.core`: bridge, runtime, recorder, reporting, DOM-first interaction + verification primitives
+- `clawvision.observer`: background desktop observation, storage, summarization, and recall
 - `clawvision.perception`: hosted/local vision, OCR, grounding, transcription, media preprocessing
 - `clawvision.reasoning`: task understanding, planning, evaluation, reusable knowledge extraction
 - `clawvision.platforms.xhs` / `clawvision.platforms.chat`: site-level adapters and platform knowledge
@@ -114,6 +116,24 @@ Reload the unpacked Chrome extension through the live bridge:
 
 ```bash
 .venv/bin/python -m clawvision extension reload
+```
+
+Inspect the observer subsystem state:
+
+```bash
+.venv/bin/python -m clawvision observer status
+```
+
+Capture the current desktop once into the observer database:
+
+```bash
+.venv/bin/python -m clawvision observer capture-once
+```
+
+Generate a lightweight local journal without LLM calls:
+
+```bash
+.venv/bin/python -m clawvision observer journal --no-llm
 ```
 
 Run the installed desktop app end-to-end XHS watch-overlay smoke test:

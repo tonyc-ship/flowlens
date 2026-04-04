@@ -15,12 +15,13 @@ class PackageLayoutTest(unittest.TestCase):
         self.assertTrue(main)
 
     def test_new_layered_packages_are_importable(self) -> None:
-        from clawvision import core, perception, platforms, reasoning, workflows
+        from clawvision import core, observer, perception, platforms, reasoning, workflows
         from clawvision.platforms.xhs import XHSBrowser
         from clawvision.reasoning import TaskAgent
         from clawvision.workflows.xhs import XHSTaskRunner
 
         self.assertTrue(core)
+        self.assertTrue(observer)
         self.assertTrue(perception)
         self.assertTrue(platforms)
         self.assertTrue(reasoning)

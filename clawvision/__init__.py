@@ -1,3 +1,3 @@
 """ClawVision."""
 
-__all__ = ["core", "perception", "platforms", "reasoning", "workflows"]
+__all__ = ["core", "observer", "perception", "platforms", "reasoning", "workflows"]
