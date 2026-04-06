@@ -1,0 +1,433 @@
+"""LLM backend abstraction for the agent loop.
+
+Provides a common interface for Anthropic API and local Qwen MLX inference,
+so the agent loop can use either backend transparently.
+"""
+
+from __future__ import annotations
+
+import json
+import re
+import uuid
+from abc import ABC, abstractmethod
+from dataclasses import dataclass, field
+
+
+@dataclass
+class ToolCall:
+    """A parsed tool call from the LLM response."""
+    id: str
+    name: str
+    input: dict
+
+
+@dataclass
+class LLMResponse:
+    """Normalized response from any backend."""
+    text_blocks: list[str]       # text segments from the response
+    tool_calls: list[ToolCall]   # parsed tool calls
+    stop_reason: str             # "end_turn", "tool_use", "max_tokens"
+    input_tokens: int = 0
+    output_tokens: int = 0
+    raw: object = None           # original response object (for debugging)
+    # Optional detailed timing (local backend only)
+    metrics: dict = field(default_factory=dict)
+
+
+class Backend(ABC):
+    """Abstract LLM backend for the agent loop."""
+
+    @abstractmethod
+    def create_message(
+        self,
+        *,
+        system: str,
+        messages: list[dict],
+        tools: list[dict],
+        max_tokens: int = 8192,
+    ) -> LLMResponse:
+        """Send a message and return a normalized response."""
+        ...
+
+    @abstractmethod
+    def format_assistant_content(self, response: LLMResponse) -> object:
+        """Format the response for appending to messages as assistant content."""
+        ...
+
+    @abstractmethod
+    def format_tool_results(
+        self,
+        tool_calls: list[ToolCall],
+        results: list[list[dict]],
+    ) -> dict:
+        """Format tool results for appending to messages as user content."""
+        ...
+
+
+class AnthropicBackend(Backend):
+    """Backend using the Anthropic Messages API."""
+
+    def __init__(self, model: str = "claude-sonnet-4-6"):
+        import anthropic
+        self.model = model
+        self.client = anthropic.Anthropic()
+
+    def create_message(
+        self,
+        *,
+        system: str,
+        messages: list[dict],
+        tools: list[dict],
+        max_tokens: int = 8192,
+    ) -> LLMResponse:
+        response = self.client.messages.create(
+            model=self.model,
+            max_tokens=max_tokens,
+            system=system,
+            tools=tools,
+            messages=messages,
+        )
+
+        text_blocks = []
+        tool_calls = []
+        for block in response.content:
+            if block.type == "text":
+                text_blocks.append(block.text)
+            elif block.type == "tool_use":
+                tool_calls.append(ToolCall(
+                    id=block.id,
+                    name=block.name,
+                    input=block.input,
+                ))
+
+        return LLMResponse(
+            text_blocks=text_blocks,
+            tool_calls=tool_calls,
+            stop_reason=response.stop_reason,
+            input_tokens=response.usage.input_tokens,
+            output_tokens=response.usage.output_tokens,
+            raw=response,
+        )
+
+    def format_assistant_content(self, response: LLMResponse) -> object:
+        # Anthropic SDK returns content objects directly
+        return response.raw.content
+
+    def format_tool_results(
+        self,
+        tool_calls: list[ToolCall],
+        results: list[list[dict]],
+    ) -> dict:
+        content = []
+        for tc, result_blocks in zip(tool_calls, results):
+            content.append({
+                "type": "tool_result",
+                "tool_use_id": tc.id,
+                "content": result_blocks,
+            })
+        return {"role": "user", "content": content}
+
+
+class LocalBackend(Backend):
+    """Backend using local Qwen MLX inference with text-based tool calling.
+
+    Tool definitions are injected into the system prompt. Tool calls are
+    parsed from <tool_call>...</tool_call> tags in the model output.
+    Tool results are formatted as text messages.
+    """
+
+    # Maximum context tokens (estimated) before older messages get trimmed.
+    # Conservative — keeps prefill under ~10k real tokens for 9B model speed.
+    MAX_CONTEXT_TOKENS = 8000
+
+    def __init__(self, model_name: str = "Qwen3.5-9B-MLX-4bit"):
+        from ..perception.local_llm import LocalLLM
+        self.model_name = model_name
+        self.llm = LocalLLM(model_name=model_name, think=True)
+
+    def _format_tools_for_prompt(self, tools: list[dict]) -> str:
+        """Format tool definitions as text for the system prompt."""
+        lines = [
+            "\n## Available Tools\n",
+            "Call a tool by writing a <tool_call> block with JSON containing 'name' and 'arguments'.\n",
+            "Example:",
+            '<tool_call>{"name": "screenshot", "arguments": {"label": "initial"}}</tool_call>\n',
+            "You can (and SHOULD) emit multiple <tool_call> blocks in one response "
+            "when the next actions are obvious — e.g. close_note + click_card + "
+            "extract_note_content in one turn. Batching tool calls is much faster "
+            "than one-per-turn.\n",
+            "When done with the task, respond with text only (no tool_call blocks).\n",
+            "**CRITICAL RULES for XHS**:\n"
+            "1. Always take a screenshot at the start (call `screenshot` in the same "
+            "turn as `navigate`).\n"
+            "2. Search: use `extract_page_data` with `command=submit_search_query` — "
+            "do NOT use type_text + press_key.\n"
+            "3. Open a note: use `extract_page_data` with `command=click_card, params={index: N}`. "
+            "There is NO standalone `click_card` tool — it is a command inside extract_page_data.\n"
+            "4. Close a note: use `extract_page_data` with `command=close_note`. "
+            "`press_key Escape` does NOT close the XHS modal — do not use it.\n"
+            "5. If `extract_note_content` returns `_stale_warning` or `no_note_modal_open`, "
+            "the previous close_note failed — call `close_note` again, verify, then reopen.\n",
+            "### Tool Definitions\n",
+        ]
+        for tool in tools:
+            schema = tool.get("input_schema", {})
+            props = schema.get("properties", {})
+            required = schema.get("required", [])
+            lines.append(f"**{tool['name']}**: {tool['description']}")
+            if props:
+                params_desc = []
+                for pname, pdef in props.items():
+                    req = " (required)" if pname in required else ""
+                    ptype = pdef.get("type", "any")
+                    pdesc = pdef.get("description", "")
+                    params_desc.append(f"  - {pname} ({ptype}{req}): {pdesc}")
+                lines.append("  Parameters:")
+                lines.extend(params_desc)
+            lines.append("")
+        return "\n".join(lines)
+
+    def _build_full_prompt(self, system: str, tools: list[dict]) -> str:
+        """Combine system prompt with tool definitions."""
+        tool_text = self._format_tools_for_prompt(tools)
+        return system + "\n" + tool_text
+
+    def _parse_tool_calls(self, text: str) -> tuple[list[str], list[ToolCall]]:
+        """Parse <tool_call>...</tool_call> blocks from model output.
+
+        Also handles unclosed <tool_call> at end of output (common with
+        max_tokens cutoff).
+
+        Returns (text_segments, tool_calls).
+        """
+        # Also match unclosed <tool_call> at end of string
+        pattern = r'<tool_call>(.*?)(?:</tool_call>|$)'
+        matches = list(re.finditer(pattern, text, re.DOTALL))
+
+        if not matches:
+            return [text.strip()], []
+
+        tool_calls = []
+        text_segments = []
+
+        # Text before first match
+        pre_text = text[:matches[0].start()].strip()
+        if pre_text:
+            text_segments.append(pre_text)
+
+        for i, match in enumerate(matches):
+            try:
+                data = json.loads(match.group(1).strip())
+                tc = ToolCall(
+                    id=f"local_{uuid.uuid4().hex[:8]}",
+                    name=data.get("name", ""),
+                    input=data.get("arguments", {}),
+                )
+                tool_calls.append(tc)
+            except (json.JSONDecodeError, KeyError) as e:
+                text_segments.append(f"[Failed to parse tool_call: {e}]")
+
+            # Text between matches
+            if i + 1 < len(matches):
+                between = text[match.end():matches[i + 1].start()].strip()
+                if between:
+                    text_segments.append(between)
+
+        # Text after last match
+        post_text = text[matches[-1].end():].strip()
+        if post_text:
+            text_segments.append(post_text)
+
+        return text_segments, tool_calls
+
+    def _messages_to_prompt(
+        self, system: str, messages: list[dict], tools: list[dict]
+    ) -> str:
+        """Convert the full message history into a single text prompt.
+
+        Uses the Qwen chat template via the processor, injecting tool
+        definitions into the system message.
+        """
+        full_system = self._build_full_prompt(system, tools)
+
+        # Build chat messages for the template
+        chat_messages = [{"role": "system", "content": full_system}]
+
+        for msg in messages:
+            role = msg["role"]
+            content = msg.get("content", "")
+
+            if role == "user":
+                if isinstance(content, str):
+                    chat_messages.append({"role": "user", "content": content})
+                elif isinstance(content, list):
+                    # Tool results formatted as text
+                    parts = []
+                    for item in content:
+                        if isinstance(item, dict):
+                            if item.get("type") == "tool_result":
+                                tool_id = item.get("tool_use_id", "")
+                                result_blocks = item.get("content", [])
+                                result_text = self._result_blocks_to_text(result_blocks)
+                                parts.append(f"[Tool result for {tool_id}]:\n{result_text}")
+                            elif item.get("type") == "text":
+                                parts.append(item.get("text", ""))
+                        elif isinstance(item, str):
+                            parts.append(item)
+                    chat_messages.append({"role": "user", "content": "\n\n".join(parts)})
+
+            elif role == "assistant":
+                if isinstance(content, str):
+                    chat_messages.append({"role": "assistant", "content": content})
+                elif isinstance(content, list):
+                    # Reconstruct assistant text including tool calls
+                    parts = []
+                    for item in content:
+                        if isinstance(item, str):
+                            parts.append(item)
+                        elif isinstance(item, dict):
+                            if item.get("type") == "text":
+                                parts.append(item.get("text", ""))
+                            elif item.get("type") == "tool_call":
+                                tc = item.get("tool_call", {})
+                                parts.append(
+                                    f'<tool_call>{json.dumps({"name": tc["name"], "arguments": tc["input"]}, ensure_ascii=False)}</tool_call>'
+                                )
+                    chat_messages.append({"role": "assistant", "content": "\n".join(parts)})
+
+        # Apply chat template
+        self.llm._ensure_loaded()
+        return self.llm._processor.apply_chat_template(
+            chat_messages,
+            tokenize=False,
+            add_generation_prompt=True,
+            enable_thinking=self.llm.think,
+        )
+
+    @staticmethod
+    def _result_blocks_to_text(blocks: list[dict]) -> str:
+        """Convert content blocks to plain text (skip images for local model)."""
+        parts = []
+        for block in blocks:
+            if isinstance(block, dict):
+                if block.get("type") == "text":
+                    parts.append(block["text"])
+                elif block.get("type") == "image":
+                    parts.append("[image omitted for local model]")
+            elif isinstance(block, str):
+                parts.append(block)
+        return "\n".join(parts) if parts else "(empty result)"
+
+    def _estimate_tokens(self, text: str) -> int:
+        """Conservative token estimate (chars / 2 for CJK-heavy text)."""
+        return max(1, len(text) // 2)
+
+    def _trim_messages(self, messages: list[dict]) -> list[dict]:
+        """Trim older messages if context is too large.
+
+        Keeps the first message (task) and as many recent messages as fit
+        within MAX_CONTEXT_TOKENS. Inserts a summary note when trimming.
+        """
+        if not messages:
+            return messages
+
+        total = sum(self._estimate_tokens(str(m.get("content", ""))) for m in messages)
+        if total <= self.MAX_CONTEXT_TOKENS:
+            return messages
+
+        # Always keep first message (the task)
+        first = messages[0]
+        rest = messages[1:]
+
+        # Keep recent messages from the end
+        kept = []
+        budget = self.MAX_CONTEXT_TOKENS - self._estimate_tokens(str(first.get("content", "")))
+        for msg in reversed(rest):
+            cost = self._estimate_tokens(str(msg.get("content", "")))
+            if budget - cost < 0 and kept:
+                break
+            kept.append(msg)
+            budget -= cost
+        kept.reverse()
+
+        trimmed_count = len(rest) - len(kept)
+        if trimmed_count > 0:
+            summary = {
+                "role": "user",
+                "content": f"[{trimmed_count} earlier messages trimmed to save context. Focus on the current state.]",
+            }
+            return [first, summary] + kept
+        return messages
+
+    def create_message(
+        self,
+        *,
+        system: str,
+        messages: list[dict],
+        tools: list[dict],
+        max_tokens: int = 8192,
+    ) -> LLMResponse:
+        # Trim context to prevent quadratic slowdown
+        trimmed = self._trim_messages(messages)
+        formatted = self._messages_to_prompt(system, trimmed, tools)
+        input_tokens_est = self._estimate_tokens(formatted)
+
+        # Use _generate_with_thinking to capture reasoning separately
+        thinking, answer, metrics = self.llm._generate_with_thinking(formatted, max_tokens)
+        output_tokens_est = metrics.get("generation_tokens") or (
+            self._estimate_tokens(answer) + self._estimate_tokens(thinking)
+        )
+        if metrics.get("prompt_tokens"):
+            input_tokens_est = metrics["prompt_tokens"]
+
+        text_segments, tool_calls = self._parse_tool_calls(answer)
+
+        # Prepend thinking as a text block if present (for reasoning log)
+        all_text = []
+        if thinking:
+            all_text.append(f"[Thinking] {thinking}")
+        all_text.extend(t for t in text_segments if t)
+
+        stop_reason = "tool_use" if tool_calls else "end_turn"
+
+        return LLMResponse(
+            text_blocks=all_text,
+            tool_calls=tool_calls,
+            stop_reason=stop_reason,
+            input_tokens=input_tokens_est,
+            output_tokens=output_tokens_est,
+            raw=answer,
+            metrics=metrics,
+        )
+
+    def format_assistant_content(self, response: LLMResponse) -> object:
+        """Store assistant content as a list of dicts for message history."""
+        content = []
+        for text in response.text_blocks:
+            content.append({"type": "text", "text": text})
+        for tc in response.tool_calls:
+            content.append({
+                "type": "tool_call",
+                "tool_call": {"name": tc.name, "input": tc.input, "id": tc.id},
+            })
+        return content
+
+    def format_tool_results(
+        self,
+        tool_calls: list[ToolCall],
+        results: list[list[dict]],
+    ) -> dict:
+        """Format tool results as a text-based user message."""
+        parts = []
+        for tc, result_blocks in zip(tool_calls, results):
+            result_text = self._result_blocks_to_text(result_blocks)
+            parts.append(f"[Tool result for {tc.name} ({tc.id})]:\n{result_text}")
+        return {"role": "user", "content": "\n\n".join(parts)}
+
+
+def create_backend(model: str) -> Backend:
+    """Factory: create the appropriate backend for a model identifier."""
+    if model == "qwen-local" or model.startswith("Qwen"):
+        model_name = model if model != "qwen-local" else "Qwen3.5-9B-MLX-4bit"
+        return LocalBackend(model_name=model_name)
+    return AnthropicBackend(model=model)

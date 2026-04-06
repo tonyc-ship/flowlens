@@ -526,4 +526,182 @@ Claude Code 的 JSONL 格式非常适合 FlowLens 的任务记录：
 
 ---
 
+## 九、本地模型（Qwen 9B MLX）作为独立任务线
+
+> 追加于 2026-04-06，基于同一个 "claude code pro 额度" 研究任务在 Sonnet 4.6 和本地 Qwen3.5-9B-MLX-4bit 上的对比运行（`task_runs/test_sonnet_v2/` vs `task_runs/test_qwen_v3/`）。
+>
+> 目的：把本地模型运行质量拉到"可用但慢"的水平，作为离线 / 隐私场景下 Sonnet 的 fallback。这是一条独立的任务线，不阻塞云端主线。
+
+### 9.1 当前差距（实测数据）
+
+同一个任务、同一个 tool 集合、同一个系统提示下：
+
+| 维度 | Sonnet 4.6 | Qwen 9B 本地 | 比值 |
+|------|-----------|-------------|-----|
+| 总耗时 | ~180s | ~1815s | **10x** |
+| 平均每 turn LLM 时间 | 5.3s | 53s | **10x** |
+| 成功读取笔记数 | 4 篇（+评论） | 1 篇 + 5 次卡住重读 | — |
+| 每 turn 平均 tool 调用 | ~2（会 batch） | 始终 1 | — |
+| 截图数量 | 7（每篇笔记一张）| **0** | — |
+| 完成方式 | 自然结束 | 撞 `max_turns` 兜底出报告 | — |
+| 总输出 token | ~1.9k | ~7.1k | Qwen 浪费 4x 在思考上 |
+
+关键延迟分解（Qwen 9B on Apple Silicon）：
+- 预填（prefill）约 **200 tok/s**
+- 解码（decode）约 **27 tok/s**
+- 单 turn 上下文到 14k token 时，prefill 就要 **~70s**，decode 相对便宜
+
+**结论**：本地 9B 在小上下文下能跑，一旦 message 历史超过 ~10k token，prefill 就成为唯一瓶颈。
+
+### 9.2 当前已存在的问题（按优先级）
+
+#### P0 — 系统层问题
+
+1. **Prefill 主导的尾部延迟**
+   - 14k token 上下文 → 70s prefill / turn。
+   - 根因：每个 turn 都把完整的 `extract_search_cards` / `extract_note_content` JSON 塞回 message 历史，以及 ~2k token 的系统提示+工具定义。
+   - 当前缓解：`LocalBackend.MAX_CONTEXT_TOKENS = 8000` + `_trim_messages()`，但触发阈值太高，而且不区分"重要历史"和"大 JSON 工具结果"。
+
+2. **没有 prompt 缓存 / KV cache 复用**
+   - MLX-VLM 每次调用从头重跑 prefill，即使前缀只在末尾追加了几百 token。
+   - 云端 Anthropic 有 prompt caching 自动生效，本地路径完全没有。
+   - 这是 10x 差距里**最大的一块**。
+
+3. **单 tool per turn 放大了 prefill 成本**
+   - Qwen 在 test_qwen_v3 里从不 batch（总是一次 `<tool_call>`）。
+   - 本来单 tool per turn 只是"慢 1.5 倍"；叠加 prefill 增长，实际变成"慢 4–5 倍"。
+   - 当前缓解：已在 `LocalBackend._format_tools_for_prompt` 里显式教它 batch，待验证。
+
+#### P1 — Agent 层问题（通过提示工程可修）
+
+4. **Tool 描述被本地模型误解**
+   - `click_card {index} — Open a note card by index` 被 Qwen 当成顶层工具调用 → "Unknown tool 'click_card'"。
+   - 本地模型对格式特别敏感，云端模型完全不会误解。
+   - 缓解：已在 `ExtractPageDataTool.description` 里显式说明 "This is ONE tool — these are commands, NOT separate top-level tools."
+
+5. **press_key Escape 不关 XHS 模态框但本地模型会循环重试**
+   - CDP 发 Escape 不会触发 React 模态框的关闭 handler，导致后续的 click 全落在打开状态的模态框上。
+   - Sonnet 从一开始就用 `extract_page_data close_note`（直接点 `.close-circle`），完全避开这个坑。
+   - Qwen 在 T15 已经发现 "extract_note_content 总是返回同一个笔记"，但不切换策略。
+   - 缓解：已在 `content.js` 的 `extract_note_content` 里加 `_stale_warning` 和 `no_note_modal_open` 显式信号；tool preamble 里明确规定 "close 时必须用 close_note，不要用 Escape"。
+
+6. **本地模型不主动截图**
+   - 系统提示说"开头截图"，但本地模型学会了 first-tool-wins 模式，只会用 navigate，从不 chain screenshot。
+   - 缓解：已在 tool preamble 里明确 "call `screenshot` in the same turn as `navigate`"。
+
+7. **思考内容冗余且重复**
+   - "点击成功，现在需要等待页面加载完成。| 点击成功，现在需要等待页面加载完成。" 这种重复 thinking 在简单步骤上浪费大量 output token。
+   - `enable_thinking=True` 是 Qwen3.5 MLX 的默认，关掉会损失复杂任务上的规划能力。
+   - 潜在方向：根据步骤复杂度动态开关 thinking（简单 action 直出 tool_call，复杂决策才 enable thinking）。
+
+#### P2 — 日志 / 可观测问题
+
+8. **原 reasoning log 里 thinking 和 output_text 被 join 到一个 field**
+   - 看起来像 "模型复读"，其实是日志结构把 `<think>` 段和 post-`</think>` 的输出段合并了。
+   - 已通过新增 `prefill_tokens` / `prefill_s` / `generation_tokens` / `generation_s` 字段部分缓解，但 thinking 和 output 本身仍然 join。
+   - 待办：在 `loop.py` 里把 `thinking` 和 `output_text` 作为两个独立字段写入日志。
+
+### 9.3 未来优化方向（任务线）
+
+#### 短期（1–2 周级）
+
+**O1. 工具结果预算 + 增量上下文（借鉴 Claude Code）**
+- 对每个工具结果设字节预算（比如 `extract_search_cards` → 2k，`extract_note_content` → 3k）。
+- 超出部分落到 `task_runs/<run>/artifacts/` 并在 message 里只留引用。
+- 对应 Claude Code 的 `toolResultStorage.ts` 思路。
+- 预期收益：Qwen 上下文从 14k 降到 ~5k，prefill 从 70s 降到 25s，整体提速 2–3x。
+
+**O2. 更激进的上下文裁剪**
+- 当前 `MAX_CONTEXT_TOKENS=8000` 触发阈值太高。
+- 改成：始终只保留 [task, 最近 3 个 turn 的完整内容, 被引用的关键 tool 结果]。
+- 结合 O1 可以把前 N-3 个 turn 的 tool 结果自动替换为 summary。
+
+**O3. Thinking 开关按步骤动态切换**
+- 简单机械步骤（`wait`, `screenshot`, `close_note`）→ `enable_thinking=False` 直出 tool_call。
+- 复杂规划步骤（选哪个笔记、是否继续）→ `enable_thinking=True`。
+- 需要一个 lightweight 分类器或关键词启发式。
+
+**O4. 分离 thinking / output_text 日志字段**
+- `loop.py::log_entry` 里把 `response.text_blocks` 拆成 thinking 前缀块和其余块。
+
+#### 中期（数周级）
+
+**O5. Prompt cache / KV cache 复用（最大收益项）**
+- MLX-LM / MLX-VLM 已有 `make_prompt_cache` API，可以在连续调用之间复用前缀的 KV。
+- 需要维护：每次调用检测"新 prompt 是否以上次 prompt 为前缀"，是则从 cache 续跑，否则重建。
+- 实现难点：系统提示 + 已有历史 = 公共前缀，追加的 user message 和 tool result 是增量。
+- 预期收益：连续 turn 的 prefill 从 O(n) 降到 O(delta)，尾部 turn 可能从 70s 降到 5–10s。**这是本地模型追平云端体验的关键**。
+- 对应 Sonnet 的 anthropic prompt caching（云端自动做了这件事）。
+
+**O6. 双模型架构（借鉴 Understudy）**
+- 规划模型：Qwen3.5-9B（或更大），每几个 turn 跑一次，产出高层计划。
+- 执行模型：更小的 Qwen3.5-2B / 3B，每 turn 跑一次，只负责从固定动作集里选一个。
+- 执行模型只需要"当前页面摘要 + 计划第 N 步 + 动作集"，上下文可以稳定在 2k 以下。
+- 当前项目里已经有 2B 模型用于 observer 背景场景，可以直接复用。
+
+**O7. 结构化输出替代 `<tool_call>` 文本解析**
+- 当前：模型生成 `<tool_call>...</tool_call>`，再正则解析，错了就"Unknown tool"。
+- 改进：用 MLX 的 logits processor 做 constrained decoding，直接强制输出符合 tool schema 的 JSON。
+- 附带好处：永远不会出现 `click_card` 被当成顶层工具的误解。
+
+**O8. Progressive disclosure 的系统提示架构**（见第 9.4 节）
+
+#### 长期（探索性）
+
+**O9. Per-site 工具子集加载**
+- 当前每次都把所有 11 个 tool 的定义塞进系统提示（~1.5k token）。
+- 改成：只在访问 XHS 时加载 XHS 相关工具定义，访问 ChatGPT 时加载聊天相关工具定义。
+- 对应云端的 MCP 服务器动态加载模式。
+
+**O10. 大上下文 + KV cache 的 9B 替代模型调研**
+- 如果 MLX 生态出现 Qwen3.5-14B-MLX-4bit（或同等尺寸的 Mixtral）并支持 KV cache 复用，可能单纯换模型就能拿到 2–3x 质量提升。
+
+### 9.4 Progressive Disclosure 的讨论（受 Claude Code 启发）
+
+Claude Code 的核心理念之一是 **progressive disclosure**：系统提示和工具不是一次性全部加载，而是根据当前步骤按需展开。具体表现包括：
+
+- 不会在 session 开始就把所有文件的全部内容塞给模型。
+- `ToolSearch` / MCP 的 deferred tool loading：只展示工具名，需要用时才 fetch 完整 schema。
+- CLAUDE.md 分层加载（repo / subdir / user 级），`file_path@line` 级精准引用。
+- 工具结果可以设预算，超出的部分做 "view more" 式的 lazy expand。
+
+对 FlowLens 本地模型路径，这个理念特别契合，因为 **prefill 是本地模型的唯一瓶颈**：
+
+1. **工具定义 lazy disclosure**
+   - 系统提示里只列 tool name + 一行描述（~300 token）。
+   - 模型想用某个工具时先声明 `tool_search: extract_page_data`，返回完整 schema。
+   - 已用过的工具 schema 保留在 cache 里。
+
+2. **Tool result lazy disclosure**
+   - `extract_search_cards` 默认只返回 top 5 卡片的标题 + 作者 + 点赞 + position（~500 token），完整字段 + 全部卡片放进一个 ref。
+   - 模型要详细数据时调 `expand_tool_result {ref}`。
+
+3. **Site knowledge lazy disclosure**
+   - 当前 `get_knowledge_for_url(url)` 一次性把整个 site YAML 塞进系统提示。
+   - 改成：先塞一段"此站可用的高层能力列表"，模型要具体示例时再调 `get_site_knowledge {section}`。
+
+4. **Screenshot lazy disclosure**
+   - 当前每张截图都全尺寸塞进 message。
+   - 改成：默认只塞"有这张图片 + 简短描述 + ref"；模型要看像素时再调 `load_screenshot {ref}`。
+   - 对本地 9B 尤其有用，因为截图占大量 vision token。
+
+5. **Reasoning lazy disclosure**
+   - 简单步骤 → 直接 tool_call，不输出 thinking。
+   - 复杂步骤 → 允许 thinking，但限制在 ~200 token 内。
+
+这个方向的代价是：需要实现一套 "tool result store + ref/expand"基础设施，和一套"自动压缩已看过的上下文"策略，工程量相当于重写 agent loop。收益是本地模型在复杂任务上可能从现在的 10x 差距收敛到 3x 差距，而且副作用是云端主线也能省 token。
+
+**建议做法**：把 O1（工具结果预算）作为这个方向的最小可用验证，跑通后再评估是否做完整的 progressive disclosure 重构。
+
+### 9.5 本地模型任务线的验收指标
+
+一条本地模型任务线的最终成功标准是：
+
+- **同任务、同工具，Qwen 9B 跑完耗时 ≤ Sonnet 的 3x**（当前 10x）。
+- **成功率 ≥ 80% 覆盖同目标笔记数**（当前 25%，1/4）。
+- **不依赖云端 fallback**：本地模型能在 30 turn 内自然结束，不撞 max_turns。
+- **prefill_s / turn 中位数 < 20s**（当前 60s+）。
+
+---
+
 *参考项目版本：browser-use v0.12.2 | skyvern v1.0.28 | understudy（2026-04 main 分支）| claude-code v2.1.88*

@@ -79,8 +79,12 @@ class MediaProcessor:
     def local_llm(self):
         """Lazy local LLM — only loaded when the qwen-local backend is used."""
         if self._local_llm is None:
-            from .local_llm import LocalLLM
-            self._local_llm = LocalLLM(self.config.model)
+            from .local_llm import DEFAULT_LOCAL_MODEL, LocalLLM
+
+            model_name = (self.config.model or "").strip()
+            if not model_name or model_name == DEFAULT_MODEL:
+                model_name = DEFAULT_LOCAL_MODEL
+            self._local_llm = LocalLLM(model_name)
         return self._local_llm
 
     # ── LLM Calls ───────────────────────────────────────────────

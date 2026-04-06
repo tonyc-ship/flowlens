@@ -1751,11 +1751,35 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
           result = await submitSearchQuery(msg.params?.keyword ?? '');
           break;
 
-        case 'extract_note_content':
-          // Wait for XHS to render content before extracting
+        case 'extract_note_content': {
+          // Detect whether a note-detail modal is actually visible. If not,
+          // the caller almost certainly has a stale or failed-to-close state
+          // and any scraped fields would be misleading (or echo the last
+          // opened note). Fail loudly instead of silently returning garbage.
+          const overlaySelectors = '.note-detail-mask, .note-overlay, .note-detail-modal, #noteContainer';
+          const overlay = document.querySelector(overlaySelectors);
+          const overlayVisible = !!(overlay && overlay.offsetHeight > 0);
+          if (!overlayVisible) {
+            result = {
+              error: 'no_note_modal_open',
+              message: 'extract_note_content called but no note detail modal is open. Use extract_page_data with command=click_card (or click_note_by_id) to open a note first, or close_note if a stuck modal needs to be dismissed.',
+              url: window.location.href,
+            };
+            break;
+          }
           await waitForNoteContent(msg.params?.timeout || 8000);
-          result = { note: extractNoteContent() };
+          const note = extractNoteContent();
+          // Flag suspected-stale: same note_id as the previous extract. This
+          // usually means close_note failed and the agent is re-reading the
+          // same stuck modal. Surface it so the agent can course-correct.
+          const prev = window.__flowlensLastNoteId || '';
+          if (note.note_id && prev && note.note_id === prev) {
+            note._stale_warning = `This looks like the same note as the previous extract (note_id=${note.note_id}). The note modal may not have closed between clicks — use extract_page_data command=close_note, verify the modal is gone, then re-open the target card.`;
+          }
+          if (note.note_id) window.__flowlensLastNoteId = note.note_id;
+          result = { note };
           break;
+        }
 
         case 'collect_carousel_images':
           result = await collectAllCarouselImages(msg.params?.max_images ?? 20);

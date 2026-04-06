@@ -150,7 +150,19 @@ class LocalLLM:
         )
 
     def _generate(self, formatted_prompt: str, max_tokens: int, image: str | None = None) -> str:
-        """Run generation and extract the answer text."""
+        """Run generation and extract the answer text (thinking stripped)."""
+        _, answer, _ = self._generate_with_thinking(formatted_prompt, max_tokens, image)
+        return answer
+
+    def _generate_with_thinking(
+        self, formatted_prompt: str, max_tokens: int, image: str | None = None
+    ) -> tuple[str, str, dict]:
+        """Run generation and return (thinking_text, answer_text, metrics) separately.
+
+        `metrics` contains prompt_tokens, generation_tokens, prompt_tps,
+        generation_tps, prefill_s, generation_s, total_s — so callers can
+        attribute API wall-time to prefill vs decode.
+        """
         from mlx_vlm import generate as vlm_generate
 
         t0 = time.perf_counter()
@@ -186,7 +198,23 @@ class LocalLLM:
             getattr(result, "generation_tps", 0),
             _perf_snapshot(),
         )
-        return _strip_think_tags(text)
+        thinking, answer = _split_think_tags(text)
+        prompt_tokens = int(getattr(result, "prompt_tokens", 0) or 0)
+        generation_tokens = int(getattr(result, "generation_tokens", 0) or 0)
+        prompt_tps = float(getattr(result, "prompt_tps", 0) or 0)
+        generation_tps = float(getattr(result, "generation_tps", 0) or 0)
+        prefill_s = round(prompt_tokens / prompt_tps, 3) if prompt_tps > 0 else 0.0
+        generation_s = round(generation_tokens / generation_tps, 3) if generation_tps > 0 else 0.0
+        metrics = {
+            "prompt_tokens": prompt_tokens,
+            "generation_tokens": generation_tokens,
+            "prompt_tps": round(prompt_tps, 1),
+            "generation_tps": round(generation_tps, 1),
+            "prefill_s": prefill_s,
+            "generation_s": generation_s,
+            "total_s": round(elapsed, 3),
+        }
+        return thinking, answer, metrics
 
     # ── Text generation ───────────────────────────────────────
 
@@ -269,12 +297,38 @@ class LocalLLM:
         return False
 
 
+def _split_think_tags(text: str) -> tuple[str, str]:
+    """Split <think>...</think> blocks from Qwen3.5 output.
+
+    Returns (thinking_text, answer_text).
+
+    Handles two cases:
+    1. Full tags: <think>content</think>answer
+    2. Partial (when <think> was in the prompt): content</think>answer
+    """
+    import re
+    # Case 1: full <think>...</think> block
+    match = re.search(r"<think>([\s\S]*?)</think>\s*", text)
+    if match:
+        thinking = match.group(1).strip()
+        answer = text[:match.start()] + text[match.end():]
+        return thinking, answer.strip()
+
+    # Case 2: model output starts with thinking content, </think> appears later
+    # (because <think> was already in the prompt template)
+    if "</think>" in text:
+        idx = text.index("</think>")
+        thinking = text[:idx].strip()
+        answer = text[idx + len("</think>"):].strip()
+        return thinking, answer
+
+    return "", text.strip()
+
+
 def _strip_think_tags(text: str) -> str:
     """Remove <think>...</think> blocks from Qwen3.5 output."""
-    import re
-    # Remove thinking blocks (may appear at start of response)
-    text = re.sub(r"<think>[\s\S]*?</think>\s*", "", text)
-    return text.strip()
+    _, answer = _split_think_tags(text)
+    return answer
 
 
 def _perf_snapshot() -> str:
