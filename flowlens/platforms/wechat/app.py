@@ -29,11 +29,31 @@ WECHAT_SCROLL_Y = 0.45
 
 _TITLE_COUNTER_RE = re.compile(r"[\(（]\d+[\)）]")
 _SIDEBAR_TIME_RE = re.compile(r"(?:\d{1,2}:\d{2}|yesterday|today)", re.IGNORECASE)
+_TITLE_NORMALIZE_RE = re.compile(r"[^0-9A-Za-z\u4e00-\u9fff]+")
+
+_WECHAT_MAIN_TOKENS = (
+    "Chats",
+    "Contacts",
+    "Favorites",
+    "Moments",
+    "搜索",
+    "通讯录",
+    "收藏",
+    "朋友圈",
+)
+_WECHAT_ENTRY_TOKENS = (
+    "Enter Weixin",
+    "Switch Account",
+    "Transfer files only",
+    "进入微信",
+    "切换账号",
+    "仅传输文件",
+)
 
 
 def normalize_wechat_title(text: str) -> str:
     cleaned = _TITLE_COUNTER_RE.sub("", str(text or ""))
-    cleaned = re.sub(r"\s+", "", cleaned)
+    cleaned = _TITLE_NORMALIZE_RE.sub("", cleaned.casefold())
     return cleaned.strip()
 
 
@@ -126,6 +146,7 @@ class WeChatDesktopApp:
         """Open a specific conversation by OCR-click or search fallback."""
 
         self.activate()
+        self.ensure_main_window_ready()
         target = conversation_name.strip()
         if not target:
             return {"opened": False, "method": "current_conversation", "match": ""}
@@ -162,6 +183,7 @@ class WeChatDesktopApp:
 
     def open_first_visible_conversation(self) -> dict:
         self.activate()
+        self.ensure_main_window_ready()
         _, _, page = self.capture_state()
         candidates = sorted(
             page.within(WECHAT_SIDEBAR_REGION),
@@ -203,6 +225,60 @@ class WeChatDesktopApp:
             if len(item.text.strip()) >= 3 and item.text.casefold() not in {"search"}
         ]
         return bool(right_pane_lines)
+
+    def ensure_main_window_ready(self, *, timeout_s: float = 12.0) -> None:
+        deadline = time.monotonic() + timeout_s
+        attempted_entry = False
+
+        while time.monotonic() < deadline:
+            _, image, page = self.capture_state()
+            if self._looks_like_main_window(image, page):
+                return
+
+            if self._entry_panel_visible(page) and not attempted_entry:
+                attempted_entry = True
+                enter = (
+                    self.session.click_text("Enter Weixin")
+                    or self.session.click_text("进入微信")
+                )
+                if enter is not None:
+                    time.sleep(2.0)
+                    continue
+
+            time.sleep(0.6)
+
+        raise RuntimeError(
+            "WeChat is running, but its main chat window is not visible on the current desktop. "
+            "Bring the WeChat chat window to the current Space, then rerun the task."
+        )
+
+    def _looks_like_main_window(self, image: Image.Image, page: OCRPage) -> bool:
+        window = self.resolve_window()
+        if window.width < 500 or window.height < 600:
+            return False
+
+        unique_hits = {
+            token for token in _WECHAT_MAIN_TOKENS
+            if page.best_text_match(token, exact=False) is not None
+        }
+        if len(unique_hits) >= 2:
+            return True
+
+        if self.vision is None:
+            return False
+        response = self.vision.analyze_page(
+            image,
+            (
+                "Does this screenshot show the main WeChat desktop chat window with the "
+                "conversation list or an opened chat, rather than Finder, a browser, or the "
+                "small entry/login panel? Answer YES or NO only."
+            ),
+            config=WECHAT_UI_SIMPLE_CHECK,
+        )
+        return response.strip().upper().startswith("Y")
+
+    def _entry_panel_visible(self, page: OCRPage) -> bool:
+        return any(page.best_text_match(token, exact=False) is not None for token in _WECHAT_ENTRY_TOKENS)
 
     def scroll_history_up(self, *, repeats: int = 6, line_delta: int = 8) -> tuple[int, int]:
         return self.session.scroll_lines(

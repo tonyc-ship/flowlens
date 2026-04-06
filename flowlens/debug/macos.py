@@ -171,6 +171,8 @@ class MacOSController:
                 continue
             if title_contains and title_contains.lower() not in title.lower():
                 continue
+            sharing_state = int(win.get("kCGWindowSharingState") or 0)
+            backend = "region" if sharing_state == 0 else "quartz"
             windows.append(
                 WindowInfo(
                     window_id=int(win.get("kCGWindowNumber") or 0),
@@ -182,6 +184,7 @@ class MacOSController:
                     height=height,
                     layer=layer,
                     on_screen=bool(win.get("kCGWindowIsOnscreen") or False),
+                    capture_backend=backend,
                 )
             )
 
@@ -513,6 +516,8 @@ function run(argv){
                 score -= 200
             elif target_title and target_title in normalized_title:
                 score -= 100
+            sharing_state = int(win.get("kCGWindowSharingState") or 0)
+            backend = "region" if sharing_state == 0 else "quartz"
             candidates.append(
                 (
                     score,
@@ -526,7 +531,7 @@ function run(argv){
                         height=height,
                         layer=layer,
                         on_screen=bool(win.get("kCGWindowIsOnscreen") or False),
-                        capture_backend="quartz",
+                        capture_backend=backend,
                     ),
                 )
             )
@@ -643,9 +648,17 @@ function run(argv) {
     def capture_window_info(self, window: WindowInfo) -> Image.Image:
         if window.capture_backend == "region":
             return self.capture_region(window.x, window.y, window.width, window.height)
-        return self.capture_window(window.window_id)
+        try:
+            return self.capture_window(window.window_id)
+        except RuntimeError:
+            return self.capture_region(window.x, window.y, window.width, window.height)
+
+    def open_app(self, app_name: str) -> None:
+        subprocess.run(["open", "-a", app_name], check=True)
+        time.sleep(0.4)
 
     def activate_app(self, app_name: str) -> None:
+        self.open_app(app_name)
         subprocess.run(
             ["osascript", "-e", f'tell application "{_escape_applescript(app_name)}" to activate'],
             check=True,

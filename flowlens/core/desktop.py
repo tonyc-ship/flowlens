@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import io
+import time
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -43,14 +44,29 @@ class DesktopWindowSession:
         self.controller.activate_app(self.app_name)
 
     def resolve_window(self, *, visible_only: bool = True) -> WindowInfo:
-        window = self.controller.best_window_for_app(
-            self.app_name,
-            title_contains=self.title_contains,
-            visible_only=visible_only,
-        )
-        if window is None:
-            raise RuntimeError(f"Could not find a visible window for app: {self.app_name}")
-        return window
+        deadline = time.monotonic() + (6.0 if visible_only else 2.0)
+        attempted_reopen = False
+
+        while True:
+            window = self.controller.best_window_for_app(
+                self.app_name,
+                title_contains=self.title_contains,
+                visible_only=visible_only,
+            )
+            if window is not None:
+                return window
+
+            if visible_only and not attempted_reopen:
+                open_app = getattr(self.controller, "open_app", None)
+                if callable(open_app):
+                    open_app(self.app_name)
+                    attempted_reopen = True
+
+            if time.monotonic() >= deadline:
+                break
+            time.sleep(0.3)
+
+        raise RuntimeError(f"Could not find a visible window for app: {self.app_name}")
 
     def capture_image(self, *, visible_only: bool = True) -> tuple[WindowInfo, Image.Image]:
         window = self.resolve_window(visible_only=visible_only)
