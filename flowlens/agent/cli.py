@@ -26,9 +26,9 @@ def main(argv: list[str] | None = None) -> int:
     )
     parser.add_argument(
         "--backend",
-        choices=["anthropic", "qwen-local"],
+        choices=["anthropic", "qwen-local", "ui-tars-local"],
         default="anthropic",
-        help="LLM backend: anthropic (default) or qwen-local",
+        help="LLM backend: anthropic (default), qwen-local, or ui-tars-local",
     )
     parser.add_argument(
         "--run-dir",
@@ -43,6 +43,8 @@ def main(argv: list[str] | None = None) -> int:
         model = args.model
     elif args.backend == "qwen-local":
         model = "qwen-local"
+    elif args.backend == "ui-tars-local":
+        model = "ui-tars-local"
     else:
         model = "claude-sonnet-4-6"
 

@@ -18,11 +18,21 @@ from datetime import datetime
 from pathlib import Path
 
 from ..core.bridge import ExtensionBridge, TabBridge, ensure_extension_connection
+from ..core.process_metrics import append_jsonl, system_resource_snapshot
 from ..knowledge.loader import get_knowledge_for_url
+from ..perception.media import (
+    BACKEND_QWEN_LOCAL,
+    BACKEND_SONNET,
+    BACKEND_UI_TARS_LOCAL,
+    DEFAULT_MODEL,
+    MediaConfig,
+    MediaProcessor,
+)
 from .backends import Backend, create_backend
 from .tool import Tool, ToolContext
 from .tools.browser import make_browser_tools
-from .tools.vision import AnalyzeScreenshotTool
+from .tools.site import ExtractSiteEntityTool, RunSiteActionTool
+from .tools.vision import AnalyzeScreenshotTool, OcrScreenshotTool
 
 
 _BASE_SYSTEM_PROMPT = """\
@@ -33,7 +43,7 @@ tools to accomplish tasks on websites.
 
 1. **Plan first**: Before acting, briefly state your plan for the overall task. \
 Break the task into logical steps. Revise the plan as you learn more.
-2. **Observe**: Take a screenshot AND/OR use read_page to understand the current state.
+2. **Observe**: Take a screenshot and prefer site-specific extractors when they exist. Use read_page only when there is no site-specific extractor for the current need or when you need exact coordinates for a manual fallback.
 3. **Act**: Execute one action, then observe the result.
 4. **Verify**: After important actions, take a screenshot to confirm they worked.
 5. **Report**: When done, write a comprehensive, detailed report.
@@ -41,11 +51,19 @@ Break the task into logical steps. Revise the plan as you learn more.
 ## Important rules
 
 - Always take a screenshot at the start to see the current page.
-- **Before clicking**: Use read_page to find exact element coordinates. Do NOT \
-guess coordinates from screenshots alone — use the (x,y) coordinates from \
-read_page elements, clicking at the center of the element's bounding box.
+- **Before manual clicking on generic pages**: Use read_page to find exact \
+element coordinates. Do NOT guess coordinates from screenshots alone — use the \
+(x,y) coordinates from read_page elements, clicking at the center of the \
+element's bounding box.
 - Prefer using site-specific extractors (extract_page_data) when available — \
-they are faster and more reliable than reading raw DOM.
+they are faster and more reliable than reading raw DOM or manually clicking UI.
+- Prefer `run_site_action` for common site flows like search + open + read_note \
+on supported sites.
+- Prefer `extract_site_entity` for full note/profile extraction when you are \
+already on the relevant page state. Use raw `extract_page_data` only for \
+low-level actions and DOM-only helpers.
+- When site knowledge marks a command as PREFERRED, use that command before \
+trying read_page + click/type fallbacks.
 - Use the wait tool between actions to add natural delays (2-5 seconds). \
 This is critical for avoiding anti-bot detection.
 - If something goes wrong, take a screenshot to diagnose before retrying.
@@ -106,6 +124,15 @@ def _text_summary(content_blocks: list[dict], max_len: int = 500) -> str:
     return " | ".join(parts)[:max_len]
 
 
+def _make_media_for_model(model: str) -> MediaProcessor:
+    normalized = str(model or DEFAULT_MODEL).strip()
+    if normalized == "ui-tars-local" or normalized.startswith("UI-TARS"):
+        return MediaProcessor(MediaConfig(backend=BACKEND_UI_TARS_LOCAL, model=normalized))
+    if normalized == "qwen-local" or normalized.startswith("Qwen"):
+        return MediaProcessor(MediaConfig(backend=BACKEND_QWEN_LOCAL, model=normalized))
+    return MediaProcessor(MediaConfig(backend=BACKEND_SONNET, model=normalized or DEFAULT_MODEL))
+
+
 async def _execute_tool(
     tool: Tool,
     params: dict,
@@ -162,6 +189,9 @@ async def run_agent(
         else:
             print(f"  [agent] {event}: {detail}")
 
+    if media is None:
+        media = _make_media_for_model(model)
+
     # Setup bridge if not provided
     own_bridge = False
     if bridge is None:
@@ -201,17 +231,32 @@ async def run_agent(
             log=log,
             own_bridge=own_bridge,
             parent_bridge=bridge if isinstance(scoped_bridge, TabBridge) else None,
+            agent_window_id=agent_window_id,
         )
     finally:
+        cleanup_status: dict = {"stage": "cleanup"}
         # Clean up agent window
         if agent_window_id and isinstance(bridge, ExtensionBridge):
             try:
-                await bridge.close_window(agent_window_id)
+                await asyncio.shield(bridge.close_window(agent_window_id))
                 log("cleanup", f"Closed agent window {agent_window_id}")
-            except Exception:
-                pass
+                cleanup_status["close_window"] = "ok"
+            except BaseException as e:
+                cleanup_status["close_window"] = "error"
+                cleanup_status["close_window_error"] = str(e)
         if own_bridge:
-            await bridge.stop()
+            try:
+                await asyncio.shield(bridge.stop())
+                cleanup_status["bridge_stop"] = "ok"
+            except BaseException as e:
+                cleanup_status["bridge_stop"] = "error"
+                cleanup_status["bridge_stop_error"] = str(e)
+        try:
+            snapshot = system_resource_snapshot(agent_window_id=agent_window_id)
+            snapshot.update(cleanup_status)
+            append_jsonl(run_dir / "resource_log.jsonl", snapshot)
+        except Exception:
+            pass
 
 
 async def _agent_loop(
@@ -226,11 +271,16 @@ async def _agent_loop(
     log,
     own_bridge: bool = False,
     parent_bridge: ExtensionBridge | None = None,
+    agent_window_id: int | None = None,
 ) -> dict:
     ctx = ToolContext(run_dir=run_dir)
 
     # Downscale screenshots for local models (768px max dim → ~3s per image)
-    is_local = model == "qwen-local" or model.startswith("Qwen")
+    is_local = (
+        model in {"qwen-local", "ui-tars-local"}
+        or model.startswith("Qwen")
+        or model.startswith("UI-TARS")
+    )
     if is_local:
         ctx.screenshot_max_dim = 768
 
@@ -244,6 +294,10 @@ async def _agent_loop(
     tools: list[Tool] = make_browser_tools(bridge, ext_bridge=ext_bridge)
     if media:
         tools.append(AnalyzeScreenshotTool(media=media))
+        tools.append(OcrScreenshotTool(media=media))
+    if media and ext_bridge is not None:
+        tools.append(RunSiteActionTool(bridge, ext_bridge=ext_bridge, media=media))
+        tools.append(ExtractSiteEntityTool(bridge, ext_bridge=ext_bridge, media=media))
 
     tool_map = {t.name: t for t in tools}
     api_tools = [t.to_api_schema() for t in tools]
@@ -287,12 +341,26 @@ async def _agent_loop(
 
     # ── Detailed reasoning log ──────────────────────────────────
     reasoning_log: list[dict] = []
+    resource_snapshots: list[dict] = []
     task_start_time = time.time()
 
     def log_entry(entry: dict):
         entry["elapsed_s"] = round(time.time() - task_start_time, 2)
         entry["timestamp"] = datetime.now().isoformat()
         reasoning_log.append(entry)
+
+    def resource_entry(stage: str, *, turn_number: int | None = None, extra: dict | None = None):
+        try:
+            snapshot = system_resource_snapshot(agent_window_id=agent_window_id)
+        except Exception as e:
+            snapshot = {"timestamp": datetime.now().isoformat(), "resource_error": str(e)}
+        snapshot["stage"] = stage
+        if turn_number is not None:
+            snapshot["turn"] = turn_number
+        if extra:
+            snapshot.update(extra)
+        resource_snapshots.append(snapshot)
+        append_jsonl(run_dir / "resource_log.jsonl", snapshot)
 
     log_entry({
         "type": "task_start",
@@ -302,6 +370,7 @@ async def _agent_loop(
         "tools": [t.name for t in tools],
         "site_knowledge_loaded": bool(site_knowledge),
     })
+    resource_entry("task_start", extra={"model": model, "max_turns": max_turns})
 
     log("start", f"Task: {task}")
     log("tools", f"Available: {[t.name for t in tools]}")
@@ -312,6 +381,7 @@ async def _agent_loop(
         turn_start = time.time()
         log("turn", f"Turn {turn}/{max_turns}")
         await watch("info", f"Turn {turn}/{max_turns}", phase="turn")
+        resource_entry("turn_start", turn_number=turn)
 
         # Call LLM backend
         api_start = time.time()
@@ -340,14 +410,22 @@ async def _agent_loop(
         tool_use_blocks = response.tool_calls
         text_blocks = response.text_blocks
 
-        # Log LLM thinking
+        # Log LLM thinking separately from user-visible text so local-model
+        # chain-of-thought does not leak into reports or message history.
         thinking_texts = []
+        visible_texts = []
         for text in text_blocks:
             log("text", text[:200])
-            final_text = text
-            thinking_texts.append(text)
-            await watch("info", text[:200], phase="thinking",
-                        reasoning=text[:500])
+            if text.startswith("[Thinking] "):
+                thinking = text[len("[Thinking] "):]
+                thinking_texts.append(thinking)
+                await watch("info", thinking[:200], phase="thinking",
+                            reasoning=thinking[:500])
+            else:
+                visible_texts.append(text)
+                final_text = text
+                await watch("info", text[:200], phase="thinking",
+                            reasoning=text[:500])
 
         usage_entry: dict = {
             "input_tokens": response.input_tokens,
@@ -370,6 +448,7 @@ async def _agent_loop(
             "turn": turn,
             "api_duration_s": api_duration,
             "thinking": "\n".join(thinking_texts) if thinking_texts else None,
+            "text": "\n".join(visible_texts) if visible_texts else None,
             "tool_calls": [
                 {"name": tu.name, "input": tu.input}
                 for tu in tool_use_blocks
@@ -379,6 +458,8 @@ async def _agent_loop(
         })
 
         if not tool_use_blocks:
+            if visible_texts:
+                final_text = "\n".join(visible_texts)
             log("done", f"Task complete after {turn} turns")
             log_entry({"type": "task_complete", "turn": turn})
             break
@@ -415,18 +496,26 @@ async def _agent_loop(
                             system_prompt = _build_system_prompt(tools, site_knowledge, extra_instructions)
                             log("knowledge_update", f"Loaded knowledge for {url}")
 
+                    before_root_images = {
+                        path.name
+                        for path in run_dir.iterdir()
+                        if path.is_file() and path.suffix.lower() in (".png", ".jpg", ".jpeg", ".webp")
+                    }
                     result_content = await _execute_tool(tool, tool_input, ctx)
 
                     tool_duration = round(time.time() - tool_start, 2)
 
-                    # Track screenshots
-                    if tool_name == "screenshot":
-                        imgs = sorted(
-                            f for f in run_dir.iterdir()
-                            if f.suffix.lower() in (".png", ".jpg", ".jpeg", ".webp")
-                        )
-                        if imgs:
-                            screenshots.append(str(imgs[-1]))
+                    # Track any new top-level screenshots generated by tools
+                    after_root_images = sorted(
+                        path for path in run_dir.iterdir()
+                        if path.is_file() and path.suffix.lower() in (".png", ".jpg", ".jpeg", ".webp")
+                    )
+                    for img in after_root_images:
+                        if img.name in before_root_images:
+                            continue
+                        img_str = str(img)
+                        if img_str not in screenshots:
+                            screenshots.append(img_str)
 
                     log_entry({
                         "type": "tool_result",
@@ -454,6 +543,7 @@ async def _agent_loop(
 
         # Small delay between turns for rate limiting
         await asyncio.sleep(0.5)
+        resource_entry("turn_end", turn_number=turn, extra={"turn_duration_s": round(time.time() - turn_start, 2)})
 
     if turn >= max_turns:
         log("max_turns", f"Reached maximum {max_turns} turns — requesting final report")
@@ -477,7 +567,11 @@ async def _agent_loop(
                 max_tokens=8192,
             )
             if summary_resp.text_blocks:
-                final_text = "\n".join(summary_resp.text_blocks)
+                visible_summary = [
+                    text for text in summary_resp.text_blocks
+                    if not text.startswith("[Thinking] ")
+                ]
+                final_text = "\n".join(visible_summary or summary_resp.text_blocks)
                 log("final_report", f"Generated {len(final_text)} chars")
                 log_entry({
                     "type": "final_report_generated",
@@ -490,6 +584,7 @@ async def _agent_loop(
     # ── Save outputs ────────────────────────────────────────────
 
     total_duration = round(time.time() - task_start_time, 2)
+    resource_entry("task_end", turn_number=turn, extra={"total_duration_s": total_duration})
 
     # Save final report
     report_path = run_dir / "report.md"
@@ -513,7 +608,9 @@ async def _agent_loop(
         "run_dir": str(run_dir),
         "timestamp": datetime.now().isoformat(),
         "reasoning_log_file": "reasoning_log.jsonl",
+        "resource_log_file": "resource_log.jsonl",
         "usage_summary": _summarize_usage(reasoning_log),
+        "resource_summary": _summarize_resources(resource_snapshots),
     }
     log_path.write_text(json.dumps(log_data, ensure_ascii=False, indent=2), encoding="utf-8")
 
@@ -557,4 +654,27 @@ def _summarize_usage(reasoning_log: list[dict]) -> dict:
         "total_api_time_s": round(api_time, 2),
         "total_tool_time_s": round(tool_time, 2),
         "tool_call_counts": tool_counts,
+    }
+
+
+def _summarize_resources(resource_snapshots: list[dict]) -> dict:
+    max_windowserver = 0.0
+    max_chrome_windows = 0
+    max_current_rss = 0.0
+    max_observer_rss = 0.0
+    for snapshot in resource_snapshots:
+        windowserver = snapshot.get("windowserver") or {}
+        chrome = snapshot.get("chrome") or {}
+        current = snapshot.get("current_process") or {}
+        observer = snapshot.get("observer") or {}
+        max_windowserver = max(max_windowserver, float(windowserver.get("footprint_mb") or 0.0))
+        max_chrome_windows = max(max_chrome_windows, int(chrome.get("window_count") or 0))
+        max_current_rss = max(max_current_rss, float(current.get("rss_mb") or 0.0))
+        max_observer_rss = max(max_observer_rss, float(observer.get("rss_mb") or 0.0))
+    return {
+        "snapshots": len(resource_snapshots),
+        "max_windowserver_footprint_mb": round(max_windowserver, 2),
+        "max_chrome_window_count": max_chrome_windows,
+        "max_current_process_rss_mb": round(max_current_rss, 2),
+        "max_observer_rss_mb": round(max_observer_rss, 2),
     }

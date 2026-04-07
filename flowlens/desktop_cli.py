@@ -1,4 +1,8 @@
-"""Desktop-oriented entrypoint for the Tauri shell."""
+"""Desktop-oriented entrypoint for the Tauri shell.
+
+Routes free-form prompts from the desktop app into the generic agent loop
+(or the WeChat workflow when the prompt is a chat-summary request).
+"""
 
 from __future__ import annotations
 
@@ -8,15 +12,16 @@ import json
 import logging
 import re
 from dataclasses import asdict, dataclass
+from datetime import datetime
 from pathlib import Path
 
+from .agent.loop import run_agent
 from .perception.policy import TaskModelPolicy
 from .reasoning.tasks import (
     make_creator_growth_breakdown_task,
     make_topic_research_task,
     make_wechat_chat_summary_task,
 )
-from .workflows.xhs import XHSTaskRunner
 from .workflows.wechat import WeChatChatSummaryRunner
 
 PROFILE_URL_RE = re.compile(r"https?://www\.xiaohongshu\.com/user/profile/[^\s]+")
@@ -87,39 +92,80 @@ def infer_desktop_task(prompt: str) -> DesktopTaskRequest:
     )
 
 
+def _backend_to_model(backend: str) -> str:
+    if backend == "qwen-local":
+        return "qwen-local"
+    if backend == "ui-tars-local":
+        return "ui-tars-local"
+    return "claude-sonnet-4-6"
+
+
+async def _run_agent_request(
+    request: DesktopTaskRequest, *, output_root: Path, port: int
+) -> dict:
+    if request.kind == "creator_growth_breakdown":
+        task = make_creator_growth_breakdown_task(request.profile_url)
+    else:
+        task = make_topic_research_task(request.topic)
+
+    ts = datetime.now().strftime("%Y%m%d_%H%M%S")
+    run_dir = output_root / f"agent_{ts}_{task.slug()}"
+    run_dir.mkdir(parents=True, exist_ok=True)
+    log_path = run_dir / "desktop.log"
+
+    def log_callback(event: str, detail: str = "") -> None:
+        line = f"{datetime.now().isoformat()} {event}: {detail}\n"
+        with open(log_path, "a", encoding="utf-8") as fh:
+            fh.write(line)
+        print(f"  [desktop] {event}: {detail}")
+
+    log_callback("desktop_request", json.dumps(asdict(request), ensure_ascii=False))
+    log_callback("watch_window", "agent loop creates its own background window")
+
+    result = await run_agent(
+        task=task.to_prompt(),
+        run_dir=run_dir,
+        model=_backend_to_model(request.llm_backend),
+        log_callback=log_callback,
+    )
+
+    log_callback("TASK COMPLETE", f"turns={result['turns']} duration_s={result.get('total_duration_s', 0)}")
+
+    return {
+        "request": asdict(request),
+        "task_dir": str(run_dir),
+        "workflow_report_dir": str(run_dir),
+        "report_md": str(run_dir / "report.md"),
+        "report_html": "",
+        "session_gif": "",
+        "turns": result["turns"],
+        "total_duration_s": result.get("total_duration_s", 0),
+    }
+
+
 async def _run_request(request: DesktopTaskRequest, *, output_root: str, port: int) -> dict:
     policy = TaskModelPolicy.from_choice(request.llm_backend)
     request.llm_backend = policy.reasoning_backend
+    output_root_path = Path(output_root)
+    output_root_path.mkdir(parents=True, exist_ok=True)
+
     if request.kind == "wechat_chat_summary":
         request.llm_backend = "qwen-local"
         task = make_wechat_chat_summary_task(request.conversation)
         runner = WeChatChatSummaryRunner(
-            output_root=output_root,
+            output_root=str(output_root_path),
             llm_backend=request.llm_backend,
         )
         result = await runner.run(task)
-    else:
-        task = (
-            make_creator_growth_breakdown_task(request.profile_url)
-            if request.kind == "creator_growth_breakdown"
-            else make_topic_research_task(request.topic)
-        )
+        return {
+            "request": asdict(request),
+            "workflow_report_dir": result.get("workflow_report_dir", "") or result.get("task_dir", ""),
+            "session_gif": result.get("session_gif", ""),
+            "report_md": result.get("report_md", ""),
+            "report_html": result.get("report_html", ""),
+        }
 
-        runner = XHSTaskRunner(
-            output_root=output_root,
-            port=port,
-            record_interval=1.5,
-            watch=True,
-            llm_backend=request.llm_backend,
-        )
-        result = await runner.run(task)
-    return {
-        "request": asdict(request),
-        "workflow_report_dir": result.get("workflow_report_dir", "") or result.get("task_dir", ""),
-        "session_gif": result.get("session_gif", ""),
-        "report_md": result.get("report_md", ""),
-        "report_html": result.get("report_html", ""),
-    }
+    return await _run_agent_request(request, output_root=output_root_path, port=port)
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -134,15 +180,15 @@ def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description="Desktop bridge for FlowLens.")
     subparsers = parser.add_subparsers(dest="command", required=True)
 
-    run_parser = subparsers.add_parser("run", help="Run a prompt through the XHS task layer.")
+    run_parser = subparsers.add_parser("run", help="Run a prompt through the agent loop.")
     run_parser.add_argument("--prompt", required=True, help="Free-form task prompt from the desktop app.")
     run_parser.add_argument("--output-root", default="task_runs/desktop_app", help="Task output root.")
     run_parser.add_argument("--port", type=int, default=8765, help="Extension websocket port.")
     run_parser.add_argument(
         "--llm-backend",
-        choices=["sonnet", "qwen-local"],
+        choices=["sonnet", "qwen-local", "ui-tars-local"],
         default="sonnet",
-        help="Reasoning/vision backend for the XHS workflow.",
+        help="Reasoning/vision backend for the agent loop.",
     )
     run_parser.add_argument("--dry-run", action="store_true", help="Only infer the request; do not run.")
 

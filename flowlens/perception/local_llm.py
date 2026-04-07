@@ -25,6 +25,7 @@ logger = logging.getLogger(__name__)
 
 WEIGHTS_DIR = Path.home() / ".flowlens" / "weights"
 DEFAULT_LOCAL_MODEL = "Qwen3.5-9B-MLX-4bit"
+DEFAULT_UI_TARS_MODEL = "UI-TARS-1.5-7B-6bit"
 
 # Singleton cache — loading a model takes several seconds and ~6GB RAM,
 # so we keep exactly one loaded at a time.
@@ -53,14 +54,30 @@ def _local_model_is_complete(local: Path) -> bool:
 
         index = json.loads(index_path.read_text())
         expected_total = int((index.get("metadata") or {}).get("total_size") or 0)
+        expected_files = sorted(set((index.get("weight_map") or {}).values()))
     except Exception:
         expected_total = 0
+        expected_files = []
+
+    if expected_files and all((local / name).exists() for name in expected_files):
+        return True
 
     if expected_total <= 0:
         return True
 
     actual_total = sum(path.stat().st_size for path in safetensors)
-    return actual_total >= int(expected_total * 0.98)
+    if actual_total >= int(expected_total * 0.98):
+        return True
+
+    # Some local quantized repacks ship a stale upstream index.json with
+    # original full-precision metadata. If the essential model files exist,
+    # trust the local directory and let mlx-vlm load it directly.
+    essentials = [
+        local / "config.json",
+        local / "tokenizer.json",
+        local / "preprocessor_config.json",
+    ]
+    return actual_total > 0 and all(path.exists() for path in essentials)
 
 
 def _resolve_model_path(name: str) -> str:
@@ -80,6 +97,7 @@ class LocalLLM:
         self.think = think
         self._model = None
         self._processor = None
+        self._config = None
 
     def _ensure_loaded(self):
         """Lazy-load model + processor on first use."""
@@ -92,12 +110,17 @@ class LocalLLM:
             if self._model is not None:
                 return
             if cache_key in _cache:
-                self._model, self._processor = _cache[cache_key]
+                cached = _cache[cache_key]
+                if isinstance(cached, tuple) and len(cached) == 3:
+                    self._model, self._processor, self._config = cached
+                else:
+                    self._model, self._processor = cached
                 logger.info("Reusing cached model: %s (%s)", self.model_name, _perf_snapshot())
                 return
 
             try:
                 from mlx_vlm import load as vlm_load
+                from mlx_vlm.utils import load_config
             except ImportError as exc:
                 raise RuntimeError(
                     "Local LLM backend requires mlx-vlm. Install with "
@@ -108,6 +131,16 @@ class LocalLLM:
             logger.info("Loading local model: %s (%s)", path, _perf_snapshot())
             t0 = time.perf_counter()
             self._model, self._processor = vlm_load(path)
+            try:
+                self._config = load_config(path)
+            except Exception:
+                self._config = None
+
+            tokenizer = getattr(self._processor, "tokenizer", None)
+            if getattr(self._processor, "chat_template", None) in (None, ""):
+                chat_template = getattr(tokenizer, "chat_template", None)
+                if chat_template:
+                    self._processor.chat_template = chat_template
 
             # Force slow (non-fast) image processor to avoid the
             # "Only returning PyTorch tensors" error from the fast processor.
@@ -121,7 +154,7 @@ class LocalLLM:
 
             elapsed = time.perf_counter() - t0
             logger.info("Model loaded in %.1fs (%s)", elapsed, _perf_snapshot())
-            _cache[cache_key] = (self._model, self._processor)
+            _cache[cache_key] = (self._model, self._processor, self._config)
 
     def _format_prompt(self, text: str, *, image_path: str | None = None) -> str:
         """Wrap user content through the model's chat template.
@@ -142,12 +175,59 @@ class LocalLLM:
         else:
             content = text
         messages = [{"role": "user", "content": content}]
-        return self._processor.apply_chat_template(
+        return self.apply_chat_template(
             messages,
-            tokenize=False,
             add_generation_prompt=True,
-            enable_thinking=self.think,
         )
+
+    def apply_chat_template(
+        self,
+        messages: list[dict],
+        *,
+        add_generation_prompt: bool = True,
+    ) -> str:
+        """Apply the model chat template with best-effort compatibility.
+
+        Qwen models support ``enable_thinking`` while other local VLMs such as
+        UI-TARS may expose a simpler signature. We try the richer path first and
+        gracefully fall back to the generic Hugging Face-style call.
+        """
+        self._ensure_loaded()
+        try:
+            return self._processor.apply_chat_template(
+                messages,
+                tokenize=False,
+                add_generation_prompt=add_generation_prompt,
+                enable_thinking=self.think,
+            )
+        except TypeError:
+            return self._processor.apply_chat_template(
+                messages,
+                tokenize=False,
+                add_generation_prompt=add_generation_prompt,
+            )
+        except ValueError:
+            if self._config is None:
+                raise
+            from mlx_vlm.prompt_utils import apply_chat_template as mlx_apply_chat_template
+
+            num_images = 0
+            for message in messages:
+                content = message.get("content")
+                if isinstance(content, list):
+                    num_images += sum(
+                        1
+                        for item in content
+                        if isinstance(item, dict) and item.get("type") == "image"
+                    )
+
+            return mlx_apply_chat_template(
+                self._processor,
+                self._config,
+                messages,
+                add_generation_prompt=add_generation_prompt,
+                num_images=num_images,
+            )
 
     def _generate(self, formatted_prompt: str, max_tokens: int, image: str | None = None) -> str:
         """Run generation and extract the answer text (thinking stripped)."""

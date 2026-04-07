@@ -5,6 +5,7 @@ from __future__ import annotations
 import argparse
 import json
 
+from ..core.process_metrics import observer_capture_loop_snapshot
 from .analysis import (
     BACKEND_SONNET,
     ask_question,
@@ -65,10 +66,18 @@ def _print_status(paths: ObserverPaths) -> None:
     stats = store.stats()
     latest = store.latest_capture() or {}
     launchd = launch_agent_status(paths)
+    config = ObserverConfig.from_env()
     screenshot_count = sum(1 for _ in paths.screenshots_dir.rglob("screen_*.*"))
     payload = {
         "root": str(paths.root),
         "db_path": str(paths.db_path),
+        "config": {
+            "check_interval": config.check_interval,
+            "force_capture_interval": config.force_capture_interval,
+            "diff_threshold": config.diff_threshold,
+            "vision_enabled": config.enable_visual_summary,
+            "vision_model": config.vision_model,
+        },
         "stats": stats,
         "latest_capture": (
             {
@@ -90,6 +99,7 @@ def _print_status(paths: ObserverPaths) -> None:
         ),
         "screenshot_file_count": screenshot_count,
         "launch_agent": launchd,
+        "capture_loop_process": observer_capture_loop_snapshot() or None,
     }
     print(json.dumps(payload, ensure_ascii=False, indent=2))
 

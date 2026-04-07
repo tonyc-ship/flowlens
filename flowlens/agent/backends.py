@@ -1,6 +1,6 @@
 """LLM backend abstraction for the agent loop.
 
-Provides a common interface for Anthropic API and local Qwen MLX inference,
+Provides a common interface for Anthropic API and local MLX inference,
 so the agent loop can use either backend transparently.
 """
 
@@ -129,7 +129,7 @@ class AnthropicBackend(Backend):
 
 
 class LocalBackend(Backend):
-    """Backend using local Qwen MLX inference with text-based tool calling.
+    """Backend using local MLX inference with text-based tool calling.
 
     Tool definitions are injected into the system prompt. Tool calls are
     parsed from <tool_call>...</tool_call> tags in the model output.
@@ -137,13 +137,12 @@ class LocalBackend(Backend):
     """
 
     # Maximum context tokens (estimated) before older messages get trimmed.
-    # Conservative — keeps prefill under ~10k real tokens for 9B model speed.
     MAX_CONTEXT_TOKENS = 8000
 
     def __init__(self, model_name: str = "Qwen3.5-9B-MLX-4bit"):
         from ..perception.local_llm import LocalLLM
         self.model_name = model_name
-        self.llm = LocalLLM(model_name=model_name, think=True)
+        self.llm = LocalLLM(model_name=model_name, think=("Qwen" in model_name))
 
     def _format_tools_for_prompt(self, tools: list[dict]) -> str:
         """Format tool definitions as text for the system prompt."""
@@ -160,13 +159,15 @@ class LocalBackend(Backend):
             "**CRITICAL RULES for XHS**:\n"
             "1. Always take a screenshot at the start (call `screenshot` in the same "
             "turn as `navigate`).\n"
-            "2. Search: use `extract_page_data` with `command=submit_search_query` — "
+            "2. Preferred XHS flow: use `run_site_action` for `search_notes`, `read_note`, "
+            "and `close_note` when the next step is obvious.\n"
+            "3. Fallback search: use `extract_page_data` with `command=submit_search_query` — "
             "do NOT use type_text + press_key.\n"
-            "3. Open a note: use `extract_page_data` with `command=click_card, params={index: N}`. "
+            "4. Fallback open a note: use `extract_page_data` with `command=click_card, params={index: N}`. "
             "There is NO standalone `click_card` tool — it is a command inside extract_page_data.\n"
-            "4. Close a note: use `extract_page_data` with `command=close_note`. "
+            "5. Fallback close a note: use `extract_page_data` with `command=close_note`. "
             "`press_key Escape` does NOT close the XHS modal — do not use it.\n"
-            "5. If `extract_note_content` returns `_stale_warning` or `no_note_modal_open`, "
+            "6. If `extract_note_content` returns `_stale_warning` or `no_note_modal_open`, "
             "the previous close_note failed — call `close_note` again, verify, then reopen.\n",
             "### Tool Definitions\n",
         ]
@@ -218,9 +219,12 @@ class LocalBackend(Backend):
         for i, match in enumerate(matches):
             try:
                 data = json.loads(match.group(1).strip())
+                name = str(data.get("name", "")).strip()
+                if not name:
+                    raise KeyError("missing tool name")
                 tc = ToolCall(
                     id=f"local_{uuid.uuid4().hex[:8]}",
-                    name=data.get("name", ""),
+                    name=name,
                     input=data.get("arguments", {}),
                 )
                 tool_calls.append(tc)
@@ -297,11 +301,9 @@ class LocalBackend(Backend):
 
         # Apply chat template
         self.llm._ensure_loaded()
-        return self.llm._processor.apply_chat_template(
+        return self.llm.apply_chat_template(
             chat_messages,
-            tokenize=False,
             add_generation_prompt=True,
-            enable_thinking=self.llm.think,
         )
 
     @staticmethod
@@ -317,6 +319,43 @@ class LocalBackend(Backend):
             elif isinstance(block, str):
                 parts.append(block)
         return "\n".join(parts) if parts else "(empty result)"
+
+    @staticmethod
+    def _compact_json(value):
+        if isinstance(value, dict):
+            preferred_order = [
+                "ok", "error", "message", "site", "action", "entity_type", "level",
+                "query", "count", "state", "page_state", "result", "cards", "entity",
+                "title", "author", "note_id", "url", "likes", "favorites",
+                "comments_count", "content_summary", "key_points", "top_comments",
+                "cover_description", "transcript_summary", "visual_summary",
+                "timing", "plan",
+            ]
+            keys = [key for key in preferred_order if key in value]
+            keys.extend(key for key in value if key not in keys)
+            compacted = {}
+            for key in keys[:16]:
+                compacted[key] = LocalBackend._compact_json(value[key])
+            return compacted
+        if isinstance(value, list):
+            return [LocalBackend._compact_json(item) for item in value[:5]]
+        if isinstance(value, str):
+            return value if len(value) <= 320 else value[:320] + "... [truncated]"
+        return value
+
+    @classmethod
+    def _compress_tool_result_text(cls, text: str, max_chars: int = 2200) -> str:
+        if len(text) <= max_chars:
+            return text
+        try:
+            value = json.loads(text)
+            compacted = cls._compact_json(value)
+            compact_text = json.dumps(compacted, ensure_ascii=False, indent=2)
+            if len(compact_text) <= max_chars:
+                return compact_text
+            return compact_text[:max_chars] + "\n... [truncated]"
+        except Exception:
+            return text[:max_chars] + "\n... [truncated]"
 
     def _estimate_tokens(self, text: str) -> int:
         """Conservative token estimate (chars / 2 for CJK-heavy text)."""
@@ -367,7 +406,7 @@ class LocalBackend(Backend):
         tools: list[dict],
         max_tokens: int = 8192,
     ) -> LLMResponse:
-        # Trim context to prevent quadratic slowdown
+        # Trim context to prevent quadratic slowdown.
         trimmed = self._trim_messages(messages)
         formatted = self._messages_to_prompt(system, trimmed, tools)
         input_tokens_est = self._estimate_tokens(formatted)
@@ -404,6 +443,8 @@ class LocalBackend(Backend):
         """Store assistant content as a list of dicts for message history."""
         content = []
         for text in response.text_blocks:
+            if text.startswith("[Thinking] "):
+                continue
             content.append({"type": "text", "text": text})
         for tc in response.tool_calls:
             content.append({
@@ -420,13 +461,18 @@ class LocalBackend(Backend):
         """Format tool results as a text-based user message."""
         parts = []
         for tc, result_blocks in zip(tool_calls, results):
-            result_text = self._result_blocks_to_text(result_blocks)
+            result_text = self._compress_tool_result_text(
+                self._result_blocks_to_text(result_blocks)
+            )
             parts.append(f"[Tool result for {tc.name} ({tc.id})]:\n{result_text}")
         return {"role": "user", "content": "\n\n".join(parts)}
 
 
 def create_backend(model: str) -> Backend:
     """Factory: create the appropriate backend for a model identifier."""
+    if model == "ui-tars-local" or model.startswith("UI-TARS"):
+        model_name = model if model != "ui-tars-local" else "UI-TARS-1.5-7B-6bit"
+        return LocalBackend(model_name=model_name)
     if model == "qwen-local" or model.startswith("Qwen"):
         model_name = model if model != "qwen-local" else "Qwen3.5-9B-MLX-4bit"
         return LocalBackend(model_name=model_name)

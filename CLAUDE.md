@@ -52,21 +52,19 @@ flowlens/
 │   │   ├── task_agent.py             # Generic task understanding / assessment
 │   │   ├── tasks.py                  # Structured task definitions
 │   │   └── knowledge/                # Reusable knowledge extraction + loading
+│   ├── agent/                        # LLM-driven agent loop, tools, backends, knowledge-aware system prompt
+│   ├── knowledge/sites/              # Per-site YAML knowledge files loaded into the agent prompt
 │   ├── platforms/
-│   │   ├── xhs/                      # XHS browser adapters, schemas, capability catalog
-│   │   └── chat/                     # Chat site descriptors + visible verification helpers
+│   │   ├── chat/                     # Chat site descriptors + visible verification helpers
+│   │   ├── wechat/                   # WeChat macOS app helpers
+│   │   └── xhs/                      # Xiaohongshu entities, capability catalog, multimodal processor
 │   └── workflows/
-│       ├── xhs/                      # Topic research / creator analysis workflows
-│       └── chat/                     # Ask-all-chatbots workflow + companion
+│       ├── chat/                     # Ask-all-chatbots workflow + companion
+│       └── wechat/                   # WeChat chat-summary workflow
 ├── tests/
-│   ├── manual_xhs_research.py        # Manual integration script
-│   ├── manual_xhs_user_analysis.py   # Manual integration script
-│   ├── manual_xhs_carousel.py        # Manual media pipeline script
 │   ├── manual_local_llm.py           # Manual local-vs-remote backend comparison
-│   ├── manual_xhs_task_workflows.py  # Manual task-layer integration script
 │   ├── test_task_specs.py            # Structured task tests
 │   ├── test_task_agent.py            # Task-agent parsing tests
-│   ├── test_xhs_capabilities.py      # Capability / extraction-plan tests
 │   ├── test_extension_ops.py         # Extension operation report tests
 │   ├── test_observer.py              # Observer capture / storage / diff tests
 │   └── test_reporting.py             # Shared report rendering tests
@@ -97,20 +95,9 @@ Whenever you modify the Tauri app under `desktop_app/` **or** any Python code th
 - Run the repo packaging path so the real desktop artifact exists after the change.
 - Prefer `bash scripts/build_desktop_app.sh` unless the user explicitly asks for a different packaging flow.
 
-After changes that affect the installed app + Chrome extension workflow together (for example `desktop_app/`, `chrome_extension/`, `flowlens/core/bridge.py`, or XHS watch-mode workflow code), run the packaged end-to-end verification path too:
+After changes that affect the installed app + Chrome extension workflow together (for example `desktop_app/`, `chrome_extension/`, `flowlens/core/bridge.py`, or `flowlens/agent/`), rebuild the packaged app and smoke-test it manually.
 
-```bash
-python3 scripts/verify_packaged_xhs_overlay.py
-```
-
-This script:
-- opens the installed app from `/Applications`
-- switches to the XHS view
-- launches the built-in `研究露营` preset task
-- captures screenshots of the app + browser result
-- records the new desktop task dir and key log lines
-
-Use this packaged verification path as the default regression check for app/watch UX work. The script intentionally avoids free-form typing because non-interactive macOS keystroke permission can be flaky in agent sessions.
+> Note: the previous `scripts/verify_packaged_xhs_overlay.py` regression script targeted the legacy hardcoded XHS workflow and was removed when the workflow was deleted. A new agent-loop verification script needs to be written before this can be reinstated as an automated regression check.
 
 When comparing local vs cloud reasoning / vision quality for web-use behavior, use the dedicated benchmark harness:
 
@@ -201,11 +188,10 @@ New generic capabilities (background windows, dedup, session recording) belong i
 
 1. Python starts a local WebSocket server.
 2. The Chrome extension connects from the logged-in browser profile.
-3. `flowlens.platforms.xhs.XHSBrowser` issues DOM extraction and CDP-backed interaction commands.
-4. The reasoning layer chooses a bounded execution strategy (`coverage_first` / `balanced` / `deep_focus`) using the available capability catalog.
-5. `flowlens.workflows.xhs` orchestrates note collection using `lite` and `deep` extraction plans.
-6. `flowlens.platforms.xhs.processor` enriches notes with OCR, image descriptions, and video transcription when the chosen plan requires it.
-7. The agent writes JSON + HTML reports plus a session GIF to `task_runs/` or a custom output dir.
+3. `flowlens.agent.loop.run_agent` builds a system prompt from generic browser/vision tools plus per-site knowledge loaded from `flowlens/knowledge/sites/*.yaml`.
+4. The agent loop drives an LLM (Anthropic Sonnet by default, or local MLX backends via `--backend qwen-local` / `--backend ui-tars-local`) through a `tool_use → execute → feed back result` cycle until the LLM returns a final text report.
+5. Tool calls go through `flowlens.core.bridge` (CDP + extension messaging) and the extension's content scripts. Low-level site helpers live behind `extract_page_data`; mid-level site actions flow through `run_site_action`; normalized per-site entities and multimodal enrichment flow through `extract_site_entity`.
+6. The agent writes screenshots, `report.md`, `agent_log.json`, `reasoning_log.jsonl`, and `resource_log.jsonl` into `task_runs/agent_<timestamp>_<slug>/` (or a custom run dir).
 
 Observer runtime flow:
 
@@ -349,20 +335,19 @@ Backend can also be set per-instance via `MediaConfig(backend="qwen-local")` or
 
 ## Running
 
-Primary CLI:
+Primary CLI — every free-form prompt now goes through the generic agent loop:
 
 ```bash
-flowlens "露营装备"
-flowlens "露营装备" --keywords "露营装备推荐,露营好物"
-flowlens --user "https://www.xiaohongshu.com/user/profile/xxx"
+flowlens "在小红书上调研露营装备"
+flowlens agent "在小红书上调研露营装备" --backend qwen-local
 flowlens extension reload
 ```
 
-Equivalent:
+Equivalent module form:
 
 ```bash
-python -m flowlens "露营装备"
-python -m flowlens --user <user_id>
+python -m flowlens "在小红书上调研露营装备"
+python -m flowlens agent "在小红书上调研露营装备"
 python -m flowlens extension reload
 python -m flowlens observer status
 python -m flowlens observer capture-once
@@ -378,14 +363,7 @@ python -m flowlens extension watch
 ## Manual Integration Scripts
 
 ```bash
-python tests/manual_xhs_research.py -t 1
-python tests/manual_xhs_research.py -t 4
-python tests/manual_xhs_user_analysis.py --find
-python tests/manual_xhs_user_analysis.py --user <url_or_id>
-python tests/manual_xhs_carousel.py
 python tests/manual_local_llm.py --local-only
-python tests/manual_xhs_task_workflows.py --preset topic_research
-python tests/manual_xhs_task_workflows.py --preset creator_growth
 ```
 
 These are manual scripts for live-browser validation, not stable unit tests.

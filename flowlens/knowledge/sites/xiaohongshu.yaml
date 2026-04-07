@@ -41,9 +41,10 @@ pages:
       Grid of recommended note cards. Left sidebar with navigation
       (首页/发现/发布/通知/我). Search bar at top center. XHS red logo top-left.
     navigation_tips:
+      - "PREFERRED: use extract_page_data(command='submit_search_query', params={keyword: 'your query'}) directly from the homepage"
+      - "If the next step is obvious, you can also use run_site_action(action='search_notes', query='...') to search and get visible cards in one call"
       - "The search bar is an input#search-input with placeholder '搜索小红书', typically at the top center of the page"
-      - "Use read_page to find the exact coordinates before clicking"
-      - "Click the search input, type your query, then press Enter to search"
+      - "Only use read_page + click/type/Enter as a fallback if submit_search_query fails"
       - "Click any note card to open it as a modal overlay"
 
   search_results:
@@ -54,13 +55,17 @@ pages:
       waterfall grid of matching note cards. Each card shows: cover image,
       title, author name, like count.
     navigation_tips:
+      - "PREFERRED: call run_site_action(action='search_notes', ...) or extract_site_entity(entity_type='search_cards') before ranking which notes to open"
       - "Click filter tabs to switch between 全部(all), 图文(images), 视频(video), 用户(users)"
       - "Click a note card to open it as a modal overlay on top of search results"
       - "Scroll down to load more results (infinite scroll)"
-      - "To search a new query: click search bar, clear text, type new query, press Enter"
+      - "PREFERRED for a new query: use extract_page_data(command='submit_search_query', params={keyword: '...'})"
+      - "Only click the search bar, clear text, type a new query, and press Enter if submit_search_query fails"
     available_extractors:
       - "extract_search_cards — returns all visible note cards with title, author, likes, note_id"
       - "extract_search_tabs — returns available filter tab names and which is active"
+      - "extract_site_entity(entity_type='search_cards') — normalized card objects for agent ranking"
+      - "run_site_action(action='read_note', index=N, level='lite|deep') — open a card and extract note info in one call"
     search_url_template: "https://www.xiaohongshu.com/search_result?keyword={encoded_keyword}&source=web_search_result_notes"
 
   note_detail:
@@ -75,14 +80,16 @@ pages:
       2. Full-page: when navigated directly (not recommended due to anti-bot).
     navigation_tips:
       - "PREFERRED: Open notes by clicking cards on search/profile pages (modal overlay)"
-      - "Close modal: press Escape key or click the X button"
+      - "PREFERRED close: use extract_page_data(command='close_note') because it handles XHS's modal quirks"
       - "Navigate carousel images: use left/right arrow keys"
       - "Scroll within the modal to see comments"
       - "Click author name/avatar to go to their profile"
-      - "DO NOT reload the page to close — use Escape or X"
+      - "DO NOT reload the page to close — use close_note / X instead"
     available_extractors:
       - "extract_note_content — returns title, author, text, hashtags, date, engagement counts, image_count, type"
       - "extract_comments — returns comments with username, text, likes, replies"
+      - "extract_site_entity(entity_type='note', level='lite|deep') — normalized note extraction with optional OCR / transcription"
+      - "run_site_action(action='read_note', level='lite|deep') — extract the current note with less planning overhead"
 
   profile_page:
     name: "User Profile (个人主页)"
@@ -98,6 +105,7 @@ pages:
     available_extractors:
       - "extract_profile_info — returns display_name, xhs_id, bio, followers, following, likes_and_collections"
       - "extract_profile_notes — returns grid of note cards"
+      - "extract_site_entity(entity_type='author_profile') — normalized profile + visible note cards"
 
 entities:
   note:
@@ -154,19 +162,22 @@ reporting:
 
 navigation:
   search: |
-    PREFERRED: Use extract_page_data with submit_search_query command — this is
-    the most reliable search method. Example: extract_page_data(command="submit_search_query",
-    params={keyword: "your query"}).
+    PREFERRED: Use run_site_action(action="search_notes", query="your query")
+    or extract_page_data(command="submit_search_query", params={keyword: "your query"}).
+    These are the most reliable search methods.
 
-    FALLBACK: Click the search bar (#search-input), type your query, press Enter.
+    FALLBACK ONLY: Click the search bar (#search-input), type your query, press Enter.
 
     AVOID: Direct URL navigation to search_result pages often triggers anti-bot
     protection and returns empty results.
   open_note_from_card: |
-    Click the note card directly on search results or profile page. This opens
-    the note as a modal overlay. NEVER navigate directly to /explore/{note_id}.
+    First extract and rank visible cards with run_site_action(action="search_notes", ...)
+    or extract_site_entity(entity_type="search_cards"), then either use
+    run_site_action(action="read_note", index=N, level="lite|deep") or click the
+    chosen note card directly on search results or profile page. NEVER navigate
+    directly to /explore/{note_id}.
   close_note_modal: |
-    Press Escape key or click the X button to close the modal overlay.
+    Use extract_page_data(command="close_note") or click the X button to close the modal overlay.
     This returns to the underlying search/profile page without reloading.
   open_profile: |
     Click the author name or avatar in the note detail view to navigate

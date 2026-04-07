@@ -1,14 +1,11 @@
-"""XHS capability registry and extraction plans.
-
-Separates:
-  - entity schema: what fields exist
-  - capability/plan: how much work we spend to fill those fields
-"""
+"""Capability registry for Xiaohongshu entity extraction."""
 
 from __future__ import annotations
 
 from dataclasses import asdict, dataclass
 from enum import StrEnum
+
+from .spec import load_xhs_spec
 
 
 class CapabilityCost(StrEnum):
@@ -17,7 +14,7 @@ class CapabilityCost(StrEnum):
     HIGH = "high"
 
 
-class NoteExtractionLevel(StrEnum):
+class ExtractionLevel(StrEnum):
     CARD = "card"
     LITE = "lite"
     DEEP = "deep"
@@ -40,7 +37,7 @@ class CapabilitySpec:
 
 @dataclass
 class NoteExtractionPlan:
-    level: NoteExtractionLevel
+    level: ExtractionLevel
     name: str
     description: str
     capabilities: list[str]
@@ -57,7 +54,6 @@ class NoteExtractionPlan:
     use_video_frames: bool = False
     max_images: int = 4
     max_video_frames: int = 3
-    use_vision_fallback: bool = False
     requested_sections: tuple[str, ...] = ("content", "engagement", "comments", "author")
 
     def to_dict(self) -> dict:
@@ -68,106 +64,64 @@ class NoteExtractionPlan:
         return data
 
 
+def _spec_capabilities() -> list[dict]:
+    return list(load_xhs_spec().get("capabilities", []))
+
+
+def _spec_plan(level: ExtractionLevel) -> dict:
+    plans = load_xhs_spec().get("plans", {})
+    return dict(plans.get(level.value, {}))
+
+
 def capability_catalog() -> list[CapabilitySpec]:
-    return [
-        CapabilitySpec(
-            name="xhs.search.collect_cards",
-            goal="Collect visible search result cards across scroll rounds.",
-            fills_fields=["card.title", "card.author", "card.likes", "card.type", "card.link"],
-            estimated_latency_s=(2, 8),
-            cost=CapabilityCost.LOW,
-            notes="Cheap wide scan; no note opening.",
-        ),
-        CapabilitySpec(
-            name="xhs.profile.collect_cards",
-            goal="Collect profile note cards across the creator grid.",
-            fills_fields=["card.title", "card.likes", "card.type", "card.position"],
-            estimated_latency_s=(4, 15),
-            cost=CapabilityCost.LOW,
-            notes="Cheap timeline / inventory scan.",
-        ),
-        CapabilitySpec(
-            name="xhs.note.open_basic",
-            goal="Open a note and extract DOM-visible basics.",
-            fills_fields=[
-                "note.title",
-                "note.author",
-                "note.content",
-                "note.date",
-                "note.location",
-                "note.ip_location",
-                "note.likes",
-                "note.favorites",
-                "note.comments_count",
-                "note.type",
-            ],
-            estimated_latency_s=(3, 8),
-            cost=CapabilityCost.LOW,
-            notes="Best for breadth-first scanning.",
-        ),
-        CapabilitySpec(
-            name="xhs.note.sample_comments",
-            goal="Collect a small hot-comment sample from an opened note.",
-            fills_fields=["note.comments[*].text", "note.comments[*].like_count"],
-            estimated_latency_s=(2, 8),
-            cost=CapabilityCost.LOW,
-            notes="Useful for semantic signal without full deep dive.",
-        ),
-        CapabilitySpec(
-            name="xhs.note.image_understanding",
-            goal="Download note images and run OCR + vision.",
-            fills_fields=["note.cover_description", "note.images[*].ocr_text", "note.images[*].vision_description"],
-            estimated_latency_s=(8, 30),
-            cost=CapabilityCost.MEDIUM,
-            notes="Helpful for image-heavy and tutorial posts.",
-        ),
-        CapabilitySpec(
-            name="xhs.note.video_audio",
-            goal="Resolve video URL, download/transcribe audio, summarize transcript.",
-            fills_fields=["note.video.transcript", "note.video.transcript_summary"],
-            estimated_latency_s=(15, 70),
-            cost=CapabilityCost.HIGH,
-            notes="High value when spoken content matters.",
-        ),
-        CapabilitySpec(
-            name="xhs.note.video_visual",
-            goal="Extract video frames and summarize visual content.",
-            fills_fields=["note.video.frame_descriptions", "note.video.visual_summary"],
-            estimated_latency_s=(10, 45),
-            cost=CapabilityCost.HIGH,
-            notes="Useful for visually driven videos.",
-        ),
-    ]
+    catalog: list[CapabilitySpec] = []
+    for item in _spec_capabilities():
+        catalog.append(
+            CapabilitySpec(
+                name=str(item["name"]),
+                goal=str(item.get("goal", "")),
+                fills_fields=[str(field) for field in item.get("fills_fields", [])],
+                estimated_latency_s=tuple(int(v) for v in item.get("estimated_latency_s", [0, 0])),
+                cost=CapabilityCost(str(item.get("cost", CapabilityCost.LOW.value))),
+                notes=str(item.get("notes", "")),
+            )
+        )
+    return catalog
+
+
+def _plan_from_spec(level: ExtractionLevel) -> NoteExtractionPlan:
+    item = _spec_plan(level)
+    return NoteExtractionPlan(
+        level=level,
+        name=str(item.get("name", f"xhs.note.{level.value}")),
+        description=str(item.get("description", "")),
+        capabilities=[str(cap) for cap in item.get("capabilities", [])],
+        fills_fields=[str(field) for field in item.get("fills_fields", [])],
+        estimated_latency_s=tuple(int(v) for v in item.get("estimated_latency_s", [0, 0])),
+        cost=CapabilityCost(str(item.get("cost", CapabilityCost.LOW.value))),
+        include_comments=bool(item.get("include_comments", True)),
+        max_comments=int(item.get("max_comments", 4)),
+        max_comment_scrolls=int(item.get("max_comment_scrolls", 0)),
+        use_media=bool(item.get("use_media", False)),
+        use_image_ocr=bool(item.get("use_image_ocr", False)),
+        use_image_vision=bool(item.get("use_image_vision", False)),
+        use_video_transcript=bool(item.get("use_video_transcript", False)),
+        use_video_frames=bool(item.get("use_video_frames", False)),
+        max_images=int(item.get("max_images", 4)),
+        max_video_frames=int(item.get("max_video_frames", 3)),
+        requested_sections=tuple(str(v) for v in item.get("requested_sections", [])),
+    )
+
+
+def card_note_plan() -> NoteExtractionPlan:
+    return _plan_from_spec(ExtractionLevel.CARD)
 
 
 def lite_note_plan(*, max_comments: int = 4, max_comment_scrolls: int = 0) -> NoteExtractionPlan:
-    return NoteExtractionPlan(
-        level=NoteExtractionLevel.LITE,
-        name="xhs.note.lite_read",
-        description="Open a note, capture basic fields, and sample a few hot comments. Skip heavy media work.",
-        capabilities=["xhs.note.open_basic", "xhs.note.sample_comments"],
-        fills_fields=[
-            "title",
-            "author",
-            "content",
-            "date",
-            "location",
-            "ip_location",
-            "likes",
-            "favorites",
-            "comments_count",
-            "hashtags",
-            "comments",
-        ],
-        estimated_latency_s=(5, 14),
-        cost=CapabilityCost.LOW,
-        include_comments=True,
-        max_comments=max_comments,
-        max_comment_scrolls=max_comment_scrolls,
-        use_media=False,
-        use_vision_fallback=True,
-        requested_sections=("content", "engagement", "comments", "author"),
-    )
+    plan = _plan_from_spec(ExtractionLevel.LITE)
+    plan.max_comments = max_comments
+    plan.max_comment_scrolls = max_comment_scrolls
+    return plan
 
 
 def deep_note_plan(
@@ -177,68 +131,61 @@ def deep_note_plan(
     max_images: int = 6,
     max_video_frames: int = 4,
 ) -> NoteExtractionPlan:
-    return NoteExtractionPlan(
-        level=NoteExtractionLevel.DEEP,
-        name="xhs.note.deep_read",
-        description="Open a note, sample comments, and run full multimodal understanding.",
-        capabilities=[
-            "xhs.note.open_basic",
-            "xhs.note.sample_comments",
-            "xhs.note.image_understanding",
-            "xhs.note.video_audio",
-            "xhs.note.video_visual",
-        ],
-        fills_fields=[
-            "title",
-            "author",
-            "content",
-            "date",
-            "location",
-            "ip_location",
-            "likes",
-            "favorites",
-            "comments_count",
-            "hashtags",
-            "comments",
-            "cover_description",
-            "image_descriptions",
-            "ocr_results",
-            "transcript",
-            "transcript_summary",
-            "video_visual_summary",
-            "video_frame_descriptions",
-        ],
-        estimated_latency_s=(18, 90),
-        cost=CapabilityCost.HIGH,
-        include_comments=True,
-        max_comments=max_comments,
-        max_comment_scrolls=max_comment_scrolls,
-        use_media=True,
-        use_image_ocr=True,
-        use_image_vision=True,
-        use_video_transcript=True,
-        use_video_frames=True,
-        max_images=max_images,
-        max_video_frames=max_video_frames,
-        use_vision_fallback=True,
-        requested_sections=("content", "engagement", "comments", "author", "media"),
-    )
+    plan = _plan_from_spec(ExtractionLevel.DEEP)
+    plan.max_comments = max_comments
+    plan.max_comment_scrolls = max_comment_scrolls
+    plan.max_images = max_images
+    plan.max_video_frames = max_video_frames
+    return plan
 
 
-def capabilities_for_task(kind: str) -> list[CapabilitySpec]:
-    # Current v1 optimization keeps a shared catalog and uses only a subset per workflow.
-    return capability_catalog()
+def plan_for_level(
+    level: str,
+    *,
+    max_comments: int = 4,
+    max_comment_scrolls: int = 0,
+    max_images: int = 6,
+    max_video_frames: int = 4,
+    include_comments: bool | None = None,
+    include_media: bool | None = None,
+) -> NoteExtractionPlan:
+    normalized = str(level or ExtractionLevel.LITE.value).strip().lower()
+    if normalized == ExtractionLevel.CARD.value:
+        plan = card_note_plan()
+    elif normalized == ExtractionLevel.DEEP.value:
+        plan = deep_note_plan(
+            max_comments=max_comments,
+            max_comment_scrolls=max_comment_scrolls,
+            max_images=max_images,
+            max_video_frames=max_video_frames,
+        )
+    else:
+        plan = lite_note_plan(
+            max_comments=max_comments,
+            max_comment_scrolls=max_comment_scrolls,
+        )
+
+    if include_comments is not None:
+        plan.include_comments = include_comments
+    if include_media is not None:
+        plan.use_media = include_media
+        if not include_media:
+            plan.use_image_ocr = False
+            plan.use_image_vision = False
+            plan.use_video_transcript = False
+            plan.use_video_frames = False
+
+    return plan
 
 
-def capability_catalog_markdown(kind: str) -> str:
+def capability_catalog_markdown() -> str:
     rows = [
-        "| Capability | Cost | Latency (s) | What it fills | Notes |",
-        "| --- | --- | --- | --- | --- |",
+        "| Capability | Cost | Latency (s) | Goal |",
+        "|---|---|---|---|",
     ]
-    for cap in capabilities_for_task(kind):
+    for cap in capability_catalog():
         rows.append(
-            f"| `{cap.name}` | {cap.cost.value} | {cap.estimated_latency_s[0]}-{cap.estimated_latency_s[1]} "
-            f"| {', '.join(cap.fills_fields[:4])}{'...' if len(cap.fills_fields) > 4 else ''} "
-            f"| {cap.notes} |"
+            f"| `{cap.name}` | {cap.cost.value} | {cap.estimated_latency_s[0]}-{cap.estimated_latency_s[1]} | {cap.goal} |"
         )
     return "\n".join(rows)
+

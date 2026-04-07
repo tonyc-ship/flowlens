@@ -102,14 +102,16 @@ Canonical Python packages are now:
 - `flowlens.observer`: background desktop observation, storage, summarization, and recall
 - `flowlens.perception`: hosted/local vision, OCR, grounding, transcription, media preprocessing
 - `flowlens.reasoning`: task understanding, planning, evaluation, reusable knowledge extraction
-- `flowlens.platforms.xhs` / `flowlens.platforms.chat`: site-level adapters and platform knowledge
-- `flowlens.workflows.xhs` / `flowlens.workflows.chat`: concrete task flows and workflow CLIs
+- `flowlens.agent`: LLM-driven agent loop, generic browser/vision tools, backend abstraction (Anthropic + local Qwen MLX)
+- `flowlens.knowledge`: per-site YAML knowledge files loaded into the agent prompt
+- `flowlens.platforms.chat` / `flowlens.platforms.wechat`: site-level adapters
+- `flowlens.workflows.chat` / `flowlens.workflows.wechat`: concrete task flows and workflow CLIs
 
-Legacy `flowlens.agent`, `flowlens.chatbots`, and `flowlens.vision` paths have been removed.
+The legacy hardcoded XHS workflow (`flowlens.platforms.xhs` and `flowlens.workflows.xhs`) was removed when the generic agent loop landed; XHS tasks now run through `flowlens agent` with knowledge loaded from `flowlens/knowledge/sites/xiaohongshu.yaml`.
 
 ## Common Commands
 
-Smoke-test the desktop bridge without running a live XHS task:
+Smoke-test the desktop bridge without running a live task:
 
 ```bash
 python -m flowlens desktop run --prompt "研究露营装备" --dry-run
@@ -121,10 +123,11 @@ Start the chatbot fan-out CLI:
 python -m flowlens chatbots "Explain quantum computing simply"
 ```
 
-Run an XHS topic research task:
+Run a free-form browser task through the agent loop:
 
 ```bash
-python -m flowlens "露营装备"
+python -m flowlens "在小红书上调研露营装备"
+python -m flowlens agent "在小红书上调研露营装备" --backend qwen-local
 ```
 
 Reload the unpacked Chrome extension through the live bridge:
@@ -158,14 +161,6 @@ Generate a lightweight local journal without LLM calls:
 ```bash
 python -m flowlens observer journal --no-llm
 ```
-
-Run the installed desktop app end-to-end XHS watch-overlay smoke test:
-
-```bash
-python3 scripts/verify_packaged_xhs_overlay.py
-```
-
-This launches the installed `.app`, switches to the XHS view, starts the built-in `研究露营` preset, captures desktop screenshots, and writes a JSON summary under `task_runs/`.
 
 Run the local-vs-cloud web-use benchmark (text, DOM, screenshot cases):
 

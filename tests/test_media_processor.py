@@ -1,7 +1,7 @@
 import unittest
 from unittest import mock
 
-from flowlens.perception.local_llm import DEFAULT_LOCAL_MODEL
+from flowlens.perception.local_llm import DEFAULT_LOCAL_MODEL, DEFAULT_UI_TARS_MODEL
 from flowlens.perception.media import MediaConfig, MediaProcessor
 
 
@@ -21,6 +21,14 @@ class MediaProcessorTest(unittest.TestCase):
             processor.local_llm
 
         local_llm_cls.assert_called_once_with("Qwen3.5-2B-6bit")
+
+    def test_ui_tars_backend_defaults_to_ui_tars_model(self) -> None:
+        processor = MediaProcessor(MediaConfig(backend="ui-tars-local"))
+
+        with mock.patch("flowlens.perception.local_llm.LocalLLM") as local_llm_cls:
+            processor.local_llm
+
+        local_llm_cls.assert_called_once_with(DEFAULT_UI_TARS_MODEL)
 
 
 if __name__ == "__main__":

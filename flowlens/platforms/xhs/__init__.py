@@ -1,16 +1,18 @@
-"""Xiaohongshu platform knowledge and browser adapters."""
+"""Xiaohongshu site capability layer for the generic agent."""
 
-from .browser import XHSBrowser
 from .capabilities import (
     CapabilityCost,
     CapabilitySpec,
-    NoteExtractionLevel,
+    ExtractionLevel,
     NoteExtractionPlan,
     capability_catalog,
-    capabilities_for_task,
+    capability_catalog_markdown,
+    card_note_plan,
     deep_note_plan,
     lite_note_plan,
+    plan_for_level,
 )
+from .spec import EntityFieldSpec, EntitySchemaSpec, entity_schema_catalog, load_xhs_spec
 from .entities import (
     AuthorEntity,
     Comment,
@@ -18,15 +20,35 @@ from .entities import (
     NoteCard,
     NoteEntity,
     NoteType,
-    SearchResult,
     VideoInfo,
+    parse_count_text,
 )
-from .processor import NoteProcessor, ProcessorConfig, TimingRecord
+from .processor import ProcessorConfig, TimingRecord, XHSSiteAdapter
 
 __all__ = [
-    "XHSBrowser",
-    "CapabilityCost", "CapabilitySpec", "NoteExtractionLevel", "NoteExtractionPlan",
-    "capability_catalog", "capabilities_for_task", "lite_note_plan", "deep_note_plan",
-    "AuthorEntity", "Comment", "ImageInfo", "NoteCard", "NoteEntity", "NoteType", "SearchResult", "VideoInfo",
-    "NoteProcessor", "ProcessorConfig", "TimingRecord",
+    "AuthorEntity",
+    "CapabilityCost",
+    "CapabilitySpec",
+    "Comment",
+    "ExtractionLevel",
+    "ImageInfo",
+    "NoteCard",
+    "NoteEntity",
+    "NoteExtractionPlan",
+    "NoteType",
+    "ProcessorConfig",
+    "TimingRecord",
+    "VideoInfo",
+    "XHSSiteAdapter",
+    "capability_catalog",
+    "capability_catalog_markdown",
+    "card_note_plan",
+    "deep_note_plan",
+    "entity_schema_catalog",
+    "EntityFieldSpec",
+    "EntitySchemaSpec",
+    "lite_note_plan",
+    "load_xhs_spec",
+    "parse_count_text",
+    "plan_for_level",
 ]

@@ -1,4 +1,4 @@
-"""Primary CLI for the XHS + Chrome Extension workflow."""
+"""Primary CLI for FlowLens."""
 
 from __future__ import annotations
 
@@ -11,7 +11,6 @@ from .extension_cli import main as extension_main
 from .observer.cli import main as observer_main
 from .workflows.chat.cli import main as chatbots_main
 from .workflows.chat.companion import main as chatbots_companion_main
-from .workflows.xhs.cli import main as xhs_main
 
 
 def main() -> None:
@@ -29,4 +28,5 @@ def main() -> None:
         raise SystemExit(desktop_main(sys.argv[2:]))
     if len(sys.argv) > 1 and sys.argv[1] == "observer":
         raise SystemExit(observer_main(sys.argv[2:]))
-    raise SystemExit(xhs_main(sys.argv[1:]))
+    # Default: free-form prompt → agent loop
+    raise SystemExit(agent_main(sys.argv[1:]))

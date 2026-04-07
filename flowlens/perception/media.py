@@ -4,11 +4,12 @@ Provides LLM calls (text + vision), Apple OCR, whisper transcription,
 and image utilities. Reusable across platforms.
 
 LLM backend is selected via ``FLOWLENS_LLM_BACKEND`` env var or
-``MediaConfig.backend``. For the local backend, ``MediaConfig.model``
+``MediaConfig.backend``. For local backends, ``MediaConfig.model``
 selects the concrete MLX model name:
 
 - ``"sonnet"`` (default) — Anthropic Claude Sonnet API
 - ``"qwen-local"`` — local Qwen MLX model via mlx-vlm
+- ``"ui-tars-local"`` — local UI-TARS MLX model via mlx-vlm
 """
 
 from __future__ import annotations
@@ -34,12 +35,15 @@ logger = logging.getLogger(__name__)
 DEFAULT_MODEL = "claude-sonnet-4-6"
 BACKEND_SONNET = "sonnet"
 BACKEND_QWEN_LOCAL = "qwen-local"
+BACKEND_UI_TARS_LOCAL = "ui-tars-local"
 
 
 def _resolve_backend(explicit: str | None = None) -> str:
     """Return the active LLM backend name."""
     val = explicit or os.environ.get("FLOWLENS_LLM_BACKEND", "")
     val = val.strip().lower()
+    if val in (BACKEND_UI_TARS_LOCAL, "ui-tars", "uitars", "uitars-local"):
+        return BACKEND_UI_TARS_LOCAL
     if val in (BACKEND_QWEN_LOCAL, "qwen", "local"):
         return BACKEND_QWEN_LOCAL
     return BACKEND_SONNET
@@ -77,13 +81,16 @@ class MediaProcessor:
 
     @property
     def local_llm(self):
-        """Lazy local LLM — only loaded when the qwen-local backend is used."""
+        """Lazy local LLM for any MLX-backed backend."""
         if self._local_llm is None:
-            from .local_llm import DEFAULT_LOCAL_MODEL, LocalLLM
+            from .local_llm import DEFAULT_LOCAL_MODEL, DEFAULT_UI_TARS_MODEL, LocalLLM
 
             model_name = (self.config.model or "").strip()
             if not model_name or model_name == DEFAULT_MODEL:
-                model_name = DEFAULT_LOCAL_MODEL
+                if self.backend == BACKEND_UI_TARS_LOCAL:
+                    model_name = DEFAULT_UI_TARS_MODEL
+                else:
+                    model_name = DEFAULT_LOCAL_MODEL
             self._local_llm = LocalLLM(model_name)
         return self._local_llm
 
@@ -97,7 +104,7 @@ class MediaProcessor:
             len(prompt),
             max_tokens,
         )
-        if self.backend == BACKEND_QWEN_LOCAL:
+        if self.backend in {BACKEND_QWEN_LOCAL, BACKEND_UI_TARS_LOCAL}:
             result = self.local_llm.call_text(prompt, max_tokens=max_tokens)
         else:
             resp = self.client.messages.create(
@@ -133,7 +140,7 @@ class MediaProcessor:
             max_tokens,
             media_type,
         )
-        if self.backend == BACKEND_QWEN_LOCAL:
+        if self.backend in {BACKEND_QWEN_LOCAL, BACKEND_UI_TARS_LOCAL}:
             result = self.local_llm.call_vision(
                 image_b64, prompt, media_type=media_type, max_tokens=max_tokens,
             )

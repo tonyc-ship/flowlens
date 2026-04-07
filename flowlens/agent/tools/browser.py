@@ -156,7 +156,7 @@ class ClickTool(Tool):
         self._bridge = bridge
 
     name = "click"
-    description = "Click at viewport coordinates (x, y). Use read_page to find element coordinates first."
+    description = "Click at viewport coordinates (x, y). Use this for manual fallback actions; prefer site-specific tools and commands first."
 
     @property
     def parameters(self) -> dict:
@@ -252,7 +252,7 @@ class ReadPageTool(Tool):
         self._bridge = bridge
 
     name = "read_page"
-    description = "Extract visible text, links, and interactive elements from the page with their (x,y) coordinates. Use this to find clickable elements."
+    description = "Extract visible text, links, and interactive elements from the page with their (x,y) coordinates. Use this on generic pages or when a site-specific command is unavailable."
 
     @property
     def parameters(self) -> dict:
@@ -402,10 +402,13 @@ class ExtractPageDataTool(Tool):
         "submit_search_query — Run a search (most reliable, use instead of type_text+Enter) — {keyword}\n"
         "extract_search_cards — Get note cards from search results — {}\n"
         "click_card — Open a note card by position index — {index}\n"
+        "click_note_by_id / click_note_link — Open a visible card by id or URL — {note_id} / {url}\n"
         "extract_note_content — Get title/author/text/engagement of the OPEN note modal — {}\n"
+        "collect_carousel_images — Collect all image URLs from the OPEN note carousel — {max_images}\n"
         "extract_comments — Get comments from the open note — {max_comments}\n"
+        "scroll_note — Scroll inside the open note modal — {pixels}\n"
         "close_note — Close the note modal (ALWAYS use this to close; press_key Escape does NOT work for the XHS modal) — {}\n"
-        "extract_profile_info / extract_profile_notes / extract_search_tabs — {}\n"
+        "extract_profile_info / extract_profile_notes / extract_search_tabs / get_search_page_state / click_search_tab — {}\n"
         "Closing + opening the next note must be: extract_page_data close_note → extract_page_data click_card {index: N} → extract_page_data extract_note_content."
     )
 
@@ -420,13 +423,19 @@ class ExtractPageDataTool(Tool):
                     "enum": [
                         "submit_search_query",
                         "extract_search_cards",
+                        "extract_search_tabs",
+                        "get_search_page_state",
+                        "click_search_tab",
                         "click_card",
+                        "click_note_by_id",
+                        "click_note_link",
                         "extract_note_content",
+                        "collect_carousel_images",
                         "extract_comments",
+                        "scroll_note",
                         "close_note",
                         "extract_profile_info",
                         "extract_profile_notes",
-                        "extract_search_tabs",
                     ],
                 },
                 "params": {

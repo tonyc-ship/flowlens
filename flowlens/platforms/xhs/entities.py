@@ -1,15 +1,4 @@
-"""XHS Entity Definitions — structured models for deep content understanding.
-
-These entities define WHAT to extract from each XHS page element.
-They serve as:
-  1. Schema — what fields exist and what they mean
-  2. Completeness checklist — agent knows when extraction is thorough vs shallow
-  3. Cross-platform template — other platforms define similar entities
-
-Design principle: a human browsing XHS would examine each note's images one
-by one, read the full text, scroll through comments, check the author's
-profile. These entities encode that level of thoroughness.
-"""
+"""Structured Xiaohongshu entities and deterministic post-processing helpers."""
 
 from __future__ import annotations
 
@@ -19,7 +8,7 @@ from enum import Enum
 
 
 def parse_count_text(raw: str) -> int:
-    """Parse social count strings like '1.2万', '3,421', '98' into integers."""
+    """Parse social count strings like ``1.2万`` or ``3.4k`` into integers."""
     value = str(raw or "").strip().lower().replace(",", "").replace("+", "")
     if not value:
         return 0
@@ -38,7 +27,7 @@ def parse_count_text(raw: str) -> int:
 
 
 def _dedupe_keep_order(values: list[str]) -> list[str]:
-    seen = set()
+    seen: set[str] = set()
     result: list[str] = []
     for value in values:
         cleaned = str(value or "").strip()
@@ -50,7 +39,6 @@ def _dedupe_keep_order(values: list[str]) -> list[str]:
 
 
 def extract_price_mentions(text: str) -> list[str]:
-    """Extract lightweight price mentions from note text / OCR / transcript."""
     matches = re.findall(
         r"(?:[¥￥]\s?\d+(?:\.\d+)?(?:\s*[-~]\s*[¥￥]?\d+(?:\.\d+)?)?|\d+(?:\.\d+)?\s*(?:元|块|rmb|RMB))",
         text or "",
@@ -59,7 +47,6 @@ def extract_price_mentions(text: str) -> list[str]:
 
 
 def infer_format_hints(title: str, content: str) -> list[str]:
-    """Infer coarse note format tags from obvious title/content cues."""
     corpus = f"{title}\n{content}".lower()
     hints: list[str] = []
     rules = [
@@ -78,7 +65,6 @@ def infer_format_hints(title: str, content: str) -> list[str]:
 
 
 def extract_cta_phrases(text: str, limit: int = 5) -> list[str]:
-    """Extract lightweight CTA phrases like '评论区见链接' or '记得收藏'."""
     candidates = re.split(r"[\n。！？!?\r]+", text or "")
     keywords = ("评论区", "私信", "链接", "收藏", "关注", "点赞", "转发", "蹲")
     phrases = [segment.strip() for segment in candidates if any(k in segment for k in keywords)]
@@ -86,7 +72,6 @@ def extract_cta_phrases(text: str, limit: int = 5) -> list[str]:
 
 
 def extract_key_points(text: str, limit: int = 5) -> list[str]:
-    """Extract concise bullet-like points from note text / OCR / transcript."""
     raw_segments = re.split(r"[\n\r]+", text or "")
     scored: list[tuple[int, int, str]] = []
 
@@ -124,45 +109,50 @@ def normalize_comment_key(username: str, text: str) -> str:
     return f"{user}:{content[:80]}"
 
 
-# ── Enums ────────────────────────────────────────────────────────
-
 class NoteType(str, Enum):
     IMAGE = "image"
     VIDEO = "video"
     UNKNOWN = "unknown"
 
 
-# ── Building Blocks ─────────────────────────────────────────────
-
 @dataclass
 class ImageInfo:
-    """A single image within a note."""
     url: str = ""
-    index: int = 0                   # position in carousel (0-based)
-    ocr_text: str = ""               # text extracted via Apple OCR
-    vision_description: str = ""     # Claude Vision description
-    is_cover: bool = False           # first image = cover
+    index: int = 0
+    ocr_text: str = ""
+    vision_description: str = ""
+    is_cover: bool = False
+    local_path: str = ""
 
     @property
     def is_complete(self) -> bool:
         return bool(self.url) and (bool(self.ocr_text) or bool(self.vision_description))
 
+    def to_tool_dict(self) -> dict:
+        return {
+            "url": self.url,
+            "index": self.index,
+            "is_cover": self.is_cover,
+            "ocr_text": self.ocr_text[:400],
+            "vision_description": self.vision_description,
+            "local_path": self.local_path,
+        }
+
 
 @dataclass
 class VideoInfo:
-    """Video content within a note."""
-    url: str = ""                    # playback URL (may be blob:)
-    poster_url: str = ""             # thumbnail/poster image
+    url: str = ""
+    poster_url: str = ""
     duration_s: float | None = None
     source_urls: list[str] = field(default_factory=list)
     resolved_url: str = ""
     stream_type: str = ""
     download_path: str = ""
     download_error: str = ""
-    transcript: str = ""             # whisper.cpp transcription
-    transcript_summary: str = ""     # LLM summary of transcript
-    poster_ocr: str = ""             # OCR on poster frame
-    poster_description: str = ""     # Vision description of poster
+    transcript: str = ""
+    transcript_summary: str = ""
+    poster_ocr: str = ""
+    poster_description: str = ""
     frame_paths: list[str] = field(default_factory=list)
     frame_descriptions: list[str] = field(default_factory=list)
     visual_summary: str = ""
@@ -214,10 +204,24 @@ class VideoInfo:
         has_audio = bool(self.transcript) or bool(self.transcript_summary)
         return has_visual and has_audio
 
+    def to_tool_dict(self) -> dict:
+        return {
+            "duration_s": self.duration_s,
+            "resolved_url": self.resolved_url or self.best_source_url(),
+            "stream_type": self.stream_type,
+            "download_error": self.download_error,
+            "poster_description": self.poster_description,
+            "poster_ocr": self.poster_ocr[:400],
+            "transcript_summary": self.transcript_summary,
+            "transcript_excerpt": self.transcript[:1200],
+            "visual_summary": self.visual_summary,
+            "frame_descriptions": self.frame_descriptions[:6],
+            "download_path": self.download_path,
+        }
+
 
 @dataclass
 class Comment:
-    """A single comment on a note."""
     username: str = ""
     text: str = ""
     likes: str = ""
@@ -277,7 +281,6 @@ class Comment:
 
     @classmethod
     def from_dom_dict(cls, d: dict) -> Comment:
-        """Convert raw DOM comment dict to Comment."""
         sub_comments = [
             Comment.from_dom_dict(sc)
             for sc in d.get("sub_comments", [])
@@ -295,10 +298,10 @@ class Comment:
             sub_comments=Comment.merge_many(sub_comments),
         )
 
-    def to_report_dict(self) -> dict:
+    def to_tool_dict(self) -> dict:
         return {
             "username": self.username,
-            "text": self.text,
+            "text": self.text[:240],
             "likes": self.likes,
             "like_count": self.like_count,
             "time": self.time,
@@ -306,87 +309,53 @@ class Comment:
             "is_pinned": self.is_pinned,
             "reply_count": self.reply_count,
             "heat_score": self.heat_score,
-            "sub_comments": [sc.to_report_dict() for sc in self.sub_comments],
+            "sub_comments": [sc.to_tool_dict() for sc in self.sub_comments[:3]],
         }
 
 
-# ── Core Entities ───────────────────────────────────────────────
-
 @dataclass
 class NoteEntity:
-    """A complete XHS note — the primary content unit.
-
-    When the agent opens a note, it should populate ALL fields before
-    moving on. Missing fields indicate incomplete extraction.
-
-    Extraction strategy per field:
-      - title, content, author_*, hashtags, date, engagement → DOM extraction
-      - images → DOM gets URLs, then download each for OCR + Vision
-      - video → DOM gets URL/poster, then Whisper + Vision
-      - comments → DOM extraction + scroll for more
-      - cover_description → Vision API on first image (overall aesthetic)
-    """
-    # Identity
     note_id: str = ""
     url: str = ""
     note_type: NoteType = NoteType.UNKNOWN
-
-    # Author (inline — full author data is in AuthorEntity)
     author_name: str = ""
     author_id: str = ""
     author_avatar_url: str = ""
     author_url: str = ""
-
-    # Text content
     title: str = ""
-    content: str = ""              # full text body, preserve line breaks
+    content: str = ""
     hashtags: list[str] = field(default_factory=list)
     date: str = ""
     location: str = ""
     ip_location: str = ""
-
-    # Media
     images: list[ImageInfo] = field(default_factory=list)
-    image_count: int = 0           # total images (may differ from len(images) if carousel)
+    image_count: int = 0
     video: VideoInfo | None = None
-
-    # Engagement
     likes: str = ""
     favorites: str = ""
     comments_count: str = ""
     shares: str = ""
-
-    # Comments (sorted by relevance/likes)
     comments: list[Comment] = field(default_factory=list)
-
-    # Derived / enriched
-    cover_description: str = ""    # Vision API overall description
-    screenshot_path: str = ""      # local path to screenshot
+    cover_description: str = ""
+    screenshot_path: str = ""
     format_hints: list[str] = field(default_factory=list)
     price_mentions: list[str] = field(default_factory=list)
     cta_phrases: list[str] = field(default_factory=list)
     key_points: list[str] = field(default_factory=list)
-    # Source context (how this note was found)
-    source_keyword: str = ""       # search keyword that led here
-    source_context: str = ""       # "search", "profile", "recommendation"
-
-    # Card-level engagement (from search results card, before opening note)
+    source_keyword: str = ""
+    source_context: str = ""
     card_likes: str = ""
     source_position: int = -1
-
-    # Extraction metadata
     extraction_level: str = "deep"
     requested_sections: tuple[str, ...] = ("content", "media", "engagement", "comments", "author")
     applied_capabilities: list[str] = field(default_factory=list)
 
     @property
     def has_content(self) -> bool:
-        """Minimum viability: at least title or body text extracted."""
         return bool(self.title) or bool(self.content)
 
     @property
     def has_media(self) -> bool:
-        """Media (images or video) has been processed."""
         if self.note_type == NoteType.VIDEO:
             return self.video is not None and self.video.is_complete
         return any(img.is_complete for img in self.images)
@@ -401,7 +370,6 @@ class NoteEntity:
 
     @property
     def completeness(self) -> dict[str, bool]:
-        """Check which aspects have been extracted."""
         raw = {
             "content": self.has_content,
             "media": self.has_media,
@@ -416,7 +384,6 @@ class NoteEntity:
 
     @property
     def completeness_score(self) -> float:
-        """0.0 to 1.0 — how thoroughly this note has been extracted."""
         checks = self.completeness
         return sum(checks.values()) / len(checks)
 
@@ -424,12 +391,7 @@ class NoteEntity:
     def sort_comments(comments: list[Comment]) -> list[Comment]:
         return sorted(
             comments,
-            key=lambda c: (
-                -c.heat_score,
-                -c.like_count,
-                not c.is_author_reply,
-                c.time or "",
-            ),
+            key=lambda c: (-c.heat_score, -c.like_count, not c.is_author_reply, c.time or ""),
         )
 
     def hottest_comments(self, limit: int = 5) -> list[Comment]:
@@ -456,54 +418,8 @@ class NoteEntity:
         self.cta_phrases = extract_cta_phrases(text_corpus)
         self.key_points = extract_key_points(text_corpus)
 
-    def to_summary(self) -> dict:
-        """Compact representation for LLM context (avoids token bloat)."""
-        d = {
-            "title": self.title,
-            "author": self.author_name,
-            "type": self.note_type.value,
-            "likes": self.likes,
-            "favorites": self.favorites,
-            "content_preview": self.content[:300] if self.content else "",
-            "hashtags": self.hashtags,
-            "image_count": self.image_count,
-            "comments_count": self.comments_count,
-            "extraction_level": self.extraction_level,
-            "source_position": self.source_position,
-        }
-        if self.cover_description:
-            d["cover_description"] = self.cover_description
-        if self.images:
-            d["image_descriptions"] = [
-                img.vision_description for img in self.images if img.vision_description
-            ]
-        if self.video and self.video.transcript_summary:
-            d["video_summary"] = self.video.transcript_summary
-        if self.video and self.video.visual_summary:
-            d["video_visual_summary"] = self.video.visual_summary
-        if self.comments:
-            d["top_comments"] = [
-                {"user": c.username, "text": c.text[:100], "likes": c.likes}
-                for c in self.hottest_comments(5)
-            ]
-        if self.format_hints:
-            d["format_hints"] = self.format_hints
-        if self.price_mentions:
-            d["price_mentions"] = self.price_mentions[:8]
-        if self.cta_phrases:
-            d["cta_phrases"] = self.cta_phrases
-        if self.key_points:
-            d["key_points"] = self.key_points
-        return d
-
     @classmethod
     def from_dom_dict(cls, d: dict) -> NoteEntity:
-        """Convert raw DOM extract_note_content() dict to NoteEntity.
-
-        Only populates fields available from DOM extraction. Media processing
-        (OCR, Vision, transcription) is done separately by the agent.
-        """
-        # Determine note type
         raw_type = d.get("type", "").lower()
         if raw_type == "video":
             note_type = NoteType.VIDEO
@@ -512,35 +428,20 @@ class NoteEntity:
         else:
             note_type = NoteType.UNKNOWN
 
-        # Build ImageInfo objects from image_urls
         image_urls = d.get("image_urls", [])
         images = [
-            ImageInfo(
-                url=url,
-                index=i,
-                is_cover=(i == 0),
-            )
+            ImageInfo(url=url, index=i, is_cover=(i == 0))
             for i, url in enumerate(image_urls)
         ]
 
-        # Build VideoInfo if this is a video note
         video = None
         if note_type == NoteType.VIDEO:
-            video_url = d.get("video_url", "")
-            poster_url = d.get("poster_url", "") or (image_urls[0] if image_urls else "")
-            source_urls = [v.get("url", "") for v in d.get("video_url_candidates", []) if v.get("url")]
             video = VideoInfo(
-                url=video_url,
-                poster_url=poster_url,
+                url=d.get("video_url", ""),
+                poster_url=d.get("poster_url", "") or (image_urls[0] if image_urls else ""),
                 duration_s=d.get("duration_s"),
-                source_urls=source_urls,
+                source_urls=[v.get("url", "") for v in d.get("video_url_candidates", []) if v.get("url")],
             )
-
-        # Build Comment objects
-        comments = [
-            Comment.from_dom_dict(c)
-            for c in d.get("comments", [])
-        ]
 
         note = cls(
             note_id=d.get("note_id", ""),
@@ -563,19 +464,16 @@ class NoteEntity:
             favorites=d.get("favorites", ""),
             comments_count=d.get("comments_count", ""),
             shares=d.get("shares", ""),
-            comments=cls.merge_comments(comments),
         )
+        if note.note_id:
+            note.url = f"https://www.xiaohongshu.com/explore/{note.note_id}"
         note.refresh_derived_fields()
         return note
 
-    def to_report_dict(self) -> dict:
-        """Convert to dict for JSON report and HTML generation.
-
-        Produces the same dict shape the existing HTML templates expect,
-        so HTML generators don't need major changes.
-        """
-        d = {
+    def to_tool_dict(self) -> dict:
+        payload = {
             "note_id": self.note_id,
+            "url": self.url,
             "title": self.title,
             "author": self.author_name,
             "author_url": self.author_url,
@@ -586,55 +484,32 @@ class NoteEntity:
             "location": self.location,
             "ip_location": self.ip_location,
             "likes": self.likes,
+            "likes_value": parse_count_text(self.likes),
             "favorites": self.favorites,
+            "favorites_value": parse_count_text(self.favorites),
             "comments_count": self.comments_count,
+            "comments_count_value": parse_count_text(self.comments_count),
             "shares": self.shares,
             "image_count": self.image_count,
-            "source_keyword": self.source_keyword,
-            "source_position": self.source_position,
-            "screenshot": self.screenshot_path,
-            "extraction_level": self.extraction_level,
-            "requested_sections": list(self.requested_sections),
-            "applied_capabilities": self.applied_capabilities,
-            # comments as list of dicts (existing format)
-            "comments": [c.to_report_dict() for c in self.comments],
-            "hot_comments": [c.to_report_dict() for c in self.hottest_comments(5)],
-            # image descriptions from ImageInfo objects
-            "image_descriptions": [img.vision_description for img in self.images if img.vision_description],
-            # cover description
             "cover_description": self.cover_description,
-            # OCR results in existing format
-            "ocr_results": [{"image_index": img.index, "text": img.ocr_text} for img in self.images if img.ocr_text],
             "format_hints": self.format_hints,
-            "price_mentions": self.price_mentions,
+            "price_mentions": self.price_mentions[:8],
             "cta_phrases": self.cta_phrases,
             "key_points": self.key_points,
+            "screenshot": self.screenshot_path,
+            "completeness": self.completeness,
+            "completeness_score": round(self.completeness_score, 3),
+            "applied_capabilities": self.applied_capabilities,
+            "images": [img.to_tool_dict() for img in self.images[:8]],
+            "top_comments": [c.to_tool_dict() for c in self.hottest_comments(8)],
         }
-        # Video-specific
         if self.video:
-            d["video_url"] = self.video.url
-            d["video_resolved_url"] = self.video.resolved_url
-            d["video_source_urls"] = self.video.all_source_urls()
-            d["video_stream_type"] = self.video.stream_type
-            d["video_download_path"] = self.video.download_path
-            d["video_download_error"] = self.video.download_error
-            d["video_frame_paths"] = self.video.frame_paths
-            d["video_frame_descriptions"] = self.video.frame_descriptions
-            d["video_visual_summary"] = self.video.visual_summary
-            d["transcript"] = self.video.transcript
-            d["transcript_summary"] = self.video.transcript_summary
-        # card_likes for user_analysis compatibility
-        if self.card_likes:
-            d["card_likes"] = self.card_likes
-        return d
+            payload["video"] = self.video.to_tool_dict()
+        return payload
 
 
 @dataclass
 class NoteCard:
-    """A card in search results or profile grid — lightweight preview.
-
-    This is what you see BEFORE opening a note. Used for ranking/selection.
-    """
     note_id: str = ""
     title: str = ""
     author_name: str = ""
@@ -642,12 +517,10 @@ class NoteCard:
     note_type: NoteType = NoteType.UNKNOWN
     cover_url: str = ""
     link: str = ""
-    position: int = 0             # position in grid
+    position: int = 0
 
     @classmethod
     def from_dom_dict(cls, d: dict) -> NoteCard:
-        """Convert raw DOM extraction dict to NoteCard."""
-        # Map 'type' string to NoteType enum
         raw_type = d.get("type", "").lower()
         if raw_type == "video":
             note_type = NoteType.VIDEO
@@ -667,63 +540,39 @@ class NoteCard:
             position=d.get("position", 0),
         )
 
+    def to_tool_dict(self) -> dict:
+        return {
+            "note_id": self.note_id,
+            "title": self.title,
+            "author": self.author_name,
+            "likes": self.likes,
+            "likes_value": parse_count_text(self.likes),
+            "type": self.note_type.value,
+            "cover_url": self.cover_url,
+            "link": self.link,
+            "position": self.position,
+        }
+
 
 @dataclass
 class AuthorEntity:
-    """A complete XHS author/creator profile.
-
-    Extraction strategy:
-      - Profile header → DOM: name, bio, followers, following, total_likes, etc.
-      - Notes grid → DOM + scroll: collect all NoteCards
-      - Top notes → open each, populate NoteEntity (via CDP click)
-
-    The profile page is a SPA — scrolling loads more note cards dynamically.
-    """
-    # Identity
     user_id: str = ""
     name: str = ""
-    xhs_id: str = ""               # 小红书号
+    xhs_id: str = ""
     avatar_url: str = ""
-
-    # Bio / description
     bio: str = ""
     tags: list[str] = field(default_factory=list)
-
-    # Verification
     verified: bool = False
     verify_text: str = ""
-
-    # Stats
     followers: str = ""
     following: str = ""
-    total_likes: str = ""          # 获赞与收藏
-
-    # Content
-    note_cards: list[NoteCard] = field(default_factory=list)     # all posts from grid
-    detailed_notes: list[NoteEntity] = field(default_factory=list)  # top posts opened in detail
-
-    # Derived
+    total_likes: str = ""
+    note_cards: list[NoteCard] = field(default_factory=list)
     profile_url: str = ""
     screenshot_path: str = ""
-    content_analysis: str = ""     # LLM analysis of content strategy
-
-    @property
-    def completeness(self) -> dict[str, bool]:
-        return {
-            "profile_info": bool(self.name) and bool(self.followers),
-            "notes_collected": len(self.note_cards) > 0,
-            "notes_detailed": len(self.detailed_notes) > 0,
-            "analysis": bool(self.content_analysis),
-        }
-
-    @property
-    def completeness_score(self) -> float:
-        checks = self.completeness
-        return sum(checks.values()) / len(checks)
 
     @classmethod
     def from_dom_dict(cls, d: dict) -> AuthorEntity:
-        """Convert raw DOM extract_profile_info() dict to AuthorEntity."""
         return cls(
             name=d.get("name", ""),
             xhs_id=d.get("xhs_id", ""),
@@ -737,8 +586,7 @@ class AuthorEntity:
             tags=d.get("tags", []),
         )
 
-    def to_report_dict(self) -> dict:
-        """Convert to dict for JSON report and HTML generation."""
+    def to_tool_dict(self) -> dict:
         return {
             "name": self.name,
             "xhs_id": self.xhs_id,
@@ -747,21 +595,13 @@ class AuthorEntity:
             "verified": self.verified,
             "verify_text": self.verify_text,
             "followers": self.followers,
+            "followers_value": parse_count_text(self.followers),
             "following": self.following,
+            "following_value": parse_count_text(self.following),
             "total_likes": self.total_likes,
+            "total_likes_value": parse_count_text(self.total_likes),
             "tags": self.tags,
+            "profile_url": self.profile_url,
             "screenshot": self.screenshot_path,
+            "note_cards": [card.to_tool_dict() for card in self.note_cards[:20]],
         }
-
-
-@dataclass
-class SearchResult:
-    """A search results page on XHS.
-
-    XHS search is keyword-based. Results are a waterfall grid of NoteCards.
-    Filters: 全部 | 图文 | 视频 | 用户
-    """
-    query: str = ""
-    active_filter: str = "全部"    # 全部, 图文, 视频, 用户
-    cards: list[NoteCard] = field(default_factory=list)
-    total_visible: int = 0

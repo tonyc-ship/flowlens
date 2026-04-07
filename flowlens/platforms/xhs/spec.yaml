@@ -1,0 +1,247 @@
+site:
+  name: Xiaohongshu
+  domain: xiaohongshu.com
+
+entities:
+  note:
+    name: Note
+    description: A Xiaohongshu note, either an image carousel or a short video.
+    key_fields:
+      - name: title
+        description: Note title shown in the detail modal.
+      - name: author
+        description: Display name of the note author.
+      - name: content
+        description: Main text body from DOM and optional OCR/transcript enrichment.
+      - name: note_type
+        description: image, video, or unknown.
+      - name: likes
+        description: Normalized like count.
+      - name: favorites
+        description: Normalized collect/bookmark count.
+      - name: comments_count
+        description: Normalized visible comment count.
+      - name: hashtags
+        description: Hashtags mentioned in the note body.
+      - name: top_comments
+        description: Sample of hot comments after deterministic merge/dedupe.
+    derived_fields:
+      - content_summary
+      - price_mentions
+      - key_points
+      - cta_phrases
+      - format_hints
+      - content_sources
+
+  comment:
+    name: Comment
+    description: A top-level or nested note comment.
+    key_fields:
+      - name: username
+        description: Comment author display name.
+      - name: text
+        description: Comment text content.
+      - name: like_count
+        description: Normalized comment likes.
+      - name: reply_count
+        description: Number of nested replies if visible.
+      - name: is_author_reply
+        description: Whether the comment is marked as an author reply.
+
+  author:
+    name: Author
+    description: A Xiaohongshu profile entity.
+    key_fields:
+      - name: display_name
+        description: Visible author name on profile or note detail.
+      - name: xhs_id
+        description: Xiaohongshu handle or profile identifier.
+      - name: bio
+        description: Profile biography text.
+      - name: followers
+        description: Normalized follower count.
+      - name: following
+        description: Normalized following count.
+      - name: likes_and_collections
+        description: Normalized profile likes/collections count.
+
+  image:
+    name: Image
+    description: An image belonging to an image note carousel.
+    key_fields:
+      - name: url
+        description: Source URL of the image asset.
+      - name: index
+        description: Zero-based carousel position.
+      - name: ocr_text
+        description: OCR text extracted from the image.
+      - name: vision_description
+        description: Vision summary of the image contents.
+
+  video:
+    name: Video
+    description: Video-related metadata and multimodal enrichment.
+    key_fields:
+      - name: resolved_url
+        description: Best resolved playable/downloadable URL.
+      - name: transcript_summary
+        description: Summary of speech transcribed from the video.
+      - name: visual_summary
+        description: Summary of poster and sampled video frames.
+      - name: frame_descriptions
+        description: Descriptions of sampled key frames.
+
+capabilities:
+  - name: xhs.search.collect_cards
+    goal: Collect visible search result cards across scroll rounds.
+    fills_fields: [card.title, card.author, card.likes, card.type, card.link]
+    estimated_latency_s: [1, 4]
+    cost: low
+    notes: Cheap breadth-first scan.
+
+  - name: xhs.profile.collect_cards
+    goal: Collect profile note cards from the creator grid.
+    fills_fields: [card.title, card.likes, card.type, card.position]
+    estimated_latency_s: [2, 6]
+    cost: low
+    notes: Good for creator inventory views.
+
+  - name: xhs.note.open_basic
+    goal: Open a note and extract DOM-visible basics.
+    fills_fields:
+      - note.title
+      - note.author
+      - note.content
+      - note.date
+      - note.location
+      - note.ip_location
+      - note.likes
+      - note.favorites
+      - note.comments_count
+      - note.type
+    estimated_latency_s: [2, 6]
+    cost: low
+    notes: Best default extractor for note detail.
+
+  - name: xhs.note.sample_comments
+    goal: Collect a hot-comment sample from the open note.
+    fills_fields: ["note.comments[*].text", "note.comments[*].like_count"]
+    estimated_latency_s: [1, 5]
+    cost: low
+    notes: Use when sentiment or objections matter.
+
+  - name: xhs.note.image_understanding
+    goal: Collect carousel images and run OCR plus vision.
+    fills_fields:
+      - note.cover_description
+      - "note.images[*].ocr_text"
+      - "note.images[*].vision_description"
+    estimated_latency_s: [6, 24]
+    cost: medium
+    notes: Useful for image-heavy tutorials and lists.
+
+  - name: xhs.note.video_audio
+    goal: Resolve the video URL and transcribe spoken content.
+    fills_fields: [note.video.transcript, note.video.transcript_summary]
+    estimated_latency_s: [12, 60]
+    cost: high
+    notes: High-value when the core signal is in the narration.
+
+  - name: xhs.note.video_visual
+    goal: Sample frames and summarize the visual storyline.
+    fills_fields: [note.video.frame_descriptions, note.video.visual_summary]
+    estimated_latency_s: [8, 36]
+    cost: high
+    notes: Useful for demo-style or vlog-style videos.
+
+plans:
+  card:
+    name: xhs.note.card_view
+    description: Only lightweight metadata, no comments or media enrichment.
+    capabilities: [xhs.note.open_basic]
+    fills_fields: [title, author, likes, favorites, comments_count, type]
+    estimated_latency_s: [2, 6]
+    cost: low
+    include_comments: false
+    max_comments: 0
+    max_comment_scrolls: 0
+    use_media: false
+    use_image_ocr: false
+    use_image_vision: false
+    use_video_transcript: false
+    use_video_frames: false
+    max_images: 0
+    max_video_frames: 0
+    requested_sections: [content, engagement, author]
+
+  lite:
+    name: xhs.note.lite_read
+    description: Open a note, normalize fields, and sample a few comments. Skip heavy media work.
+    capabilities: [xhs.note.open_basic, xhs.note.sample_comments]
+    fills_fields:
+      - title
+      - author
+      - content
+      - date
+      - location
+      - ip_location
+      - likes
+      - favorites
+      - comments_count
+      - hashtags
+      - comments
+    estimated_latency_s: [4, 12]
+    cost: low
+    include_comments: true
+    max_comments: 4
+    max_comment_scrolls: 0
+    use_media: false
+    use_image_ocr: false
+    use_image_vision: false
+    use_video_transcript: false
+    use_video_frames: false
+    max_images: 4
+    max_video_frames: 0
+    requested_sections: [content, engagement, comments, author]
+
+  deep:
+    name: xhs.note.deep_read
+    description: Open a note, sample comments, and run full multimodal understanding.
+    capabilities:
+      - xhs.note.open_basic
+      - xhs.note.sample_comments
+      - xhs.note.image_understanding
+      - xhs.note.video_audio
+      - xhs.note.video_visual
+    fills_fields:
+      - title
+      - author
+      - content
+      - date
+      - location
+      - ip_location
+      - likes
+      - favorites
+      - comments_count
+      - hashtags
+      - comments
+      - cover_description
+      - image_descriptions
+      - ocr_results
+      - transcript
+      - transcript_summary
+      - video_visual_summary
+      - video_frame_descriptions
+    estimated_latency_s: [15, 90]
+    cost: high
+    include_comments: true
+    max_comments: 12
+    max_comment_scrolls: 2
+    use_media: true
+    use_image_ocr: true
+    use_image_vision: true
+    use_video_transcript: true
+    use_video_frames: true
+    max_images: 6
+    max_video_frames: 4
+    requested_sections: [content, engagement, comments, author, media]
