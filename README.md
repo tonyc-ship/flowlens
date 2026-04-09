@@ -67,6 +67,8 @@ FLOWLENS_LLM_BACKEND=sonnet
 FLOWLENS_WHISPER_CLI=
 FLOWLENS_WHISPER_MODELS_DIR=
 FLOWLENS_OBSERVER_DIFF_THRESHOLD=0.30
+FLOWLENS_OBSERVER_CAPTURE_ALL_DISPLAYS=1
+FLOWLENS_OBSERVER_CAPTURE_BACKEND=screencapture
 FLOWLENS_OBSERVER_VISION_ENABLED=1
 FLOWLENS_OBSERVER_VISION_MODEL=Qwen3.5-2B-6bit
 ```
@@ -80,11 +82,23 @@ python -m flowlens observer install-agent
 python -m flowlens observer status
 ```
 
+If you change `FLOWLENS_OBSERVER_*` environment variables, run `install-agent`
+again so the launchd plist picks up the new values.
+
+Observer now defaults to `FLOWLENS_OBSERVER_CAPTURE_BACKEND=screencapture`
+because it is materially more stable than in-process Quartz capture for
+long-running multi-display sessions. Set it to `quartz` only if you need the
+lower latency and are willing to trade off stability.
+
 You can check observer data in:
 
 - `observer_data/observer.db`
 - `observer_data/screenshots/`
 - `observer_data/logs/capture.log`
+- `observer_data/logs/resource_monitor.jsonl`
+
+Browser task run directories also accumulate per-screenshot resource snapshots in
+`screenshot_resource_log.jsonl`.
 
 
 ## Load The Chrome Extension

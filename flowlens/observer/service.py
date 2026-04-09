@@ -17,6 +17,7 @@ from pathlib import Path
 
 from PIL import Image, ImageChops, ImageFilter
 
+from ..core.process_metrics import append_jsonl, system_resource_snapshot
 from ..core.runtime import load_runtime_env
 from ..debug import MacOSController
 from ..perception.apple_ocr import AppleOCR
@@ -26,6 +27,8 @@ from .paths import LAUNCH_AGENT_LABEL, ObserverPaths, REPO_ROOT
 from .store import ObserverStore
 
 OBSERVER_VISION_MODEL = "Qwen3.5-2B-6bit"
+OBSERVER_CAPTURE_BACKEND_DEFAULT = "screencapture"
+OBSERVER_CAPTURE_BACKENDS = frozenset({"auto", "quartz", "screencapture"})
 
 
 @dataclass(frozen=True)
@@ -40,6 +43,13 @@ def _env_flag(name: str, default: bool) -> bool:
     if raw is None:
         return default
     return raw.strip().lower() not in {"", "0", "false", "no", "off"}
+
+
+def _capture_backend(raw: str | None, *, default: str = OBSERVER_CAPTURE_BACKEND_DEFAULT) -> str:
+    value = str(raw or "").strip().lower()
+    if value in OBSERVER_CAPTURE_BACKENDS:
+        return value
+    return default
 
 
 def _merge_regions(regions: list[dict[str, int]], *, gap: int = 24) -> list[dict[str, int]]:
@@ -116,6 +126,7 @@ class ObserverConfig:
     screenshot_keep_hours: int = 24
     screenshot_scale: float = 0.5
     screenshot_strategy: str = "app_switch"
+    capture_backend: str = OBSERVER_CAPTURE_BACKEND_DEFAULT
     capture_all_displays: bool = True
     enable_visual_summary: bool = True
     vision_model: str = OBSERVER_VISION_MODEL
@@ -135,6 +146,13 @@ class ObserverConfig:
             screenshot_strategy=os.environ.get(
                 "FLOWLENS_OBSERVER_SCREENSHOT_STRATEGY", "app_switch"
             ).strip() or "app_switch",
+            capture_backend=_capture_backend(
+                os.environ.get(
+                    "FLOWLENS_OBSERVER_CAPTURE_BACKEND",
+                    OBSERVER_CAPTURE_BACKEND_DEFAULT,
+                )
+            ),
+            capture_all_displays=_env_flag("FLOWLENS_OBSERVER_CAPTURE_ALL_DISPLAYS", True),
             enable_visual_summary=_env_flag("FLOWLENS_OBSERVER_VISION_ENABLED", True),
             vision_model=os.environ.get(
                 "FLOWLENS_OBSERVER_VISION_MODEL", OBSERVER_VISION_MODEL
@@ -264,6 +282,56 @@ class ObserverCaptureService:
             canvas.paste(crop, (0, y_offset))
             y_offset += crop.height + gap
         return canvas
+
+    @staticmethod
+    def _metric(snapshot: dict, *path: str) -> float | int | None:
+        current: object = snapshot
+        for key in path:
+            if not isinstance(current, dict):
+                return None
+            current = current.get(key)
+        if isinstance(current, (int, float)):
+            return current
+        return None
+
+    @classmethod
+    def _resource_delta(cls, before: dict, after: dict, *path: str) -> float | int | None:
+        before_val = cls._metric(before, *path)
+        after_val = cls._metric(after, *path)
+        if before_val is None or after_val is None:
+            return None
+        delta = float(after_val) - float(before_val)
+        if abs(delta - round(delta)) < 1e-9:
+            return int(round(delta))
+        return round(delta, 2)
+
+    @staticmethod
+    def _display_summary(
+        display,
+        image: Image.Image,
+        *,
+        capture_ms: float,
+        backend: str,
+        backend_error: str = "",
+    ) -> dict:
+        return {
+            "index": int(display.index),
+            "display_id": int(display.display_id),
+            "is_main": bool(display.is_main),
+            "origin": {"x": int(display.x), "y": int(display.y)},
+            "points": {"width": int(display.width), "height": int(display.height)},
+            "pixels": {"width": int(image.width), "height": int(image.height)},
+            "scale": float(display.scale),
+            "capture_ms": round(capture_ms, 1),
+            "backend": backend,
+            "backend_error": backend_error,
+        }
+
+    def _write_resource_monitor_entry(self, entry: dict) -> None:
+        try:
+            append_jsonl(self.paths.resource_monitor_log_path, entry)
+        except Exception:
+            pass
 
     def _compute_capture_diff(
         self,
@@ -423,59 +491,112 @@ class ObserverCaptureService:
             return None, None, None
         return summary or None, scope, self.config.vision_model
 
-    def _capture_combined_image(self) -> Image.Image:
+    def _capture_combined_image(self) -> tuple[Image.Image, list[dict]]:
         displays = self.controller.list_displays()
         if not displays:
             raise RuntimeError("No displays found for observer capture")
 
         if not self.config.capture_all_displays:
             main = next((item for item in displays if item.is_main), displays[0])
-            return self._capture_display_image(main)
+            image, display_stats = self._capture_display_image(main)
+            return image, [display_stats]
 
         # FlowLens stitched each display side-by-side instead of trying to
         # recreate the physical monitor layout. That is more robust here too,
         # because Quartz display frames are reported in points while the
         # captured images are Retina pixels.
-        captures: list[Image.Image] = []
+        captures: list[tuple[Image.Image, dict]] = []
         for display in sorted(displays, key=lambda item: item.index):
-            image = self._capture_display_image(display)
-            captures.append(image)
+            image, display_stats = self._capture_display_image(display)
+            captures.append((image, display_stats))
 
-        total_width = sum(image.width for image in captures)
-        max_height = max(image.height for image in captures)
+        total_width = sum(image.width for image, _ in captures)
+        max_height = max(image.height for image, _ in captures)
         canvas = Image.new("RGB", (total_width, max_height), (255, 255, 255))
 
         x_offset = 0
-        for image in captures:
+        display_summaries: list[dict] = []
+        for image, display_stats in captures:
             canvas.paste(image, (x_offset, 0))
             x_offset += image.width
-        return canvas
+            display_summaries.append(display_stats)
+        return canvas, display_summaries
 
-    def _capture_display_image(self, display) -> Image.Image:
-        try:
-            return self.controller.capture_display(display.display_id).convert("RGB")
-        except Exception:
+    def _capture_display_image(self, display) -> tuple[Image.Image, dict]:
+        started = time.perf_counter()
+        mode = _capture_backend(self.config.capture_backend)
+        if mode == "auto":
+            backend_order = ("screencapture", "quartz")
+        elif mode == "quartz":
+            backend_order = ("quartz",)
+        else:
+            backend_order = ("screencapture",)
+
+        backend = backend_order[0]
+        backend_error = ""
+        image = None
+        errors: list[str] = []
+        for candidate in backend_order:
+            try:
+                if candidate == "quartz":
+                    image = self.controller.capture_display(display.display_id).convert("RGB")
+                else:
+                    image = self._capture_display_with_screencapture(display)
+                backend = candidate
+                backend_error = "; ".join(errors)
+                break
+            except Exception as exc:
+                errors.append(f"{candidate}: {exc}")
+        if image is None:
+            raise RuntimeError("; ".join(errors) or "display capture failed")
+        elapsed_ms = (time.perf_counter() - started) * 1000
+        return image, self._display_summary(
+            display,
+            image,
+            capture_ms=elapsed_ms,
+            backend=backend,
+            backend_error=backend_error,
+        )
+
+    def _capture_display_with_screencapture(self, display) -> Image.Image:
+        errors: list[str] = []
+        for attempt in range(2):
             fd, temp_raw = tempfile.mkstemp(prefix=f"flowlens_display_{display.index}_", suffix=".png")
             os.close(fd)
             temp_path = Path(temp_raw)
             try:
-                result = subprocess.run(
-                    [
-                        "/usr/sbin/screencapture",
-                        "-x",
-                        "-D",
-                        str(display.index + 1),
-                        str(temp_path),
-                    ],
-                    capture_output=True,
-                    check=False,
-                )
-                if result.returncode != 0 or not temp_path.exists():
-                    raise RuntimeError("screencapture fallback failed")
-                with Image.open(temp_path) as image:
-                    return image.convert("RGB").copy()
+                try:
+                    result = subprocess.run(
+                        [
+                            "/usr/sbin/screencapture",
+                            "-x",
+                            "-D",
+                            str(display.index + 1),
+                            str(temp_path),
+                        ],
+                        capture_output=True,
+                        text=True,
+                        timeout=8,
+                        check=False,
+                    )
+                except subprocess.TimeoutExpired:
+                    errors.append(
+                        f"attempt {attempt + 1}: screencapture timed out for display {display.index + 1}"
+                    )
+                else:
+                    stderr = (result.stderr or "").strip()
+                    if result.returncode == 0 and temp_path.exists():
+                        with Image.open(temp_path) as image:
+                            return image.convert("RGB").copy()
+                    detail = stderr or f"exit {result.returncode}"
+                    errors.append(
+                        f"attempt {attempt + 1}: screencapture failed for display {display.index + 1}: {detail}"
+                    )
             finally:
                 temp_path.unlink(missing_ok=True)
+            if attempt == 0:
+                time.sleep(0.2)
+        raise RuntimeError("; ".join(errors) or "screencapture failed")
 
     def cleanup_old_screenshots(self) -> int:
         cutoff = time.time() - (self.config.screenshot_keep_hours * 3600)
@@ -500,6 +621,9 @@ class ObserverCaptureService:
 
         timestamp = datetime.now().isoformat()
         total_start = time.perf_counter()
+        pre_resource_snapshot = system_resource_snapshot()
+        display_summaries: list[dict] = []
+        combined_image_size = {"width": 0, "height": 0, "pixels": 0}
         timings_ms = {
             "capture_image_ms": 0.0,
             "diff_ms": 0.0,
@@ -517,7 +641,12 @@ class ObserverCaptureService:
 
         try:
             stage_start = time.perf_counter()
-            image = self._capture_combined_image()
+            image, display_summaries = self._capture_combined_image()
+            combined_image_size = {
+                "width": int(image.width),
+                "height": int(image.height),
+                "pixels": int(image.width * image.height),
+            }
             timings_ms["capture_image_ms"] = round((time.perf_counter() - stage_start) * 1000, 1)
 
             previous_image = self._read_previous_capture_image()
@@ -557,6 +686,7 @@ class ObserverCaptureService:
         timings_ms["total_ms"] = round((time.perf_counter() - total_start) * 1000, 1)
         if temp_path:
             temp_path.unlink(missing_ok=True)
+        post_resource_snapshot = system_resource_snapshot()
 
         capture_id = self.store.insert_capture(
             timestamp=timestamp,
@@ -580,6 +710,76 @@ class ObserverCaptureService:
             visual_ms=timings_ms["visual_ms"],
             total_ms=timings_ms["total_ms"],
         )
+        self._write_resource_monitor_entry(
+            {
+                "timestamp": timestamp,
+                "event": "observer_capture",
+                "capture_id": capture_id,
+                "reason": reason,
+                "is_keyframe": bool(is_keyframe),
+                "context": {
+                    "app_name": app_name or "Unknown",
+                    "window_title": window_title or "",
+                    "browser_url": browser_url or "",
+                    "same_context_as_previous": bool(same_context),
+                },
+                "capture": {
+                    "capture_all_displays": bool(self.config.capture_all_displays),
+                    "display_count": len(display_summaries),
+                    "displays": display_summaries,
+                    "combined_image": combined_image_size,
+                    "screenshot_saved": bool(saved_path),
+                    "screenshot_path": str(saved_path) if saved_path else "",
+                },
+                "diff": {
+                    "source": capture_diff.source,
+                    "changed_area_ratio": round(capture_diff.changed_area_ratio, 4),
+                    "region_count": len(capture_diff.regions),
+                },
+                "ocr": {
+                    "scope": ocr_scope,
+                    "length": len(ocr_text),
+                },
+                "visual": {
+                    "enabled": bool(visual_model),
+                    "scope": visual_scope or "",
+                    "model": visual_model or "",
+                    "summary_chars": len(visual_summary or ""),
+                },
+                "timings_ms": timings_ms,
+                "resources_before": pre_resource_snapshot,
+                "resources_after": post_resource_snapshot,
+                "resource_delta": {
+                    "windowserver_footprint_mb": self._resource_delta(
+                        pre_resource_snapshot, post_resource_snapshot, "windowserver", "footprint_mb"
+                    ),
+                    "windowserver_rss_mb": self._resource_delta(
+                        pre_resource_snapshot, post_resource_snapshot, "windowserver", "rss_mb"
+                    ),
+                    "windowserver_ports": self._resource_delta(
+                        pre_resource_snapshot, post_resource_snapshot, "windowserver", "ports"
+                    ),
+                    "chrome_total_rss_mb": self._resource_delta(
+                        pre_resource_snapshot, post_resource_snapshot, "chrome", "total_rss_mb"
+                    ),
+                    "chrome_largest_renderer_rss_mb": self._resource_delta(
+                        pre_resource_snapshot, post_resource_snapshot, "chrome", "largest_renderer_rss_mb"
+                    ),
+                    "chrome_window_count": self._resource_delta(
+                        pre_resource_snapshot, post_resource_snapshot, "chrome", "window_count"
+                    ),
+                    "chrome_tab_count": self._resource_delta(
+                        pre_resource_snapshot, post_resource_snapshot, "chrome", "tab_count"
+                    ),
+                    "observer_rss_mb": self._resource_delta(
+                        pre_resource_snapshot, post_resource_snapshot, "observer", "rss_mb"
+                    ),
+                    "current_process_rss_mb": self._resource_delta(
+                        pre_resource_snapshot, post_resource_snapshot, "current_process", "rss_mb"
+                    ),
+                },
+            }
+        )
         return {
             "id": capture_id,
             "timestamp": timestamp,
@@ -596,6 +796,8 @@ class ObserverCaptureService:
             "visual_summary": visual_summary or "",
             "visual_scope": visual_scope or "",
             "visual_model": visual_model or "",
+            "display_count": len(display_summaries),
+            "combined_image": combined_image_size,
             "timings_ms": timings_ms,
         }
 
@@ -609,6 +811,7 @@ class ObserverCaptureService:
         print(f"  force_capture_interval: {self.config.force_capture_interval}s")
         print(f"  diff_threshold: {self.config.diff_threshold:.2f}")
         print(f"  screenshot_strategy: {self.config.screenshot_strategy}")
+        print(f"  capture_backend: {self.config.capture_backend}")
         print(
             "  local_vision: "
             f"{'enabled' if self.config.enable_visual_summary else 'disabled'}"
@@ -717,6 +920,19 @@ def install_launch_agent(paths: ObserverPaths) -> Path:
         "PYTHONPATH": str(REPO_ROOT),
         "FLOWLENS_OBSERVER_ROOT": str(paths.root),
     }
+    for key in (
+        "FLOWLENS_OBSERVER_CHECK_INTERVAL",
+        "FLOWLENS_OBSERVER_FORCE_CAPTURE_INTERVAL",
+        "FLOWLENS_OBSERVER_SCREENSHOT_STRATEGY",
+        "FLOWLENS_OBSERVER_CAPTURE_BACKEND",
+        "FLOWLENS_OBSERVER_DIFF_THRESHOLD",
+        "FLOWLENS_OBSERVER_CAPTURE_ALL_DISPLAYS",
+        "FLOWLENS_OBSERVER_VISION_ENABLED",
+        "FLOWLENS_OBSERVER_VISION_MODEL",
+    ):
+        value = os.environ.get(key)
+        if value is not None and str(value).strip():
+            environment[key] = value
     plist = {
         "Label": LAUNCH_AGENT_LABEL,
         "ProgramArguments": [

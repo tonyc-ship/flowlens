@@ -56,6 +56,36 @@ def _rss_mb_for_pid(pid: int) -> float | None:
         return None
 
 
+def _extract_command_flag(command: str, flag: str) -> str:
+    prefix = f"{flag}="
+    for token in command.split():
+        if token.startswith(prefix):
+            return token[len(prefix):].strip()
+    return ""
+
+
+def _chrome_process_kind(command: str) -> str:
+    if "--type=renderer" in command:
+        return "renderer_extension" if "--extension-process" in command else "renderer"
+    if "--type=gpu-process" in command:
+        return "gpu"
+    if "--type=utility" in command:
+        subtype = _extract_command_flag(command, "--utility-sub-type")
+        if subtype:
+            return f"utility:{subtype.split('.')[-1]}"
+        return "utility"
+    if "Google Chrome" in command:
+        return "browser"
+    return "other"
+
+
+def _truncate_command(command: str, max_chars: int = 180) -> str:
+    text = str(command or "").strip()
+    if len(text) <= max_chars:
+        return text
+    return text[:max_chars] + "... [truncated]"
+
+
 def current_process_snapshot(pid: int | None = None) -> dict:
     target = int(pid or os.getpid())
     command = _run_text(["ps", "-p", str(target), "-o", "command="])
@@ -77,6 +107,26 @@ def chrome_window_count() -> int | None:
         return None
 
 
+def chrome_tab_count() -> int | None:
+    script = (
+        'tell application "Google Chrome"\n'
+        "set n to 0\n"
+        "repeat with w in windows\n"
+        "set n to n + (count of tabs of w)\n"
+        "end repeat\n"
+        "return n\n"
+        "end tell"
+    )
+    output = _run_text(
+        ["/usr/bin/osascript", "-e", script],
+        timeout=1.5,
+    )
+    try:
+        return int(output.strip())
+    except Exception:
+        return None
+
+
 def chrome_process_snapshot() -> dict:
     output = _run_text(["ps", "-axo", "pid=,rss=,command="], timeout=2.5)
     main_count = 0
@@ -84,32 +134,57 @@ def chrome_process_snapshot() -> dict:
     total_rss_mb = 0.0
     helper_rss_mb = 0.0
     main_rss_mb = 0.0
+    process_counts_by_kind: dict[str, int] = {}
+    processes: list[dict] = []
+    largest_renderer_rss_mb = 0.0
     for line in output.splitlines():
         parts = line.strip().split(None, 2)
         if len(parts) < 3:
             continue
-        _, rss_kb, command = parts
+        pid_text, rss_kb, command = parts
         if "Google Chrome" not in command:
             continue
         try:
+            pid = int(pid_text)
             rss_mb = int(rss_kb) / 1024
         except ValueError:
             continue
         total_rss_mb += rss_mb
+        kind = _chrome_process_kind(command)
+        process_counts_by_kind[kind] = process_counts_by_kind.get(kind, 0) + 1
         if "Google Chrome Helper" in command:
             helper_count += 1
             helper_rss_mb += rss_mb
         else:
             main_count += 1
             main_rss_mb += rss_mb
+        renderer_client_id = _extract_command_flag(command, "--renderer-client-id")
+        utility_sub_type = _extract_command_flag(command, "--utility-sub-type")
+        if kind.startswith("renderer"):
+            largest_renderer_rss_mb = max(largest_renderer_rss_mb, rss_mb)
+        processes.append(
+            {
+                "pid": pid,
+                "rss_mb": round(rss_mb, 2),
+                "kind": kind,
+                "renderer_client_id": int(renderer_client_id) if renderer_client_id.isdigit() else None,
+                "utility_sub_type": utility_sub_type or "",
+                "command_excerpt": _truncate_command(command),
+            }
+        )
+    processes.sort(key=lambda item: item["rss_mb"], reverse=True)
     return {
         "window_count": chrome_window_count(),
+        "tab_count": chrome_tab_count(),
         "main_process_count": main_count,
         "helper_process_count": helper_count,
         "total_process_count": main_count + helper_count,
         "main_rss_mb": round(main_rss_mb, 2),
         "helper_rss_mb": round(helper_rss_mb, 2),
         "total_rss_mb": round(total_rss_mb, 2),
+        "largest_renderer_rss_mb": round(largest_renderer_rss_mb, 2),
+        "process_counts_by_kind": process_counts_by_kind,
+        "top_processes": processes[:8],
     }
 
 

@@ -57,6 +57,10 @@ class ObserverPaths:
         return self.logs_dir / "capture.error.log"
 
     @property
+    def resource_monitor_log_path(self) -> Path:
+        return self.logs_dir / "resource_monitor.jsonl"
+
+    @property
     def launch_agent_path(self) -> Path:
         return Path.home() / "Library" / "LaunchAgents" / f"{LAUNCH_AGENT_LABEL}.plist"
 

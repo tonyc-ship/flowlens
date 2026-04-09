@@ -6,12 +6,14 @@ FlowLens install as long as Quartz/AppKit are available.
 
 from __future__ import annotations
 
+import contextlib
 import json
 import subprocess
 import tempfile
 import time
 from dataclasses import asdict, dataclass
 
+import objc
 import Quartz
 from AppKit import NSScreen, NSWorkspace
 from PIL import Image
@@ -73,14 +75,13 @@ class AccessibilityElementInfo:
 def _cgimage_to_pil(cg_image) -> Image.Image:
     if cg_image is None:
         raise RuntimeError("Quartz returned no image")
-
     width = Quartz.CGImageGetWidth(cg_image)
     height = Quartz.CGImageGetHeight(cg_image)
     bytes_per_row = Quartz.CGImageGetBytesPerRow(cg_image)
     data_provider = Quartz.CGImageGetDataProvider(cg_image)
-    raw_data = bytes(Quartz.CGDataProviderCopyData(data_provider))
-
-    image = Image.frombuffer(
+    copied_data = Quartz.CGDataProviderCopyData(data_provider)
+    raw_data = bytes(copied_data)
+    image = Image.frombytes(
         "RGBA",
         (width, height),
         raw_data,
@@ -89,7 +90,15 @@ def _cgimage_to_pil(cg_image) -> Image.Image:
         bytes_per_row,
         1,
     )
-    return image.copy()
+    del copied_data
+    del raw_data
+    return image
+
+
+@contextlib.contextmanager
+def _autorelease_pool():
+    with objc.autorelease_pool():
+        yield
 
 
 def _escape_applescript(text: str) -> str:
@@ -117,29 +126,30 @@ class MacOSController:
         return pyautogui
 
     def list_displays(self) -> list[DisplayInfo]:
-        screens = list(NSScreen.screens())
-        main_screen = NSScreen.mainScreen()
-        main_id = None
-        if main_screen is not None:
-            main_id = int(main_screen.deviceDescription()["NSScreenNumber"])
+        with _autorelease_pool():
+            screens = list(NSScreen.screens())
+            main_screen = NSScreen.mainScreen()
+            main_id = None
+            if main_screen is not None:
+                main_id = int(main_screen.deviceDescription()["NSScreenNumber"])
 
-        displays: list[DisplayInfo] = []
-        for index, screen in enumerate(screens):
-            frame = screen.frame()
-            display_id = int(screen.deviceDescription()["NSScreenNumber"])
-            displays.append(
-                DisplayInfo(
-                    index=index,
-                    display_id=display_id,
-                    x=int(frame.origin.x),
-                    y=int(frame.origin.y),
-                    width=int(frame.size.width),
-                    height=int(frame.size.height),
-                    is_main=display_id == main_id,
-                    scale=float(screen.backingScaleFactor()),
+            displays: list[DisplayInfo] = []
+            for index, screen in enumerate(screens):
+                frame = screen.frame()
+                display_id = int(screen.deviceDescription()["NSScreenNumber"])
+                displays.append(
+                    DisplayInfo(
+                        index=index,
+                        display_id=display_id,
+                        x=int(frame.origin.x),
+                        y=int(frame.origin.y),
+                        width=int(frame.size.width),
+                        height=int(frame.size.height),
+                        is_main=display_id == main_id,
+                        scale=float(screen.backingScaleFactor()),
+                    )
                 )
-            )
-        return displays
+            return displays
 
     def list_windows(
         self,
@@ -148,7 +158,8 @@ class MacOSController:
         on_screen_only: bool = False,
         title_contains: str | None = None,
     ) -> list[WindowInfo]:
-        window_list = self._quartz_window_list(on_screen_only=on_screen_only)
+        with _autorelease_pool():
+            window_list = self._quartz_window_list(on_screen_only=on_screen_only)
         if not window_list:
             return self._list_windows_via_accessibility(
                 app_name=app_name,
@@ -197,10 +208,11 @@ class MacOSController:
         )
 
     def frontmost_app_name(self) -> str | None:
-        app = NSWorkspace.sharedWorkspace().frontmostApplication()
-        if app is None:
-            return None
-        return str(app.localizedName())
+        with _autorelease_pool():
+            app = NSWorkspace.sharedWorkspace().frontmostApplication()
+            if app is None:
+                return None
+            return str(app.localizedName())
 
     def frontmost_window_info(self) -> WindowInfo | None:
         """Return the actual frontmost user-visible window.
@@ -209,7 +221,8 @@ class MacOSController:
         than ``frontmostApplication()`` when fullscreen windows or separate
         Spaces are involved.
         """
-        window_list = self._quartz_window_list(on_screen_only=True) or []
+        with _autorelease_pool():
+            window_list = self._quartz_window_list(on_screen_only=True) or []
         system_owners = {
             "Window Server",
             "Dock",
@@ -622,7 +635,8 @@ function run(argv) {
         return windows
 
     def capture_display(self, display_id: int) -> Image.Image:
-        return _cgimage_to_pil(Quartz.CGDisplayCreateImage(display_id))
+        with _autorelease_pool():
+            return _cgimage_to_pil(Quartz.CGDisplayCreateImage(display_id))
 
     def capture_region(self, x: int, y: int, width: int, height: int) -> Image.Image:
         with tempfile.NamedTemporaryFile(suffix=".png", delete=False) as tmp:
@@ -637,13 +651,14 @@ function run(argv) {
             subprocess.run(["rm", "-f", path], check=False)
 
     def capture_window(self, window_id: int) -> Image.Image:
-        cg_image = Quartz.CGWindowListCreateImage(
-            Quartz.CGRectNull,
-            Quartz.kCGWindowListOptionIncludingWindow,
-            window_id,
-            Quartz.kCGWindowImageBoundsIgnoreFraming,
-        )
-        return _cgimage_to_pil(cg_image)
+        with _autorelease_pool():
+            cg_image = Quartz.CGWindowListCreateImage(
+                Quartz.CGRectNull,
+                Quartz.kCGWindowListOptionIncludingWindow,
+                window_id,
+                Quartz.kCGWindowImageBoundsIgnoreFraming,
+            )
+            return _cgimage_to_pil(cg_image)
 
     def capture_window_info(self, window: WindowInfo) -> Image.Image:
         if window.capture_backend == "region":

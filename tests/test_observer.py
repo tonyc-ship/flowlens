@@ -1,10 +1,13 @@
 from __future__ import annotations
 
 import io
+import json
+import os
 import tempfile
 import unittest
 from datetime import datetime, timedelta
 from types import SimpleNamespace
+from unittest import mock
 
 from PIL import Image, ImageDraw
 
@@ -62,6 +65,81 @@ class FakeVisualMedia:
 
 
 class ObserverTests(unittest.TestCase):
+    def test_config_from_env_defaults_to_screencapture(self) -> None:
+        original_backend = os.environ.get("FLOWLENS_OBSERVER_CAPTURE_BACKEND")
+        try:
+            os.environ.pop("FLOWLENS_OBSERVER_CAPTURE_BACKEND", None)
+            config = ObserverConfig.from_env()
+            self.assertEqual(config.capture_backend, "screencapture")
+        finally:
+            if original_backend is None:
+                os.environ.pop("FLOWLENS_OBSERVER_CAPTURE_BACKEND", None)
+            else:
+                os.environ["FLOWLENS_OBSERVER_CAPTURE_BACKEND"] = original_backend
+
+    def test_config_from_env_respects_capture_all_displays_flag(self) -> None:
+        original = os.environ.get("FLOWLENS_OBSERVER_CAPTURE_ALL_DISPLAYS")
+        original_backend = os.environ.get("FLOWLENS_OBSERVER_CAPTURE_BACKEND")
+        try:
+            os.environ["FLOWLENS_OBSERVER_CAPTURE_ALL_DISPLAYS"] = "0"
+            os.environ["FLOWLENS_OBSERVER_CAPTURE_BACKEND"] = "screencapture"
+            config = ObserverConfig.from_env()
+            self.assertFalse(config.capture_all_displays)
+            self.assertEqual(config.capture_backend, "screencapture")
+
+            os.environ["FLOWLENS_OBSERVER_CAPTURE_ALL_DISPLAYS"] = "1"
+            os.environ["FLOWLENS_OBSERVER_CAPTURE_BACKEND"] = "quartz"
+            config = ObserverConfig.from_env()
+            self.assertTrue(config.capture_all_displays)
+            self.assertEqual(config.capture_backend, "quartz")
+        finally:
+            if original is None:
+                os.environ.pop("FLOWLENS_OBSERVER_CAPTURE_ALL_DISPLAYS", None)
+            else:
+                os.environ["FLOWLENS_OBSERVER_CAPTURE_ALL_DISPLAYS"] = original
+            if original_backend is None:
+                os.environ.pop("FLOWLENS_OBSERVER_CAPTURE_BACKEND", None)
+            else:
+                os.environ["FLOWLENS_OBSERVER_CAPTURE_BACKEND"] = original_backend
+
+    def test_auto_backend_prefers_screencapture_for_observer(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            controller = FakeController([Image.new("RGB", (32, 24), "white")])
+            paths = ObserverPaths.resolve(tmp)
+            service = ObserverCaptureService(
+                paths,
+                config=ObserverConfig(
+                    capture_backend="auto",
+                    capture_all_displays=False,
+                    screenshot_strategy="none",
+                    enable_visual_summary=False,
+                ),
+                controller=controller,
+                ocr=FakeOCR(),
+                visual_media=None,
+            )
+            display = controller.list_displays()[0]
+
+            def fake_run(args, capture_output, text, timeout, check):
+                self.assertEqual(args[:4], ["/usr/sbin/screencapture", "-x", "-D", "1"])
+                path = args[-1]
+                Image.new("RGB", (32, 24), "white").save(path, format="PNG")
+                return SimpleNamespace(returncode=0, stderr="")
+
+            with (
+                mock.patch.object(
+                    controller,
+                    "capture_display",
+                    side_effect=AssertionError("quartz should not run first in auto mode"),
+                ),
+                mock.patch("flowlens.observer.service.subprocess.run", side_effect=fake_run),
+            ):
+                image, stats = service._capture_display_image(display)
+
+            self.assertEqual(image.size, (32, 24))
+            self.assertEqual(stats["backend"], "screencapture")
+            self.assertEqual(stats["backend_error"], "")
+
     def test_store_insert_search_and_memory_roundtrip(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             paths = ObserverPaths.resolve(tmp)
@@ -147,9 +225,32 @@ class ObserverTests(unittest.TestCase):
             draw = ImageDraw.Draw(changed)
             draw.rectangle((12, 14, 42, 44), fill="black")
 
+            def snapshot(windowserver_footprint: float, chrome_total: float) -> dict:
+                return {
+                    "timestamp": "2026-04-08T00:00:00",
+                    "current_process": {"rss_mb": 120.0},
+                    "windowserver": {
+                        "pid": 161,
+                        "rss_mb": 100.0,
+                        "footprint_mb": windowserver_footprint,
+                        "ports": 4000,
+                    },
+                    "chrome": {
+                        "window_count": 1,
+                        "tab_count": 4,
+                        "total_rss_mb": chrome_total,
+                        "largest_renderer_rss_mb": 320.0,
+                        "top_processes": [
+                            {"pid": 1001, "rss_mb": 320.0, "kind": "renderer"},
+                        ],
+                    },
+                    "observer": {"pid": 911, "rss_mb": 220.0},
+                }
+
             service = ObserverCaptureService(
                 paths,
                 config=ObserverConfig(
+                    capture_backend="quartz",
                     capture_all_displays=False,
                     diff_threshold=0.30,
                     enable_visual_summary=True,
@@ -160,18 +261,29 @@ class ObserverTests(unittest.TestCase):
                 visual_media=FakeVisualMedia(),
             )
 
-            first = service.capture_once(reason="manual", is_keyframe=True)
-            self.assertEqual(first["ocr_scope"], "full")
-            self.assertEqual(first["visual_scope"], "full")
+            with mock.patch(
+                "flowlens.observer.service.system_resource_snapshot",
+                side_effect=[
+                    snapshot(1024.0, 1500.0),
+                    snapshot(1025.0, 1505.0),
+                    snapshot(1025.0, 1505.0),
+                    snapshot(1027.0, 1512.0),
+                ],
+            ):
+                first = service.capture_once(reason="manual", is_keyframe=True)
+                self.assertEqual(first["ocr_scope"], "full")
+                self.assertEqual(first["visual_scope"], "full")
 
-            second = service.capture_once(reason="manual", is_keyframe=True)
-            self.assertEqual(second["ocr_scope"], "diff")
-            self.assertEqual(second["visual_scope"], "diff")
-            self.assertGreater(second["diff_region_count"], 0)
-            self.assertLess(second["changed_area_ratio"], 0.30)
-            self.assertIn("vision:", second["visual_summary"])
-            self.assertGreaterEqual(second["timings_ms"]["total_ms"], 0.0)
-            self.assertGreaterEqual(second["timings_ms"]["ocr_ms"], 0.0)
+                second = service.capture_once(reason="manual", is_keyframe=True)
+                self.assertEqual(second["ocr_scope"], "diff")
+                self.assertEqual(second["visual_scope"], "diff")
+                self.assertGreater(second["diff_region_count"], 0)
+                self.assertLess(second["changed_area_ratio"], 0.30)
+                self.assertIn("vision:", second["visual_summary"])
+                self.assertGreaterEqual(second["timings_ms"]["total_ms"], 0.0)
+                self.assertGreaterEqual(second["timings_ms"]["ocr_ms"], 0.0)
+                self.assertEqual(second["display_count"], 1)
+                self.assertEqual(second["combined_image"]["width"], 240)
 
             store = ObserverStore(paths)
             latest = store.latest_capture()
@@ -183,6 +295,18 @@ class ObserverTests(unittest.TestCase):
             stats = store.stats()
             self.assertIn("avg_total_ms", stats)
             self.assertGreaterEqual(float(stats["avg_total_ms"]), 0.0)
+
+            entries = [
+                json.loads(line)
+                for line in paths.resource_monitor_log_path.read_text(encoding="utf-8").splitlines()
+                if line.strip()
+            ]
+            self.assertEqual(len(entries), 2)
+            self.assertEqual(entries[-1]["capture"]["display_count"], 1)
+            self.assertEqual(entries[-1]["capture"]["combined_image"]["pixels"], 240 * 120)
+            self.assertEqual(entries[-1]["resources_after"]["chrome"]["window_count"], 1)
+            self.assertEqual(entries[-1]["resource_delta"]["windowserver_footprint_mb"], 2)
+            self.assertEqual(entries[-1]["resource_delta"]["chrome_total_rss_mb"], 7)
 
 
 if __name__ == "__main__":

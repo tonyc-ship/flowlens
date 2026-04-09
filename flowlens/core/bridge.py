@@ -15,11 +15,37 @@ import asyncio
 import base64
 import json
 import subprocess
+import time
 import uuid
+from datetime import datetime
 from pathlib import Path
 
 import websockets
 from websockets.asyncio.server import serve
+
+from .process_metrics import append_jsonl, system_resource_snapshot
+
+
+def _metric(snapshot: dict, *path: str) -> float | int | None:
+    current: object = snapshot
+    for key in path:
+        if not isinstance(current, dict):
+            return None
+        current = current.get(key)
+    if isinstance(current, (int, float)):
+        return current
+    return None
+
+
+def _snapshot_delta(before: dict, after: dict, *path: str) -> float | int | None:
+    before_val = _metric(before, *path)
+    after_val = _metric(after, *path)
+    if before_val is None or after_val is None:
+        return None
+    delta = float(after_val) - float(before_val)
+    if abs(delta - round(delta)) < 1e-9:
+        return int(round(delta))
+    return round(delta, 2)
 
 
 class TabBridge:
@@ -331,6 +357,8 @@ class ExtensionBridge:
 
     async def save_screenshot(self, path: str | Path, *, tab_id: int | None = None) -> str:
         """Capture and save screenshot to file. Returns the path."""
+        started = time.perf_counter()
+        before_snapshot = system_resource_snapshot()
         data_url = await self.capture_screenshot(tab_id=tab_id)
         if not data_url:
             return ""
@@ -339,6 +367,46 @@ class ExtensionBridge:
         path = Path(path)
         path.parent.mkdir(parents=True, exist_ok=True)
         path.write_bytes(img_bytes)
+        after_snapshot = system_resource_snapshot()
+        try:
+            append_jsonl(
+                path.parent / "screenshot_resource_log.jsonl",
+                {
+                    "timestamp": datetime.now().isoformat(),
+                    "event": "bridge_save_screenshot",
+                    "path": str(path),
+                    "tab_id": tab_id,
+                    "byte_count": len(img_bytes),
+                    "duration_ms": round((time.perf_counter() - started) * 1000, 1),
+                    "resources_before": before_snapshot,
+                    "resources_after": after_snapshot,
+                    "resource_delta": {
+                        "windowserver_footprint_mb": _snapshot_delta(
+                            before_snapshot, after_snapshot, "windowserver", "footprint_mb"
+                        ),
+                        "windowserver_rss_mb": _snapshot_delta(
+                            before_snapshot, after_snapshot, "windowserver", "rss_mb"
+                        ),
+                        "chrome_total_rss_mb": _snapshot_delta(
+                            before_snapshot, after_snapshot, "chrome", "total_rss_mb"
+                        ),
+                        "chrome_largest_renderer_rss_mb": _snapshot_delta(
+                            before_snapshot, after_snapshot, "chrome", "largest_renderer_rss_mb"
+                        ),
+                        "chrome_window_count": _snapshot_delta(
+                            before_snapshot, after_snapshot, "chrome", "window_count"
+                        ),
+                        "chrome_tab_count": _snapshot_delta(
+                            before_snapshot, after_snapshot, "chrome", "tab_count"
+                        ),
+                        "current_process_rss_mb": _snapshot_delta(
+                            before_snapshot, after_snapshot, "current_process", "rss_mb"
+                        ),
+                    },
+                },
+            )
+        except Exception:
+            pass
         return str(path)
 
     async def get_tab_info(self, *, tab_id: int | None = None) -> dict:

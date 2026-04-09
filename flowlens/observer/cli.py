@@ -71,10 +71,13 @@ def _print_status(paths: ObserverPaths) -> None:
     payload = {
         "root": str(paths.root),
         "db_path": str(paths.db_path),
+        "resource_monitor_log_path": str(paths.resource_monitor_log_path),
         "config": {
             "check_interval": config.check_interval,
             "force_capture_interval": config.force_capture_interval,
             "diff_threshold": config.diff_threshold,
+            "capture_backend": config.capture_backend,
+            "capture_all_displays": config.capture_all_displays,
             "vision_enabled": config.enable_visual_summary,
             "vision_model": config.vision_model,
         },
