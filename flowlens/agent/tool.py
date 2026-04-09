@@ -19,12 +19,27 @@ class ToolContext:
     run_dir: Path
     screenshot_counter: int = 0
     screenshot_max_dim: int = 0  # 0 = no downscaling
+    artifact_counter: int = 0
 
     def next_screenshot_path(self, label: str = "screenshot") -> Path:
         self.screenshot_counter += 1
         path = self.run_dir / f"{self.screenshot_counter:03d}_{label}.png"
         path.parent.mkdir(parents=True, exist_ok=True)
         return path
+
+    def next_artifact_path(
+        self,
+        label: str = "artifact",
+        *,
+        suffix: str = ".json",
+        subdir: str = "artifacts",
+    ) -> Path:
+        self.artifact_counter += 1
+        safe_label = "".join(ch if ch.isalnum() or ch in {"_", "-"} else "_" for ch in label).strip("_")
+        safe_label = safe_label or "artifact"
+        directory = self.run_dir / subdir
+        directory.mkdir(parents=True, exist_ok=True)
+        return directory / f"{self.artifact_counter:03d}_{safe_label}{suffix}"
 
 
 class Tool(ABC):

@@ -41,10 +41,11 @@ pages:
       Grid of recommended note cards. Left sidebar with navigation
       (首页/发现/发布/通知/我). Search bar at top center. XHS red logo top-left.
     navigation_tips:
-      - "PREFERRED: use extract_page_data(command='submit_search_query', params={keyword: 'your query'}) directly from the homepage"
-      - "If the next step is obvious, you can also use run_site_action(action='search_notes', query='...') to search and get visible cards in one call"
+      - "PREFERRED: use run_site_action(action='search_notes', query='...') directly from the homepage"
+      - "For topic research, PREFERRED: call run_site_action(action='search_notes', query='...') and/or extract_site_entity(entity_type='search_cards') first, then open the most relevant notes one by one"
+      - "If the next step is obvious, you can use run_site_action(action='search_notes', query='...') to search and get visible cards in one call"
       - "The search bar is an input#search-input with placeholder '搜索小红书', typically at the top center of the page"
-      - "Only use read_page + click/type/Enter as a fallback if submit_search_query fails"
+      - "Use extract_page_data(command='submit_search_query', params={keyword: '...'}) only as a low-level fallback"
       - "Click any note card to open it as a modal overlay"
 
   search_results:
@@ -55,12 +56,13 @@ pages:
       waterfall grid of matching note cards. Each card shows: cover image,
       title, author name, like count.
     navigation_tips:
-      - "PREFERRED: call run_site_action(action='search_notes', ...) or extract_site_entity(entity_type='search_cards') before ranking which notes to open"
+      - "For topic research, PREFERRED: inspect visible cards with run_site_action(action='search_notes', ...) or extract_site_entity(entity_type='search_cards') before opening notes"
+      - "PREFERRED: after choosing a card, call run_site_action(action='read_note', index=N, level='lite|deep')"
       - "Click filter tabs to switch between 全部(all), 图文(images), 视频(video), 用户(users)"
       - "Click a note card to open it as a modal overlay on top of search results"
       - "Scroll down to load more results (infinite scroll)"
-      - "PREFERRED for a new query: use extract_page_data(command='submit_search_query', params={keyword: '...'})"
-      - "Only click the search bar, clear text, type a new query, and press Enter if submit_search_query fails"
+      - "PREFERRED for a new query: use run_site_action(action='search_notes', query='...')"
+      - "Use extract_page_data(command='submit_search_query', params={keyword: '...'}) only as a low-level fallback when site actions are unavailable"
     available_extractors:
       - "extract_search_cards — returns all visible note cards with title, author, likes, note_id"
       - "extract_search_tabs — returns available filter tab names and which is active"

@@ -36,6 +36,7 @@ DEFAULT_MODEL = "claude-sonnet-4-6"
 BACKEND_SONNET = "sonnet"
 BACKEND_QWEN_LOCAL = "qwen-local"
 BACKEND_UI_TARS_LOCAL = "ui-tars-local"
+DEFAULT_WHISPER_MODEL = "large-v3-turbo"
 
 
 def _resolve_backend(explicit: str | None = None) -> str:
@@ -56,7 +57,8 @@ class MediaConfig:
     use_apple_ocr: bool = True
     use_whisper: bool = True
     use_vision: bool = True
-    whisper_model: str = "large-v3-turbo"
+    whisper_model: str = DEFAULT_WHISPER_MODEL
+    local_image_max_dim: int = 768
 
 
 class MediaProcessor:
@@ -83,7 +85,12 @@ class MediaProcessor:
     def local_llm(self):
         """Lazy local LLM for any MLX-backed backend."""
         if self._local_llm is None:
-            from .local_llm import DEFAULT_LOCAL_MODEL, DEFAULT_UI_TARS_MODEL, LocalLLM
+            from .local_llm import (
+                DEFAULT_LOCAL_IMAGE_MAX_DIM,
+                DEFAULT_LOCAL_MODEL,
+                DEFAULT_UI_TARS_MODEL,
+                LocalLLM,
+            )
 
             model_name = (self.config.model or "").strip()
             if not model_name or model_name == DEFAULT_MODEL:
@@ -91,7 +98,8 @@ class MediaProcessor:
                     model_name = DEFAULT_UI_TARS_MODEL
                 else:
                     model_name = DEFAULT_LOCAL_MODEL
-            self._local_llm = LocalLLM(model_name)
+            image_max_dim = int(self.config.local_image_max_dim or DEFAULT_LOCAL_IMAGE_MAX_DIM)
+            self._local_llm = LocalLLM(model_name, max_image_dim=image_max_dim)
         return self._local_llm
 
     # ── LLM Calls ───────────────────────────────────────────────

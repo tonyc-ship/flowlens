@@ -729,6 +729,11 @@ function detectSearchPageState() {
   const skeletonCount = $$(
     '[class*="skeleton"], [class*="Skeleton"], [class*="loading"], [class*="shimmer"]'
   ).length;
+  let urlKeyword = '';
+  try {
+    const current = new URL(window.location.href);
+    urlKeyword = decodeURIComponent(current.searchParams.get('keyword') || '').trim();
+  } catch {}
 
   return {
     page_state: pageState,
@@ -736,6 +741,7 @@ function detectSearchPageState() {
     tabs,
     active_filter: activeTab,
     input_keyword: input && typeof input.value === 'string' ? input.value.trim() : '',
+    url_keyword: urlKeyword,
     has_no_results: hasNoResults,
     loading: !cards.length && !hasNoResults,
     skeleton_count: skeletonCount,
@@ -790,20 +796,13 @@ async function submitSearchQuery(keyword) {
     const state = detectSearchPageState();
     const normalizedKeyword = String(targetKeyword || '').trim().toLowerCase();
     const visibleKeyword = String(state.input_keyword || '').trim().toLowerCase();
-    const decodedUrl = (() => {
-      try {
-        return decodeURIComponent(window.location.href).toLowerCase();
-      } catch {
-        return String(window.location.href || '').toLowerCase();
-      }
-    })();
-    const keywordMatches = !normalizedKeyword
-      || visibleKeyword === normalizedKeyword
-      || decodedUrl.includes(normalizedKeyword);
+    const urlKeyword = String(state.url_keyword || '').trim().toLowerCase();
+    const visibleMatches = !normalizedKeyword || visibleKeyword === normalizedKeyword;
+    const urlMatches = !normalizedKeyword || !urlKeyword || urlKeyword === normalizedKeyword;
     const isSearchResults = state.page_state === 'search_results';
     const hasSearchSurface = state.tabs.length > 0 || state.has_no_results || state.card_count > 0;
     return {
-      ok: isSearchResults && keywordMatches && hasSearchSurface,
+      ok: isSearchResults && visibleMatches && urlMatches && hasSearchSurface && !state.loading,
       state,
       url: window.location.href,
     };
@@ -835,6 +834,23 @@ async function submitSearchQuery(keyword) {
     target.dispatchEvent(new KeyboardEvent('keyup', enterPayload));
   }
 
+  function triggerClick(target) {
+    if (!target) return;
+    const rect = target.getBoundingClientRect();
+    const eventInit = {
+      bubbles: true,
+      cancelable: true,
+      clientX: Math.round(rect.left + rect.width / 2),
+      clientY: Math.round(rect.top + rect.height / 2),
+    };
+    try { target.dispatchEvent(new PointerEvent('pointerdown', eventInit)); } catch {}
+    try { target.dispatchEvent(new MouseEvent('mousedown', eventInit)); } catch {}
+    try { target.dispatchEvent(new PointerEvent('pointerup', eventInit)); } catch {}
+    try { target.dispatchEvent(new MouseEvent('mouseup', eventInit)); } catch {}
+    try { target.dispatchEvent(new MouseEvent('click', eventInit)); } catch {}
+    if (typeof target.click === 'function') target.click();
+  }
+
   const input = findVisibleSearchInput();
   if (!input) {
     return { ok: false, error: 'Search input not found' };
@@ -859,10 +875,16 @@ async function submitSearchQuery(keyword) {
     data: keyword,
   }));
   input.dispatchEvent(new Event('change', { bubbles: true }));
+  await wait(120);
 
   const root = input.closest('form, header, .search-input, .search-container, .search-bar, .search-box') || document;
   const inputRect = input.getBoundingClientRect();
-  const submitCandidates = [...document.querySelectorAll('button, [role="button"], a, div, span, svg, .search-icon, .search-btn, .icon-search')]
+  const inputCenterY = inputRect.top + inputRect.height / 2;
+  const rawSubmitCandidates = [
+    ...root.querySelectorAll('button, [role="button"], a, div, span, svg, .search-icon, .search-btn, .icon-search'),
+    ...document.querySelectorAll('button, [role="button"], a, div, span, svg, .search-icon, .search-btn, .icon-search'),
+  ];
+  const submitCandidates = [...new Set(rawSubmitCandidates)]
     .filter((el) => el instanceof HTMLElement || el instanceof SVGElement)
     .map((el) => {
       const clickable = el.closest?.('button, [role="button"], a, div, span') || el;
@@ -878,17 +900,22 @@ async function submitSearchQuery(keyword) {
       let score = 0;
       if (/search|搜索|find|query/.test(meta)) score += 100;
       if (/clear|close|cancel|remove|delete|清除|关闭|取消/.test(meta)) score -= 120;
+      const centerY = rect.top + rect.height / 2;
       score -= Math.abs(rect.left - inputRect.right);
-      if (rect.left >= inputRect.left && rect.right <= inputRect.right) score -= 10;
+      score -= Math.abs(centerY - inputCenterY) * 0.6;
+      if (rect.left >= inputRect.right - 8) score += 18;
+      if (rect.left < inputRect.left - 24) score -= 60;
+      if (root.contains(clickable)) score += 18;
+      if (rect.left >= inputRect.left && rect.right <= inputRect.right) score -= 20;
       return { el: clickable, rect, score, meta };
     })
     .filter(({ rect, score }) => rect.width >= 12 && rect.height >= 12 && rect.right >= inputRect.left && rect.left <= inputRect.right + 180 && score > -140)
     .sort((a, b) => b.score - a.score);
 
   const target = submitCandidates[0]?.el || null;
-  if (target && typeof target.click === 'function') {
+  if (target) {
     watchHighlightElement(target);
-    target.click();
+    triggerClick(target);
     const clicked = await waitForSearchTransition(keyword, 1800);
     if (clicked.ok) {
       return {
@@ -932,6 +959,22 @@ async function submitSearchQuery(keyword) {
 }
 
 // ── Note Content Extraction ────────────────────────────────────
+
+function getVisibleNoteOverlay() {
+  const overlay = document.querySelector('.note-detail-mask, .note-overlay, .note-detail-modal, #noteContainer');
+  if (overlay && overlay.offsetHeight > 0) return overlay;
+  return null;
+}
+
+async function waitForVisibleNoteOverlay(timeoutMs = 1200) {
+  const deadline = Date.now() + timeoutMs;
+  while (Date.now() < deadline) {
+    const overlay = getVisibleNoteOverlay();
+    if (overlay) return overlay;
+    await wait(120);
+  }
+  return getVisibleNoteOverlay();
+}
 
 async function waitForNoteContent(timeout = 8000) {
   /** Wait for text or media elements to appear in DOM (XHS loads async). */
@@ -1448,19 +1491,20 @@ async function clickNoteCard(index) {
                       || card;
   watchHighlightElement(clickTarget);
   clickTarget.click();
-
-  await wait(2000);
+  const overlay = await waitForVisibleNoteOverlay(1200);
 
   // Check if modal opened
-  const overlay = document.querySelector('.note-detail-mask, .note-overlay, .note-detail-modal');
   if (overlay && overlay.offsetHeight > 0) {
     return { ok: true, method: 'overlay' };
   }
 
   // If no overlay, try clicking the card itself
   card.click();
-  await wait(2000);
-  return { ok: true, method: 'card_click' };
+  const retryOverlay = await waitForVisibleNoteOverlay(1200);
+  if (retryOverlay && retryOverlay.offsetHeight > 0) {
+    return { ok: true, method: 'card_click' };
+  }
+  return { ok: false, error: 'Note overlay did not open after clicking card' };
 }
 
 async function clickNoteByLink(url) {
@@ -1477,21 +1521,26 @@ async function clickNoteByLink(url) {
       const clickTarget = card.querySelector('.cover, .cover-ld, img, .note-cover') || card;
       watchHighlightElement(clickTarget);
       clickTarget.click();
-      await wait(2000);
+      let overlay = await waitForVisibleNoteOverlay(1200);
 
-      const overlay = document.querySelector('.note-detail-mask, .note-overlay, .note-detail-modal');
       if (overlay && overlay.offsetHeight > 0) {
         return { ok: true, method: 'overlay' };
       }
       card.click();
-      await wait(2000);
-      return { ok: true, method: 'card_click' };
+      overlay = await waitForVisibleNoteOverlay(1200);
+      if (overlay && overlay.offsetHeight > 0) {
+        return { ok: true, method: 'card_click' };
+      }
+      return { ok: false, error: `Overlay did not open for url: ${url}` };
     }
 
     watchHighlightElement(links[0]);
     links[0].click();
-    await wait(2000);
-    return { ok: true, method: 'link_click' };
+    const overlay = await waitForVisibleNoteOverlay(1200);
+    if (overlay && overlay.offsetHeight > 0) {
+      return { ok: true, method: 'link_click' };
+    }
+    return { ok: false, error: `Overlay did not open for url: ${url}` };
   }
   return { ok: false, error: `No clickable card found for url: ${url}` };
 }
@@ -1511,17 +1560,19 @@ async function clickNoteById(noteId) {
       const clickTarget = card.querySelector('.cover, .cover-ld, img, .note-cover') || card;
       watchHighlightElement(clickTarget);
       clickTarget.click();
-      await wait(2000);
+      let overlay = await waitForVisibleNoteOverlay(1200);
 
       // Check if modal opened
-      const overlay = document.querySelector('.note-detail-mask, .note-overlay, .note-detail-modal');
       if (overlay && overlay.offsetHeight > 0) {
         return { ok: true, method: 'overlay' };
       }
       // Retry: click card itself
       card.click();
-      await wait(2000);
-      return { ok: true, method: 'card_click' };
+      overlay = await waitForVisibleNoteOverlay(1200);
+      if (overlay && overlay.offsetHeight > 0) {
+        return { ok: true, method: 'card_click' };
+      }
+      return { ok: false, error: `Overlay did not open for note_id: ${noteId}` };
     }
   }
   return { ok: false, error: `No card found with note_id: ${noteId}` };

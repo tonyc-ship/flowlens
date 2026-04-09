@@ -34,6 +34,92 @@ class LLMResponse:
     metrics: dict = field(default_factory=dict)
 
 
+_ASSISTANT_TEXT_MAX_CHARS = 320
+_TOOL_RESULT_TEXT_MAX_CHARS = 2200
+
+
+def _compact_json_value(value):
+    if isinstance(value, dict):
+        preferred_order = [
+            "ok", "error", "message", "site", "action", "entity_type", "level",
+            "query", "count", "state", "page_state", "result", "cards", "entity",
+            "title", "author", "note_id", "url", "likes", "favorites",
+            "comments_count", "content_summary", "key_points", "top_comments",
+            "cover_description", "transcript_summary", "visual_summary",
+            "timing", "plan",
+        ]
+        keys = [key for key in preferred_order if key in value]
+        keys.extend(key for key in value if key not in keys)
+        compacted = {}
+        for key in keys[:16]:
+            compacted[key] = _compact_json_value(value[key])
+        return compacted
+    if isinstance(value, list):
+        return [_compact_json_value(item) for item in value[:5]]
+    if isinstance(value, str):
+        return value if len(value) <= 320 else value[:320] + "... [truncated]"
+    return value
+
+
+def _compress_text_maybe_json(text: str, max_chars: int = _TOOL_RESULT_TEXT_MAX_CHARS) -> str:
+    if len(text) <= max_chars:
+        return text
+    try:
+        value = json.loads(text)
+        compacted = _compact_json_value(value)
+        compact_text = json.dumps(compacted, ensure_ascii=False, indent=2)
+        if len(compact_text) <= max_chars:
+            return compact_text
+        return compact_text[:max_chars] + "\n... [truncated]"
+    except Exception:
+        return text[:max_chars] + "\n... [truncated]"
+
+
+def _truncate_assistant_text(text: str, max_chars: int = _ASSISTANT_TEXT_MAX_CHARS) -> str:
+    text = (text or "").strip()
+    if len(text) <= max_chars:
+        return text
+    return text[:max_chars] + "... [truncated]"
+
+
+def _screenshot_hint_from_text(text: str) -> str | None:
+    match = re.search(r"Screenshot saved to ([^\s]+)", text or "")
+    if not match:
+        return None
+    return match.group(1)
+
+
+def _summarize_result_blocks_for_history(
+    blocks: list[dict],
+    *,
+    max_chars: int = _TOOL_RESULT_TEXT_MAX_CHARS,
+) -> list[dict]:
+    parts: list[str] = []
+    screenshot_file = None
+
+    for block in blocks:
+        if not isinstance(block, dict):
+            continue
+        if block.get("type") == "text":
+            text = str(block.get("text", ""))
+            if not screenshot_file:
+                screenshot_file = _screenshot_hint_from_text(text)
+            parts.append(_compress_text_maybe_json(text, max_chars=max_chars))
+        elif block.get("type") == "image":
+            if screenshot_file:
+                parts.append(
+                    f"[Image omitted from history. Screenshot file: {screenshot_file}. "
+                    "Use analyze_screenshot for visual inspection.]"
+                )
+            else:
+                parts.append("[Image omitted from history. Use analyze_screenshot for visual inspection.]")
+
+    combined = "\n\n".join(part for part in parts if part).strip()
+    if len(combined) > max_chars:
+        combined = _compress_text_maybe_json(combined, max_chars=max_chars)
+    return [{"type": "text", "text": combined or "(empty result)"}]
+
+
 class Backend(ABC):
     """Abstract LLM backend for the agent loop."""
 
@@ -110,8 +196,20 @@ class AnthropicBackend(Backend):
         )
 
     def format_assistant_content(self, response: LLMResponse) -> object:
-        # Anthropic SDK returns content objects directly
-        return response.raw.content
+        content = []
+        for block in response.raw.content:
+            if block.type == "text":
+                text = _truncate_assistant_text(block.text)
+                if text:
+                    content.append({"type": "text", "text": text})
+            elif block.type == "tool_use":
+                content.append({
+                    "type": "tool_use",
+                    "id": block.id,
+                    "name": block.name,
+                    "input": block.input,
+                })
+        return content
 
     def format_tool_results(
         self,
@@ -123,7 +221,7 @@ class AnthropicBackend(Backend):
             content.append({
                 "type": "tool_result",
                 "tool_use_id": tc.id,
-                "content": result_blocks,
+                "content": _summarize_result_blocks_for_history(result_blocks),
             })
         return {"role": "user", "content": content}
 
@@ -158,11 +256,14 @@ class LocalBackend(Backend):
             "When done with the task, respond with text only (no tool_call blocks).\n",
             "**CRITICAL RULES for XHS**:\n"
             "1. Always take a screenshot at the start (call `screenshot` in the same "
-            "turn as `navigate`).\n"
+            "turn as `navigate`). Screenshots are saved to disk; call "
+            "`analyze_screenshot` if you need visual understanding.\n"
             "2. Preferred XHS flow: use `run_site_action` for `search_notes`, `read_note`, "
-            "and `close_note` when the next step is obvious.\n"
-            "3. Fallback search: use `extract_page_data` with `command=submit_search_query` — "
-            "do NOT use type_text + press_key.\n"
+            "and `close_note`, and use `extract_site_entity(search_cards)` to inspect visible "
+            "cards before choosing which post to open.\n"
+            "3. Low-level fallback search: use `extract_page_data` with "
+            "`command=submit_search_query` only if `run_site_action(search_notes)` is unavailable. "
+            "Do NOT use type_text + press_key from the planner.\n"
             "4. Fallback open a note: use `extract_page_data` with `command=click_card, params={index: N}`. "
             "There is NO standalone `click_card` tool — it is a command inside extract_page_data.\n"
             "5. Fallback close a note: use `extract_page_data` with `command=close_note`. "
@@ -320,42 +421,9 @@ class LocalBackend(Backend):
                 parts.append(block)
         return "\n".join(parts) if parts else "(empty result)"
 
-    @staticmethod
-    def _compact_json(value):
-        if isinstance(value, dict):
-            preferred_order = [
-                "ok", "error", "message", "site", "action", "entity_type", "level",
-                "query", "count", "state", "page_state", "result", "cards", "entity",
-                "title", "author", "note_id", "url", "likes", "favorites",
-                "comments_count", "content_summary", "key_points", "top_comments",
-                "cover_description", "transcript_summary", "visual_summary",
-                "timing", "plan",
-            ]
-            keys = [key for key in preferred_order if key in value]
-            keys.extend(key for key in value if key not in keys)
-            compacted = {}
-            for key in keys[:16]:
-                compacted[key] = LocalBackend._compact_json(value[key])
-            return compacted
-        if isinstance(value, list):
-            return [LocalBackend._compact_json(item) for item in value[:5]]
-        if isinstance(value, str):
-            return value if len(value) <= 320 else value[:320] + "... [truncated]"
-        return value
-
     @classmethod
     def _compress_tool_result_text(cls, text: str, max_chars: int = 2200) -> str:
-        if len(text) <= max_chars:
-            return text
-        try:
-            value = json.loads(text)
-            compacted = cls._compact_json(value)
-            compact_text = json.dumps(compacted, ensure_ascii=False, indent=2)
-            if len(compact_text) <= max_chars:
-                return compact_text
-            return compact_text[:max_chars] + "\n... [truncated]"
-        except Exception:
-            return text[:max_chars] + "\n... [truncated]"
+        return _compress_text_maybe_json(text, max_chars=max_chars)
 
     def _estimate_tokens(self, text: str) -> int:
         """Conservative token estimate (chars / 2 for CJK-heavy text)."""

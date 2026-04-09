@@ -13,26 +13,33 @@ from __future__ import annotations
 
 import asyncio
 import json
+import os
 import time
 from datetime import datetime
 from pathlib import Path
 
 from ..core.bridge import ExtensionBridge, TabBridge, ensure_extension_connection
 from ..core.process_metrics import append_jsonl, system_resource_snapshot
-from ..knowledge.loader import get_knowledge_for_url
+from ..knowledge.loader import detect_site, get_knowledge_for_url
 from ..perception.media import (
     BACKEND_QWEN_LOCAL,
     BACKEND_SONNET,
     BACKEND_UI_TARS_LOCAL,
     DEFAULT_MODEL,
+    DEFAULT_WHISPER_MODEL,
     MediaConfig,
     MediaProcessor,
 )
+from ..perception.local_llm import DEFAULT_LOCAL_IMAGE_MAX_DIM, LocalLLM
 from .backends import Backend, create_backend
 from .tool import Tool, ToolContext
 from .tools.browser import make_browser_tools
-from .tools.site import ExtractSiteEntityTool, RunSiteActionTool
 from .tools.vision import AnalyzeScreenshotTool, OcrScreenshotTool
+from ..platforms.xhs.agent_tools import (
+    ExtractSiteEntityTool,
+    RunSiteActionTool,
+    XHSTopicScanTool,
+)
 
 
 _BASE_SYSTEM_PROMPT = """\
@@ -43,7 +50,7 @@ tools to accomplish tasks on websites.
 
 1. **Plan first**: Before acting, briefly state your plan for the overall task. \
 Break the task into logical steps. Revise the plan as you learn more.
-2. **Observe**: Take a screenshot and prefer site-specific extractors when they exist. Use read_page only when there is no site-specific extractor for the current need or when you need exact coordinates for a manual fallback.
+2. **Observe**: Take a screenshot and prefer site-specific extractors when they exist. Screenshots are saved to disk; if you need visual understanding, call `analyze_screenshot` or `ocr_screenshot`. Use read_page only when there is no site-specific extractor for the current need or when you need exact coordinates for a manual fallback.
 3. **Act**: Execute one action, then observe the result.
 4. **Verify**: After important actions, take a screenshot to confirm they worked.
 5. **Report**: When done, write a comprehensive, detailed report.
@@ -131,6 +138,131 @@ def _make_media_for_model(model: str) -> MediaProcessor:
     if normalized == "qwen-local" or normalized.startswith("Qwen"):
         return MediaProcessor(MediaConfig(backend=BACKEND_QWEN_LOCAL, model=normalized))
     return MediaProcessor(MediaConfig(backend=BACKEND_SONNET, model=normalized or DEFAULT_MODEL))
+
+
+def _infer_media_backend(model_name: str) -> str:
+    normalized = str(model_name or "").strip()
+    if normalized == "ui-tars-local" or normalized.startswith("UI-TARS"):
+        return BACKEND_UI_TARS_LOCAL
+    if normalized == "qwen-local" or normalized.startswith("Qwen"):
+        return BACKEND_QWEN_LOCAL
+    return BACKEND_SONNET
+
+
+def _make_site_media_for_model(model: str) -> MediaProcessor:
+    configured_model = str(os.environ.get("FLOWLENS_SITE_MEDIA_MODEL", "")).strip()
+    configured_backend = str(os.environ.get("FLOWLENS_SITE_MEDIA_BACKEND", "")).strip()
+    configured_whisper = str(os.environ.get("FLOWLENS_SITE_MEDIA_WHISPER_MODEL", "")).strip()
+    configured_image_dim = int(
+        os.environ.get("FLOWLENS_SITE_MEDIA_IMAGE_MAX_DIM", DEFAULT_LOCAL_IMAGE_MAX_DIM) or DEFAULT_LOCAL_IMAGE_MAX_DIM
+    )
+
+    if configured_model or configured_backend:
+        chosen_model = configured_model or model
+        chosen_backend = configured_backend or _infer_media_backend(chosen_model)
+        return MediaProcessor(
+            MediaConfig(
+                backend=chosen_backend,
+                model=chosen_model,
+                whisper_model=configured_whisper or DEFAULT_WHISPER_MODEL,
+                local_image_max_dim=configured_image_dim,
+            )
+        )
+
+    normalized = str(model or DEFAULT_MODEL).strip()
+    if normalized == "ui-tars-local" or normalized.startswith("UI-TARS"):
+        return MediaProcessor(MediaConfig(backend=BACKEND_UI_TARS_LOCAL, model=normalized))
+    if normalized == "qwen-local" or normalized.startswith("Qwen"):
+        return MediaProcessor(
+            MediaConfig(
+                backend=BACKEND_QWEN_LOCAL,
+                model=normalized,
+                whisper_model=DEFAULT_WHISPER_MODEL,
+                local_image_max_dim=configured_image_dim,
+            )
+        )
+
+    preferred_local_model = "Qwen3.5-0.8B-8bit"
+    if LocalLLM.is_available(preferred_local_model):
+        return MediaProcessor(
+            MediaConfig(
+                backend=BACKEND_QWEN_LOCAL,
+                model=preferred_local_model,
+                whisper_model=DEFAULT_WHISPER_MODEL,
+                local_image_max_dim=configured_image_dim,
+            )
+        )
+    return _make_media_for_model(model)
+
+
+def _task_is_topic_research(task: str) -> bool:
+    lowered = str(task or "").lower()
+    return "task type: topic_research" in lowered or "话题研究" in task
+
+
+def _recent_manual_fallback_allowed(messages: list[dict]) -> bool:
+    recent = messages[-6:]
+    for msg in recent:
+        content = msg.get("content")
+        text = str(content)
+        if '"manual_fallback_allowed": true' in text:
+            return True
+    return False
+
+
+def _dynamic_extra_instructions(task: str, site_name: str | None, page_state: str | None) -> str:
+    if site_name != "xiaohongshu":
+        return ""
+    parts = []
+    if page_state in {"homepage", "search_results"}:
+        parts.append(
+            "On Xiaohongshu homepage/search pages, prefer `run_site_action(search_notes)` "
+            "or `extract_site_entity(entity_type='search_cards')` over manual click/type fallbacks. "
+            "After you choose a card, prefer `run_site_action(action='read_note', ...)`. Only use low-level "
+            "manual tools if a site action explicitly returns manual_fallback_allowed=true."
+        )
+    if _task_is_topic_research(task):
+        parts.append(
+            "For topic research, search first, inspect the visible cards, and then open the most relevant notes "
+            "one by one with `run_site_action(action='read_note', ...)`."
+        )
+    return "\n".join(parts)
+
+
+def _select_active_tools(
+    tools: list[Tool],
+    *,
+    site_name: str | None,
+    page_state: str | None,
+    task: str,
+    messages: list[dict],
+) -> list[Tool]:
+    if site_name != "xiaohongshu":
+        return tools
+
+    manual_allowed = _recent_manual_fallback_allowed(messages)
+    active_names = {"navigate", "go_back", "screenshot", "scroll", "wait"}
+
+    if page_state in {"homepage", "search_results"}:
+        active_names.update({"extract_page_data", "run_site_action", "extract_site_entity", "xhs_topic_scan"})
+        active_names.update({"analyze_screenshot", "ocr_screenshot"})
+        if manual_allowed:
+            active_names.update({"click", "type_text", "press_key", "read_page", "run_javascript"})
+    elif page_state == "note_detail":
+        active_names.update({"extract_page_data", "run_site_action", "extract_site_entity"})
+        active_names.update({"analyze_screenshot", "ocr_screenshot"})
+        if manual_allowed:
+            active_names.update({"click", "read_page", "run_javascript"})
+    elif page_state == "profile_page":
+        active_names.update({"extract_page_data", "run_site_action", "extract_site_entity", "xhs_topic_scan"})
+        active_names.update({"analyze_screenshot", "ocr_screenshot"})
+        if manual_allowed:
+            active_names.update({"click", "read_page", "run_javascript"})
+    else:
+        return tools
+
+    selected = [tool for tool in tools if tool.name in active_names]
+    return selected or tools
 
 
 async def _execute_tool(
@@ -295,12 +427,11 @@ async def _agent_loop(
     if media:
         tools.append(AnalyzeScreenshotTool(media=media))
         tools.append(OcrScreenshotTool(media=media))
-    if media and ext_bridge is not None:
-        tools.append(RunSiteActionTool(bridge, ext_bridge=ext_bridge, media=media))
-        tools.append(ExtractSiteEntityTool(bridge, ext_bridge=ext_bridge, media=media))
-
-    tool_map = {t.name: t for t in tools}
-    api_tools = [t.to_api_schema() for t in tools]
+    site_media = _make_site_media_for_model(model) if ext_bridge is not None else None
+    if site_media and ext_bridge is not None:
+        tools.append(RunSiteActionTool(bridge, ext_bridge=ext_bridge, media=site_media))
+        tools.append(ExtractSiteEntityTool(bridge, ext_bridge=ext_bridge, media=site_media))
+        tools.append(XHSTopicScanTool(bridge, ext_bridge=ext_bridge, media=site_media))
 
     # ── Watch mode overlay helper ──────────────────────────────
     async def watch(level: str, message: str, **kwargs):
@@ -319,20 +450,16 @@ async def _agent_loop(
         except Exception:
             pass
 
-    # Get initial site knowledge from current tab
-    site_knowledge = ""
-    try:
-        info = await bridge.get_tab_info()
-        current_url = info.get("url", "")
-        if current_url:
-            site_knowledge = get_knowledge_for_url(current_url)
-    except Exception:
-        pass
-
-    system_prompt = _build_system_prompt(tools, site_knowledge, extra_instructions)
-
     # Initialize messages
     messages = [{"role": "user", "content": task}]
+
+    site_name = None
+    page_state = None
+    site_knowledge = ""
+    active_tools = tools
+    api_tools = [t.to_api_schema() for t in active_tools]
+    active_tool_names_logged: tuple[str, ...] = tuple()
+    system_prompt = _build_system_prompt(active_tools, site_knowledge, extra_instructions)
 
     backend = create_backend(model)
     screenshots = []
@@ -382,6 +509,47 @@ async def _agent_loop(
         log("turn", f"Turn {turn}/{max_turns}")
         await watch("info", f"Turn {turn}/{max_turns}", phase="turn")
         resource_entry("turn_start", turn_number=turn)
+
+        current_url = ""
+        try:
+            info = await bridge.get_tab_info()
+            current_url = str(info.get("url") or "")
+        except Exception:
+            current_url = ""
+        detected_site = detect_site(current_url) if current_url else None
+        detected_state = None
+        if detected_site == "xiaohongshu" and ext_bridge is not None:
+            try:
+                detected = await ext_bridge.send_command("detect_state")
+                detected_state = str(detected.get("state") or "")
+            except Exception:
+                detected_state = None
+        site_name = detected_site
+        page_state = detected_state
+        site_knowledge = get_knowledge_for_url(current_url, page_state=page_state) if current_url else ""
+        dynamic_extra = _dynamic_extra_instructions(task, site_name, page_state)
+        combined_extra = "\n\n".join(part for part in [extra_instructions, dynamic_extra] if part)
+        active_tools = _select_active_tools(
+            tools,
+            site_name=site_name,
+            page_state=page_state,
+            task=task,
+            messages=messages,
+        )
+        api_tools = [t.to_api_schema() for t in active_tools]
+        system_prompt = _build_system_prompt(active_tools, site_knowledge, combined_extra)
+
+        active_tool_names = tuple(tool.name for tool in active_tools)
+        if active_tool_names != active_tool_names_logged:
+            active_tool_names_logged = active_tool_names
+            log("tools", f"Active: {list(active_tool_names)}")
+            log_entry({
+                "type": "toolset_update",
+                "turn": turn,
+                "site": site_name,
+                "page_state": page_state,
+                "tools": list(active_tool_names),
+            })
 
         # Call LLM backend
         api_start = time.time()
@@ -465,6 +633,7 @@ async def _agent_loop(
             break
 
         # Execute tools and collect results
+        tool_map = {t.name: t for t in active_tools}
         all_results: list[list[dict]] = []
         for tu in tool_use_blocks:
             tool_name = tu.name
@@ -487,15 +656,6 @@ async def _agent_loop(
             else:
                 tool_start = time.time()
                 try:
-                    # Update site knowledge when navigating
-                    if tool_name == "navigate":
-                        url = tool_input.get("url", "")
-                        new_knowledge = get_knowledge_for_url(url)
-                        if new_knowledge and new_knowledge != site_knowledge:
-                            site_knowledge = new_knowledge
-                            system_prompt = _build_system_prompt(tools, site_knowledge, extra_instructions)
-                            log("knowledge_update", f"Loaded knowledge for {url}")
-
                     before_root_images = {
                         path.name
                         for path in run_dir.iterdir()

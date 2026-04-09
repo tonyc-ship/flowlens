@@ -13,16 +13,123 @@ from __future__ import annotations
 
 import asyncio
 import hashlib
+import json
+import re
 import time
+from urllib.parse import quote
 from dataclasses import dataclass, field
 from pathlib import Path
 
 from ...core.bridge import ExtensionBridge, TabBridge
-from ...perception.media import MediaProcessor
+from ...perception.media import BACKEND_QWEN_LOCAL, BACKEND_UI_TARS_LOCAL, MediaProcessor
 from .capabilities import NoteExtractionPlan, plan_for_level
-from .entities import AuthorEntity, Comment, ImageInfo, NoteCard, NoteEntity, NoteType, VideoInfo
+from .entities import AuthorEntity, Comment, ImageInfo, NoteCard, NoteEntity, NoteType, VideoInfo, parse_count_text
 
 XHS_REFERER = "https://www.xiaohongshu.com"
+XHS_SEARCH_URL_TEMPLATE = "https://www.xiaohongshu.com/search_result?keyword={encoded_keyword}&source=web_search_result_notes"
+
+_SEARCH_INPUT_JS = r"""
+return (function() {
+  const selectors = [
+    'input#search-input',
+    'input[type="search"]',
+    'input[placeholder*="搜索"]',
+    '.search-input input',
+    '.search-container input'
+  ];
+  const input = selectors
+    .map((selector) => document.querySelector(selector))
+    .find((el) => el instanceof HTMLElement && el.getBoundingClientRect().width >= 120);
+  if (!input) return JSON.stringify({ok: false, error: 'search_input_not_found'});
+
+  const inputRect = input.getBoundingClientRect();
+  const root = input.closest('form, header, .search-input, .search-container, .search-bar, .search-box') || document;
+  const inputCenterY = inputRect.top + inputRect.height / 2;
+  const rawSubmitCandidates = [
+    ...root.querySelectorAll('button, [role="button"], a, div, span, svg, .search-icon, .search-btn, .icon-search'),
+    ...document.querySelectorAll('button, [role="button"], a, div, span, svg, .search-icon, .search-btn, .icon-search'),
+  ];
+  const submitCandidates = [...new Set(rawSubmitCandidates)]
+    .filter((el) => el instanceof HTMLElement || el instanceof SVGElement)
+    .map((el) => {
+      const clickable = el.closest?.('button, [role="button"], a, div, span') || el;
+      const rect = clickable.getBoundingClientRect();
+      const meta = [
+        clickable.getAttribute?.('aria-label') || '',
+        clickable.getAttribute?.('title') || '',
+        clickable.className || '',
+        el.getAttribute?.('aria-label') || '',
+        el.getAttribute?.('title') || '',
+        el.className || '',
+      ].join(' ').toLowerCase();
+      let score = 0;
+      if (/search|搜索|find|query/.test(meta)) score += 100;
+      if (/clear|close|cancel|remove|delete|清除|关闭|取消/.test(meta)) score -= 120;
+      const centerY = rect.top + rect.height / 2;
+      score -= Math.abs(rect.left - inputRect.right);
+      score -= Math.abs(centerY - inputCenterY) * 0.6;
+      if (rect.left >= inputRect.right - 8) score += 18;
+      if (rect.left < inputRect.left - 24) score -= 60;
+      if (root.contains(clickable)) score += 18;
+      if (rect.left >= inputRect.left && rect.right <= inputRect.right) score -= 20;
+      return { rect, score };
+    })
+    .filter(({ rect, score }) => rect.width >= 12 && rect.height >= 12 && rect.right >= inputRect.left && rect.left <= inputRect.right + 180 && score > -140)
+    .sort((a, b) => b.score - a.score);
+
+  const submit = submitCandidates[0] || null;
+  return JSON.stringify({
+    ok: true,
+    input: {
+      x: Math.round(inputRect.left + inputRect.width / 2),
+      y: Math.round(inputRect.top + inputRect.height / 2),
+    },
+    submit: submit ? {
+      x: Math.round(submit.rect.left + submit.rect.width / 2),
+      y: Math.round(submit.rect.top + submit.rect.height / 2),
+    } : null,
+  });
+})()
+"""
+
+_CLEAR_SEARCH_INPUT_JS = r"""
+return (function() {
+  const input = document.querySelector('input#search-input, input[type="search"], input[placeholder*="搜索"], .search-input input, .search-container input');
+  if (!input) return false;
+  input.focus();
+  if (typeof input.value === 'string') {
+    input.value = '';
+    input.dispatchEvent(new InputEvent('input', { bubbles: true, inputType: 'deleteContentBackward', data: '' }));
+    input.dispatchEvent(new Event('change', { bubbles: true }));
+  } else if (input.isContentEditable) {
+    input.textContent = '';
+  }
+  return true;
+})()
+"""
+
+
+def _topic_terms(topic: str) -> list[str]:
+    raw = str(topic or "").strip().lower()
+    if not raw:
+        return []
+    terms = re.findall(r"[a-z0-9][a-z0-9_\-\.]*|[\u4e00-\u9fff]{2,}", raw)
+    seen: list[str] = []
+    for term in [raw, *terms]:
+        if term and term not in seen:
+            seen.append(term)
+    return seen[:8]
+
+
+def rank_note_card(card: NoteCard, topic: str) -> float:
+    text = f"{card.title} {card.author_name}".lower()
+    score = float(parse_count_text(card.likes) or 0) / 1000.0
+    for idx, term in enumerate(_topic_terms(topic)):
+        if term in text:
+            score += 8.0 if idx == 0 else 3.0
+    if card.note_type == NoteType.VIDEO:
+        score += 0.4
+    return score
 
 
 @dataclass
@@ -37,28 +144,53 @@ class ProcessorConfig:
     max_video_frame_seconds: int = 60
     max_video_frame_samples: int = 4
     cache_video_locally: bool = False
+    image_vision_max_tokens: int = 180
+    video_poster_max_tokens: int = 180
+    video_frame_max_tokens: int = 180
+    transcript_summary_max_tokens: int = 160
+    video_visual_summary_max_tokens: int = 180
     image_prompt_template: str = (
-        "Describe this Xiaohongshu note image from '{title}'. "
-        "Be concise. Focus on key visuals, visible text, products, and structure."
+        "你在抽取小红书帖子《{title}》里的单张图片信息。"
+        "请严格按下面3行输出：\n"
+        "1. 场景/主体：\n"
+        "2. 关键可见文字或界面：\n"
+        "3. 这张图对帖子主题提供了什么信息：\n"
+        "要求：每行一句；具体描述可见内容；不要空泛修饰；不要猜测看不见的内容。"
     )
     video_poster_prompt: str = (
-        "Describe this Xiaohongshu video cover from '{title}'. "
-        "What does the video appear to be about?"
+        "你在抽取小红书视频《{title}》的封面信息。"
+        "请严格按下面3行输出：\n"
+        "1. 封面主体：\n"
+        "2. 关键可见文字或界面：\n"
+        "3. 这张封面对理解视频主题有什么帮助：\n"
+        "要求：每行一句；只写可见内容；不要猜测视频里未出现的内容。"
     )
     video_frame_prompt_template: str = (
-        "这是小红书视频《{title}》的第{index}帧。"
-        "请用中文简洁描述人物、动作、场景、物品，以及它对理解视频内容有什么帮助。"
+        "你在抽取小红书视频《{title}》的第{index}帧信息。"
+        "请严格按下面3行输出：\n"
+        "1. 画面里正在发生什么：\n"
+        "2. 可见设备/界面/物品：\n"
+        "3. 这帧对理解整条视频有什么帮助：\n"
+        "要求：每行一句；只写肉眼可见内容；不要推测用途、因果或后续步骤；看不出来就写“无法判断”。"
     )
     transcript_summary_prompt: str = (
-        "以下是一个小红书视频笔记的语音转录文本，标题是“{title}”。\n\n"
-        "转录文本：\n{transcript}\n\n"
-        "请用中文简洁概括这个视频的主要内容，2-4句。"
+        "你在抽取小红书视频《{title}》的语音转录内容。下面的转录可能包含口语噪声。\n\n"
+        "请只基于转录里明确说出的信息，严格按下面3行输出：\n"
+        "1. 视频主旨：\n"
+        "2. 关键步骤/操作：\n"
+        "3. 关键结论/产品/名词：\n"
+        "要求：信息具体，压缩表达，不要套话，不要补充转录里没明确提到的背景推断。\n\n"
+        "转录文本：\n{transcript}\n"
     )
     video_visual_summary_prompt: str = (
         "以下是一个小红书视频《{title}》的封面描述和若干关键帧描述。\n\n"
         "封面描述：{poster}\n\n"
         "关键帧描述：\n{frames}\n\n"
-        "请用中文总结这个视频画面里发生了什么，重点概括场景、动作流程、产品/物体、氛围。输出2-4句话。"
+        "请严格按下面3行输出：\n"
+        "1. 画面主线：\n"
+        "2. 关键设备/界面/物体：\n"
+        "3. 对理解视频内容最有帮助的视觉线索：\n"
+        "要求：只基于给定描述；每行一句；不要补充未出现的推断。"
     )
 
 
@@ -117,6 +249,14 @@ class XHSSiteAdapter:
             return ""
         return str(info.get("url") or "")
 
+    def _uses_local_vision(self) -> bool:
+        return self.media.backend in {BACKEND_QWEN_LOCAL, BACKEND_UI_TARS_LOCAL}
+
+    def _vision_concurrency(self) -> int:
+        if self._uses_local_vision():
+            return 1
+        return max(1, int(self.config.vision_concurrency or 1))
+
     async def extract_search_cards(self) -> list[NoteCard]:
         result = await self.ext_bridge.send_command("extract_search_cards")
         cards = [NoteCard.from_dom_dict(item) for item in result.get("cards", [])]
@@ -124,6 +264,113 @@ class XHSSiteAdapter:
 
     async def get_search_page_state(self) -> dict:
         return await self.ext_bridge.send_command("get_search_page_state")
+
+    async def detect_state(self) -> dict:
+        return await self.ext_bridge.send_command("detect_state")
+
+    async def _run_js_json(self, code: str) -> dict:
+        raw = await self.bridge.run_js(code)
+        value = raw.get("value", raw.get("result", ""))
+        if isinstance(value, dict):
+            return value
+        if isinstance(value, str):
+            try:
+                return json.loads(value)
+            except Exception:
+                return {"ok": False, "error": value}
+        return {"ok": False, "error": f"Unexpected JS result: {value!r}"}
+
+    @staticmethod
+    def _search_transition_ok(state: dict, query: str) -> bool:
+        page_state = str(state.get("page_state") or state.get("state") or "")
+        keyword = str(query or "").strip().lower()
+        visible_keyword = str(state.get("input_keyword") or "").strip().lower()
+        url_keyword = str(state.get("url_keyword") or "").strip().lower()
+        if page_state != "search_results":
+            return False
+        if keyword and visible_keyword and visible_keyword != keyword:
+            return False
+        if keyword and url_keyword and url_keyword != keyword:
+            return False
+        if state.get("loading"):
+            return False
+        return bool(state.get("tabs") or state.get("card_count") or state.get("has_no_results"))
+
+    async def _wait_for_search_transition(
+        self,
+        query: str,
+        *,
+        timeout_s: float = 2.0,
+        poll_s: float = 0.15,
+    ) -> dict:
+        deadline = time.monotonic() + max(0.2, float(timeout_s))
+        latest: dict = {}
+        while time.monotonic() < deadline:
+            latest = await self.get_search_page_state()
+            if self._search_transition_ok(latest, query):
+                return latest
+            await asyncio.sleep(max(0.05, poll_s))
+        latest = await self.get_search_page_state()
+        return latest
+
+    async def _manual_search_submit(self, query: str, *, wait_seconds: float = 2.0) -> dict:
+        loc = await self._run_js_json(_SEARCH_INPUT_JS)
+        if not loc.get("ok"):
+            return {"ok": False, "strategy": "manual_fallback_unavailable", "error": loc.get("error", "")}
+
+        input_pos = loc.get("input") or {}
+        await self.bridge.click_at(int(input_pos.get("x", 0)), int(input_pos.get("y", 0)))
+        await asyncio.sleep(0.3)
+        await self.bridge.run_js(_CLEAR_SEARCH_INPUT_JS)
+        await asyncio.sleep(0.2)
+        await self.bridge.type_text(query)
+        await asyncio.sleep(0.4)
+        await self.bridge.press_key("Enter")
+        state = await self._wait_for_search_transition(query, timeout_s=max(1.2, min(wait_seconds, 2.0)))
+        if self._search_transition_ok(state, query):
+            return {
+                "ok": True,
+                "strategy": "manual_click_type_enter",
+                "state": state.get("page_state", ""),
+                "searchState": state,
+                "url": await self._current_url(),
+            }
+
+        submit_pos = loc.get("submit") or {}
+        if submit_pos.get("x") and submit_pos.get("y"):
+            await self.bridge.click_at(int(submit_pos["x"]), int(submit_pos["y"]))
+            state = await self._wait_for_search_transition(query, timeout_s=max(1.2, min(wait_seconds, 2.0)))
+            if self._search_transition_ok(state, query):
+                return {
+                    "ok": True,
+                    "strategy": "manual_click_search_button",
+                    "state": state.get("page_state", ""),
+                    "searchState": state,
+                    "url": await self._current_url(),
+                }
+
+        return {
+            "ok": False,
+            "strategy": "manual_submit_failed",
+            "state": state.get("page_state", ""),
+            "searchState": state,
+            "url": await self._current_url(),
+            "error": "Manual search fallback did not transition to search_results",
+        }
+
+    async def _navigate_search_url(self, query: str, *, wait_seconds: float = 2.0) -> dict:
+        url = XHS_SEARCH_URL_TEMPLATE.format(encoded_keyword=quote(str(query or "").strip(), safe=""))
+        nav = await self.bridge.navigate(url, wait_ms=max(800, int(wait_seconds * 1000)))
+        state = await self._wait_for_search_transition(query, timeout_s=max(1.0, wait_seconds))
+        return {
+            "ok": self._search_transition_ok(state, query),
+            "strategy": "direct_search_url",
+            "state": state.get("page_state", ""),
+            "searchState": state,
+            "url": await self._current_url(),
+            "navigate": nav,
+            "error": "" if self._search_transition_ok(state, query) else "Direct search URL did not stabilize",
+        }
 
     async def search_notes(
         self,
@@ -133,25 +380,59 @@ class XHSSiteAdapter:
         wait_seconds: float = 4.0,
     ) -> dict:
         t0 = time.time()
-        submit = await self.ext_bridge.send_command("submit_search_query", {"keyword": query})
+        submit = await self._manual_search_submit(query, wait_seconds=max(wait_seconds, 1.8))
         self.timing.record("search_submit", time.time() - t0)
 
-        if wait_seconds > 0:
-            await asyncio.sleep(wait_seconds)
+        recovery = None
+        if not submit.get("ok"):
+            t0 = time.time()
+            recovery = await self.ext_bridge.send_command("submit_search_query", {"keyword": query})
+            self.timing.record("search_recovery", time.time() - t0)
+            state = recovery.get("searchState") or await self._wait_for_search_transition(
+                query,
+                timeout_s=max(0.6, min(wait_seconds, 1.8)),
+            )
+        else:
+            state = submit.get("searchState") or await self._wait_for_search_transition(
+                query,
+                timeout_s=max(0.6, min(wait_seconds, 1.8)),
+            )
+        ok = self._search_transition_ok(state, query)
+        active_submit = recovery if recovery and recovery.get("ok") else submit
+        if recovery and not ok:
+            active_submit = recovery
+        if not ok:
+            t0 = time.time()
+            direct = await self._navigate_search_url(query, wait_seconds=max(1.2, min(wait_seconds, 2.5)))
+            self.timing.record("search_direct_fallback", time.time() - t0)
+            direct_state = direct.get("searchState") or await self.get_search_page_state()
+            if self._search_transition_ok(direct_state, query):
+                ok = True
+                state = direct_state
+                active_submit = direct
+            else:
+                state = direct_state
+                active_submit = direct if direct.get("ok") else active_submit
 
         tab_result = None
-        if tab_label and _normalize_search_tab(tab_label) != "全部":
+        if ok and tab_label and _normalize_search_tab(tab_label) != "全部":
             tab_result = await self.open_search_tab(tab_label, wait_seconds=1.5)
+            state = await self.get_search_page_state()
 
-        cards = await self.extract_search_cards()
-        state = await self.get_search_page_state()
+        cards = await self.extract_search_cards() if ok else []
         return {
+            "ok": ok,
             "query": query,
-            "submit": submit,
+            "submit": active_submit,
+            "initial_submit": submit,
+            "recovery": recovery,
             "tab": tab_result,
             "page_state": state,
             "cards": [card.to_tool_dict() for card in cards],
             "count": len(cards),
+            "state": state.get("page_state", ""),
+            "reason": "" if ok else str((recovery or submit).get("error") or "search_submit_failed"),
+            "manual_fallback_allowed": not ok,
         }
 
     async def open_search_tab(self, label: str, *, wait_seconds: float = 1.5) -> dict:
@@ -174,7 +455,7 @@ class XHSSiteAdapter:
         *,
         index: int | None = None,
         note_id: str = "",
-        wait_seconds: float = 2.5,
+        wait_seconds: float = 0.0,
     ) -> dict:
         if note_id:
             result = await self.ext_bridge.send_command("click_note_by_id", {"note_id": note_id})
@@ -183,7 +464,12 @@ class XHSSiteAdapter:
         else:
             raise ValueError("open_note requires index or note_id")
         if wait_seconds > 0:
-            await asyncio.sleep(wait_seconds)
+            deadline = time.monotonic() + float(wait_seconds)
+            while time.monotonic() < deadline:
+                state = await self.detect_state()
+                if str(state.get("state") or "") == "note_detail":
+                    break
+                await asyncio.sleep(0.12)
         return result
 
     async def close_note(self) -> dict:
@@ -226,15 +512,24 @@ class XHSSiteAdapter:
         note.requested_sections = plan.requested_sections
         note.applied_capabilities = ["xhs.note.open_basic"]
 
-        if plan.include_comments:
-            note.comments = await self._collect_note_comments(plan)
-            note.applied_capabilities.append("xhs.note.sample_comments")
+        comments_task = None
+        media_task = None
 
         if plan.use_media:
             if note.note_type == NoteType.VIDEO:
-                await self._process_video(note, plan)
+                media_task = asyncio.create_task(self._process_video(note, plan))
             else:
-                await self._process_images(note, plan)
+                await self._ensure_all_images(note, plan.max_images)
+                media_task = asyncio.create_task(self._enrich_images(note, plan))
+
+        if plan.include_comments:
+            comments_task = asyncio.create_task(self._collect_note_comments(plan))
+
+        if comments_task is not None:
+            note.comments = await comments_task
+            note.applied_capabilities.append("xhs.note.sample_comments")
+        if media_task is not None:
+            await media_task
 
         note.refresh_derived_fields()
         return note
@@ -298,6 +593,9 @@ class XHSSiteAdapter:
 
     async def _process_images(self, note: NoteEntity, plan: NoteExtractionPlan) -> None:
         await self._ensure_all_images(note, plan.max_images)
+        await self._enrich_images(note, plan)
+
+    async def _enrich_images(self, note: NoteEntity, plan: NoteExtractionPlan) -> None:
         if not note.images:
             return
 
@@ -328,7 +626,7 @@ class XHSSiteAdapter:
                 image.is_cover = idx == 0
             note.image_count = len(note.images)
 
-        semaphore = asyncio.Semaphore(self.config.vision_concurrency)
+        semaphore = asyncio.Semaphore(self._vision_concurrency())
 
         async def enrich_single(img: ImageInfo, img_bytes: bytes) -> None:
             if plan.use_image_ocr and self.config.use_ocr:
@@ -345,7 +643,7 @@ class XHSSiteAdapter:
                         self.media.describe_image,
                         img_bytes,
                         prompt,
-                        512,
+                        self.config.image_vision_max_tokens,
                     )
                     self.timing.record("vision_single", time.time() - t0_local)
             if img.is_cover and img.vision_description:
@@ -435,7 +733,7 @@ class XHSSiteAdapter:
                 self.media.describe_image,
                 poster_bytes,
                 self.config.video_poster_prompt.format(title=note.title or "未命名视频"),
-                512,
+                self.config.video_poster_max_tokens,
             )
             note.cover_description = video.poster_description
             self.timing.record("vision_poster", time.time() - t0_local)
@@ -468,7 +766,7 @@ class XHSSiteAdapter:
                         title=note.title or "未命名视频",
                         transcript=transcript[:3000],
                     ),
-                    512,
+                    self.config.transcript_summary_max_tokens,
                 )
                 self.timing.record("llm_transcript_summary", time.time() - t0_summary)
             elif not video.download_error:
@@ -490,7 +788,7 @@ class XHSSiteAdapter:
                 return
 
             video.frame_paths = frame_paths
-            semaphore = asyncio.Semaphore(self.config.vision_concurrency)
+            semaphore = asyncio.Semaphore(self._vision_concurrency())
             frame_descriptions: list[str] = []
 
             async def describe_frame(index: int, frame_path: str) -> None:
@@ -507,7 +805,7 @@ class XHSSiteAdapter:
                             title=note.title or "未命名视频",
                             index=index + 1,
                         ),
-                        384,
+                        self.config.video_frame_max_tokens,
                     )
                     self.timing.record("vision_video_frame", time.time() - t0_frame)
                     if description:
@@ -530,7 +828,7 @@ class XHSSiteAdapter:
                             for idx, desc in enumerate(frame_descriptions)
                         ),
                     ),
-                    512,
+                    self.config.video_visual_summary_max_tokens,
                 )
                 self.timing.record("llm_video_visual_summary", time.time() - t0_summary)
 

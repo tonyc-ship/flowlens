@@ -89,7 +89,11 @@ class ScreenshotTool(Tool):
         self._bridge = bridge
 
     name = "screenshot"
-    description = "Take a screenshot of the current page. Returns the image for visual inspection."
+    description = (
+        "Take a screenshot of the current page and save it to disk. Returns the "
+        "filename and page metadata only. If you need visual understanding, call "
+        "`analyze_screenshot` or `ocr_screenshot` on the saved file."
+    )
 
     @property
     def parameters(self) -> dict:
@@ -105,6 +109,9 @@ class ScreenshotTool(Tool):
         }
 
     async def execute(self, params: dict, ctx: ToolContext) -> list:
+        import io
+        from PIL import Image
+
         label = params.get("label", "screenshot")
         path = ctx.next_screenshot_path(label)
         data_url = await self._bridge.capture_screenshot()
@@ -134,7 +141,7 @@ class ScreenshotTool(Tool):
 
         # Downscale if max_dim is set (e.g. for local model efficiency)
         if ctx.screenshot_max_dim > 0:
-            img_bytes, b64_data, media_type = _downscale_image(
+            img_bytes, _b64_data, media_type = _downscale_image(
                 img_bytes, ctx.screenshot_max_dim
             )
 
@@ -142,11 +149,21 @@ class ScreenshotTool(Tool):
         path = path.with_suffix(ext)
         path.write_bytes(img_bytes)
 
+        info = await self._bridge.get_tab_info()
+        with Image.open(io.BytesIO(img_bytes)) as img:
+            width, height = img.size
+
         return [
-            {"type": "text", "text": f"Screenshot saved to {path.name}"},
             {
-                "type": "image",
-                "source": {"type": "base64", "media_type": media_type, "data": b64_data},
+                "type": "text",
+                "text": (
+                    f"Screenshot saved to {path.name}\n"
+                    f"URL: {info.get('url', '')}\n"
+                    f"Title: {info.get('title', '')}\n"
+                    f"Image: {width}x{height} {media_type}\n"
+                    f"Use analyze_screenshot(question=..., screenshot_file='{path.name}') "
+                    "for visual inspection."
+                ),
             },
         ]
 
@@ -399,7 +416,7 @@ class ExtractPageDataTool(Tool):
         "`submit_search_query`, `click_card`, `close_note` etc. are commands, "
         "NOT separate top-level tools.\n"
         "Commands (format: command — description — params):\n"
-        "submit_search_query — Run a search (most reliable, use instead of type_text+Enter) — {keyword}\n"
+        "submit_search_query — Low-level search helper; prefer run_site_action(search_notes) at planner level — {keyword}\n"
         "extract_search_cards — Get note cards from search results — {}\n"
         "click_card — Open a note card by position index — {index}\n"
         "click_note_by_id / click_note_link — Open a visible card by id or URL — {note_id} / {url}\n"

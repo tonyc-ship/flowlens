@@ -1,6 +1,10 @@
 import unittest
 
-from flowlens.agent.backends import LLMResponse, LocalBackend
+from flowlens.agent.backends import (
+    LLMResponse,
+    LocalBackend,
+    _summarize_result_blocks_for_history,
+)
 
 
 class LocalBackendPromptingTest(unittest.TestCase):
@@ -35,6 +39,18 @@ class LocalBackendPromptingTest(unittest.TestCase):
 
         self.assertLessEqual(len(compact), 815)
         self.assertIn("truncated", compact)
+
+    def test_summarize_result_blocks_omits_image_payloads(self) -> None:
+        blocks = [
+            {"type": "text", "text": "Screenshot saved to 001_homepage.jpg"},
+            {"type": "image", "source": {"type": "base64", "media_type": "image/jpeg", "data": "x" * 5000}},
+        ]
+
+        summary = _summarize_result_blocks_for_history(blocks)
+
+        self.assertEqual(summary[0]["type"], "text")
+        self.assertIn("001_homepage.jpg", summary[0]["text"])
+        self.assertIn("Image omitted from history", summary[0]["text"])
 
 
 if __name__ == "__main__":

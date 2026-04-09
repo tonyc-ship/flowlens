@@ -1,6 +1,6 @@
-"""Video audio transcription using local whisper.cpp.
+"""Video audio transcription using local whisper.cpp or MLX Whisper.
 
-Extracts audio from video files, transcribes with whisper.cpp,
+Extracts audio from video files, transcribes with whisper.cpp or mlx-whisper,
 and optionally summarizes with LLM.
 """
 
@@ -13,9 +13,13 @@ from pathlib import Path
 
 from ..core.runtime import find_whisper_cli, find_whisper_models_dir
 
+_MLX_WHISPER_MODEL_ALIASES = {
+    "mlx-community/whisper-base-asr-fp16": "mlx-community/whisper-base-mlx",
+}
+
 
 class WhisperTranscriber:
-    """Audio transcription using local whisper.cpp."""
+    """Audio transcription using local whisper.cpp or mlx-whisper."""
 
     def __init__(
         self,
@@ -23,6 +27,22 @@ class WhisperTranscriber:
         whisper_cli: str | None = None,
         models_dir: str | None = None,
     ):
+        self.requested_model = model
+        self.model_name = self._resolve_model_name(model)
+        self.backend = "mlx-whisper" if self._is_mlx_model(self.model_name) else "whisper.cpp"
+        self.whisper_cli = None
+        self.models_dir = None
+        self.model_path = None
+
+        if self.backend == "mlx-whisper":
+            try:
+                import mlx_whisper  # noqa: F401
+            except ImportError as exc:
+                raise FileNotFoundError(
+                    "mlx-whisper not installed. Run `python -m pip install mlx-whisper`."
+                ) from exc
+            return
+
         self.whisper_cli = find_whisper_cli(whisper_cli)
         self.models_dir = find_whisper_models_dir(models_dir)
         self.model_path = self.models_dir / f"ggml-{model}.bin"
@@ -33,6 +53,25 @@ class WhisperTranscriber:
             )
         if not self.model_path.exists():
             raise FileNotFoundError(f"Whisper model not found: {self.model_path}")
+
+    @staticmethod
+    def _resolve_model_name(model: str) -> str:
+        name = str(model or "").strip()
+        return _MLX_WHISPER_MODEL_ALIASES.get(name, name)
+
+    @staticmethod
+    def _is_mlx_model(model: str) -> bool:
+        name = str(model or "").strip()
+        if not name:
+            return False
+        local = Path(name).expanduser()
+        if local.exists() and local.is_dir():
+            return (local / "config.json").exists() and (
+                (local / "weights.safetensors").exists()
+                or (local / "weights.npz").exists()
+                or (local / "model.safetensors").exists()
+            )
+        return "/" in name
 
     @staticmethod
     def build_ffmpeg_input_args(
@@ -149,7 +188,13 @@ class WhisperTranscriber:
         *,
         timeout_s: float = 300,
     ) -> str:
-        """Transcribe audio file with whisper.cpp. Returns text."""
+        """Transcribe audio file with whisper.cpp or mlx-whisper. Returns text."""
+        if self.backend == "mlx-whisper":
+            return await asyncio.wait_for(
+                asyncio.to_thread(self._transcribe_audio_mlx, audio_path, language),
+                timeout=timeout_s,
+            )
+
         proc = await asyncio.create_subprocess_exec(
             str(self.whisper_cli),
             "-m", self.model_path,
@@ -172,6 +217,22 @@ class WhisperTranscriber:
         lines = stdout.decode().strip().split("\n")
         text_lines = [l for l in lines if not l.startswith("[") and l.strip()]
         return "\n".join(text_lines).strip()
+
+    def _transcribe_audio_mlx(self, audio_path: str, language: str) -> str:
+        import mlx_whisper
+
+        result = mlx_whisper.transcribe(
+            audio_path,
+            path_or_hf_repo=self.model_name,
+            verbose=False,
+            language=language,
+            task="transcribe",
+            condition_on_previous_text=False,
+            word_timestamps=False,
+        )
+        if isinstance(result, dict):
+            return str(result.get("text", "")).strip()
+        return str(result).strip()
 
     async def transcribe_video(
         self,

@@ -16,6 +16,7 @@ dependencies = [
     "opencv-python>=4.9.0",
     "mlx-lm>=0.31.0",
     "mlx-vlm>=0.4.0",
+    "mlx-whisper>=0.4.3",
     "modelscope>=1.28.0",
     "pyobjc-framework-Quartz>=10.0",
     "pyobjc-framework-Vision>=10.0",

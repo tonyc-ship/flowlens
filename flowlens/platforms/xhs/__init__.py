@@ -23,13 +23,15 @@ from .entities import (
     VideoInfo,
     parse_count_text,
 )
-from .processor import ProcessorConfig, TimingRecord, XHSSiteAdapter
+from .processor import ProcessorConfig, TimingRecord, XHSSiteAdapter, rank_note_card
+from .agent_tools import ExtractSiteEntityTool, RunSiteActionTool, XHSTopicScanTool
 
 __all__ = [
     "AuthorEntity",
     "CapabilityCost",
     "CapabilitySpec",
     "Comment",
+    "ExtractSiteEntityTool",
     "ExtractionLevel",
     "ImageInfo",
     "NoteCard",
@@ -37,9 +39,11 @@ __all__ = [
     "NoteExtractionPlan",
     "NoteType",
     "ProcessorConfig",
+    "RunSiteActionTool",
     "TimingRecord",
     "VideoInfo",
     "XHSSiteAdapter",
+    "XHSTopicScanTool",
     "capability_catalog",
     "capability_catalog_markdown",
     "card_note_plan",
@@ -51,4 +55,5 @@ __all__ = [
     "load_xhs_spec",
     "parse_count_text",
     "plan_for_level",
+    "rank_note_card",
 ]

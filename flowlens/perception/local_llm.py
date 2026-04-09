@@ -26,6 +26,7 @@ logger = logging.getLogger(__name__)
 WEIGHTS_DIR = Path.home() / ".flowlens" / "weights"
 DEFAULT_LOCAL_MODEL = "Qwen3.5-9B-MLX-4bit"
 DEFAULT_UI_TARS_MODEL = "UI-TARS-1.5-7B-6bit"
+DEFAULT_LOCAL_IMAGE_MAX_DIM = 768
 
 # Singleton cache — loading a model takes several seconds and ~6GB RAM,
 # so we keep exactly one loaded at a time.
@@ -92,9 +93,16 @@ def _resolve_model_path(name: str) -> str:
 class LocalLLM:
     """Local MLX-backed LLM for text and vision inference."""
 
-    def __init__(self, model_name: str = DEFAULT_LOCAL_MODEL, *, think: bool = False):
+    def __init__(
+        self,
+        model_name: str = DEFAULT_LOCAL_MODEL,
+        *,
+        think: bool = False,
+        max_image_dim: int = DEFAULT_LOCAL_IMAGE_MAX_DIM,
+    ):
         self.model_name = model_name
         self.think = think
+        self.max_image_dim = max(256, int(max_image_dim or DEFAULT_LOCAL_IMAGE_MAX_DIM))
         self._model = None
         self._processor = None
         self._config = None
@@ -339,15 +347,14 @@ class LocalLLM:
 
     # ── Helpers ───────────────────────────────────────────────
 
-    @staticmethod
-    def _save_temp_image(img_bytes: bytes, media_type: str) -> str:
+    def _save_temp_image(self, img_bytes: bytes, media_type: str) -> str:
         """Save image bytes to a temp file and return the path."""
         from PIL import Image
 
         img = Image.open(io.BytesIO(img_bytes))
 
-        # Downscale if too large (keep under 1568px max dim for efficiency)
-        max_px = 1568
+        # Downscale if too large to keep local VLM latency bounded.
+        max_px = self.max_image_dim
         w, h = img.size
         if max(w, h) > max_px:
             scale = max_px / max(w, h)

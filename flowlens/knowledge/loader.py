@@ -61,8 +61,58 @@ def load_site_knowledge(site_name: str) -> dict | None:
         return yaml.safe_load(f)
 
 
-def format_knowledge_for_prompt(knowledge: dict) -> str:
+def _filtered_section(mapping: dict, allowed_keys: list[str] | None) -> dict:
+    if allowed_keys is None:
+        return mapping
+    return {key: value for key, value in mapping.items() if key in set(allowed_keys)}
+
+
+def _knowledge_profile(site_name: str, page_state: str | None) -> dict:
+    state = str(page_state or "").strip().lower()
+    if site_name != "xiaohongshu":
+        return {
+            "page_keys": None,
+            "entity_keys": None,
+            "navigation_keys": None,
+            "include_reporting": True,
+        }
+    if state in {"homepage", "search_results"}:
+        return {
+            "page_keys": ["homepage", "search_results"],
+            "entity_keys": [],
+            "navigation_keys": ["search", "open_note_from_card", "scroll_for_more"],
+            "include_reporting": False,
+        }
+    if state == "note_detail":
+        return {
+            "page_keys": ["note_detail"],
+            "entity_keys": ["note", "comment", "author"],
+            "navigation_keys": ["close_note_modal", "open_profile"],
+            "include_reporting": True,
+        }
+    if state == "profile_page":
+        return {
+            "page_keys": ["profile_page"],
+            "entity_keys": ["author", "note"],
+            "navigation_keys": ["open_note_from_card", "scroll_for_more"],
+            "include_reporting": False,
+        }
+    return {
+        "page_keys": None,
+        "entity_keys": None,
+        "navigation_keys": None,
+        "include_reporting": True,
+    }
+
+
+def format_knowledge_for_prompt(
+    knowledge: dict,
+    *,
+    site_name: str | None = None,
+    page_state: str | None = None,
+) -> str:
     """Format site knowledge into a text block for the system prompt."""
+    profile = _knowledge_profile(site_name or "", page_state)
     lines = []
     site = knowledge.get("site", {})
     lines.append(f"## Site: {site.get('name', 'Unknown')}")
@@ -82,7 +132,7 @@ def format_knowledge_for_prompt(knowledge: dict) -> str:
         lines.append("")
 
     # Page types
-    pages = knowledge.get("pages", {})
+    pages = _filtered_section(knowledge.get("pages", {}), profile["page_keys"])
     if pages:
         lines.append("### Page Types")
         for page_key, page in pages.items():
@@ -100,7 +150,7 @@ def format_knowledge_for_prompt(knowledge: dict) -> str:
         lines.append("")
 
     # Entities
-    entities = knowledge.get("entities", {})
+    entities = _filtered_section(knowledge.get("entities", {}), profile["entity_keys"])
     if entities:
         lines.append("### Data Entities")
         for ent_key, ent in entities.items():
@@ -113,14 +163,14 @@ def format_knowledge_for_prompt(knowledge: dict) -> str:
 
     # Reporting guidelines
     reporting = knowledge.get("reporting", {})
-    if reporting:
+    if reporting and profile["include_reporting"]:
         lines.append("### Reporting Guidelines (IMPORTANT)")
         if reporting.get("guidelines"):
             lines.append(reporting["guidelines"])
         lines.append("")
 
     # Navigation patterns
-    nav = knowledge.get("navigation", {})
+    nav = _filtered_section(knowledge.get("navigation", {}), profile["navigation_keys"])
     if nav:
         lines.append("### Navigation Patterns")
         for nav_key, nav_item in nav.items():
@@ -130,7 +180,7 @@ def format_knowledge_for_prompt(knowledge: dict) -> str:
     return "\n".join(lines)
 
 
-def get_knowledge_for_url(url: str) -> str:
+def get_knowledge_for_url(url: str, *, page_state: str | None = None) -> str:
     """Load and format knowledge relevant to a URL."""
     site_name = detect_site(url)
     if not site_name:
@@ -138,7 +188,7 @@ def get_knowledge_for_url(url: str) -> str:
     knowledge = load_site_knowledge(site_name)
     if not knowledge:
         return ""
-    return format_knowledge_for_prompt(knowledge)
+    return format_knowledge_for_prompt(knowledge, site_name=site_name, page_state=page_state)
 
 
 def list_available_sites() -> list[str]:
