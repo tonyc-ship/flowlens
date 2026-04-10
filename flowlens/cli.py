@@ -9,8 +9,6 @@ from .debug_cli import main as debug_main
 from .desktop_cli import main as desktop_main
 from .extension_cli import main as extension_main
 from .observer.cli import main as observer_main
-from .workflows.chat.cli import main as chatbots_main
-from .workflows.chat.companion import main as chatbots_companion_main
 
 
 def main() -> None:
@@ -18,10 +16,6 @@ def main() -> None:
         raise SystemExit(agent_main(sys.argv[2:]))
     if len(sys.argv) > 1 and sys.argv[1] == "extension":
         raise SystemExit(extension_main(sys.argv[2:]))
-    if len(sys.argv) > 1 and sys.argv[1] == "chatbots":
-        raise SystemExit(chatbots_main(sys.argv[2:]))
-    if len(sys.argv) > 1 and sys.argv[1] == "chatbots-companion":
-        raise SystemExit(chatbots_companion_main(sys.argv[2:]))
     if len(sys.argv) > 1 and sys.argv[1] == "debug":
         raise SystemExit(debug_main(sys.argv[2:]))
     if len(sys.argv) > 1 and sys.argv[1] == "desktop":
