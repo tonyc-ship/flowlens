@@ -6,7 +6,7 @@ FlowLens is a computer use and browser use framework with lightweight local mult
 
 FlowLens 专门沉淀了小红书站点知识，并通过 Chrome 插件连接你当前登录态下的浏览器，执行小红书调研、内容抽取和自定义 agent 任务。
 
-特点：
+几点优势：
 1. 不使用程序化的批量爬虫，而是像人一样逐个搜索和点击，尽可能不违反小红书规则和被屏蔽
 2. 沉淀了小红书网站知识和操作，避免agent盲目识别探索，提高成功率
 3. 复用已登录的chrome小红书账号，避免未登录被屏蔽
@@ -21,13 +21,13 @@ pip install -e .
 
 ### 配置LLM
 
-运行交互式引导，按提示选择认证方式（Anthropic API Key、OpenAI API Key、或 OpenAI OAuth 登录）：
+可以选择Anthropic API Key、OpenAI API Key、或 OpenAI OAuth 登录：
 
 ```bash
 flowlens auth
 ```
 
-只需配置任意一个 LLM 提供商即可。也可以直接写 `.env.local`：
+也可以直接写 `.env.local`：
 
 ```bash
 ANTHROPIC_API_KEY=sk-ant-...
@@ -61,7 +61,7 @@ flowlens xhs agent "找最近高互动的露营清单帖子并总结标题套路
 
 ### 结果示例
 
-<img src="docs/example_search_1.png" width="280"> <img src="docs/example_search_2.png" width="280"> <img src="docs/example_note.png" width="280">
+<img src="docs/example_search_1.png" width="250"> <img src="docs/example_search_2.png" width="250"> <img src="docs/example_note.png" width="250">
 
 ### 交流群
 
