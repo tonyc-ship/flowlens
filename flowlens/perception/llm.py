@@ -1,9 +1,10 @@
 """Vision LLM for high-level page understanding.
 
-Supports two backends (selected via ``FLOWLENS_LLM_BACKEND`` env var or
+Supports three backends (selected via ``FLOWLENS_LLM_BACKEND`` env var or
 constructor ``backend`` kwarg):
 
-- ``"sonnet"`` (default) — Anthropic Claude Vision API
+- ``"sonnet"`` / ``"anthropic"`` — Anthropic hosted vision models
+- ``"openai"`` — OpenAI Responses API vision models
 - ``"qwen-local"`` — local Qwen3.5-9B-MLX-4bit via mlx-vlm
 
 Used for:
@@ -25,17 +26,28 @@ from dataclasses import dataclass
 import anthropic
 from PIL import Image
 
+from ..core.auth import (
+    METHOD_API_KEY,
+    PROVIDER_ANTHROPIC,
+    PROVIDER_OPENAI,
+    default_model_for_provider,
+    resolve_model_provider,
+    resolve_provider_auth,
+)
 from ..core.runtime import load_runtime_env
 
 logger = logging.getLogger(__name__)
 
 BACKEND_SONNET = "sonnet"
+BACKEND_OPENAI = "openai"
 BACKEND_QWEN_LOCAL = "qwen-local"
 
 
 def _resolve_backend(explicit: str | None = None) -> str:
     val = explicit or os.environ.get("FLOWLENS_LLM_BACKEND", "")
     val = val.strip().lower()
+    if val in (BACKEND_OPENAI, "gpt", "openai"):
+        return BACKEND_OPENAI
     if val in (BACKEND_QWEN_LOCAL, "qwen", "local"):
         return BACKEND_QWEN_LOCAL
     return BACKEND_SONNET
@@ -57,9 +69,17 @@ class VisionLLM:
 
     def __init__(self, model: str = "claude-sonnet-4-6", *, backend: str | None = None):
         load_runtime_env()
-        self.model = model
         self.backend = _resolve_backend(backend)
+        model_provider = resolve_model_provider(model)
+        if self.backend == BACKEND_SONNET and model_provider == PROVIDER_OPENAI:
+            self.backend = BACKEND_OPENAI
+        if self.backend == BACKEND_OPENAI and resolve_model_provider(model) != PROVIDER_OPENAI:
+            model = default_model_for_provider(PROVIDER_OPENAI)
+        elif self.backend == BACKEND_SONNET and resolve_model_provider(model) == PROVIDER_OPENAI:
+            model = default_model_for_provider(PROVIDER_ANTHROPIC)
+        self.model = model
         self._anthropic_client = None
+        self._openai_client = None
         self._local_llms: dict[str, object] = {}
         logger.info("VisionLLM using backend: %s", self.backend)
 
@@ -67,8 +87,27 @@ class VisionLLM:
     def client(self):
         """Lazy Anthropic client."""
         if self._anthropic_client is None:
-            self._anthropic_client = anthropic.Anthropic()
+            credential = resolve_provider_auth(PROVIDER_ANTHROPIC)
+            kwargs = {}
+            if credential is not None:
+                if credential.method == METHOD_API_KEY:
+                    kwargs["api_key"] = credential.secret
+                else:
+                    kwargs["auth_token"] = credential.secret
+            self._anthropic_client = anthropic.Anthropic(**kwargs)
         return self._anthropic_client
+
+    @property
+    def openai_client(self):
+        if self._openai_client is None:
+            from openai import OpenAI
+
+            credential = resolve_provider_auth(PROVIDER_OPENAI)
+            kwargs = {}
+            if credential is not None:
+                kwargs["api_key"] = credential.secret
+            self._openai_client = OpenAI(**kwargs)
+        return self._openai_client
 
     MAX_IMAGE_BYTES = 4_800_000  # Stay under Anthropic's 5MB limit
     MAX_IMAGE_PIXELS = 1568  # Max dimension for efficient API usage
@@ -149,6 +188,23 @@ class VisionLLM:
                 media_type="image/png",
                 max_tokens=effective_tokens,
             )
+        if self.backend == BACKEND_OPENAI:
+            response = self.openai_client.responses.create(
+                model=self.model,
+                max_output_tokens=effective_tokens,
+                input=[{
+                    "role": "user",
+                    "content": [
+                        {"type": "input_text", "text": prompt},
+                        {
+                            "type": "input_image",
+                            "image_url": f"data:image/png;base64,{self._image_to_base64(image, config)}",
+                            "detail": "high",
+                        },
+                    ],
+                }],
+            )
+            return response.output_text
         # Anthropic backend
         response = self.client.messages.create(
             model=self.model,

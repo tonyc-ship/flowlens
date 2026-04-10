@@ -4,8 +4,10 @@ import unittest
 class PackageLayoutTest(unittest.TestCase):
     def test_canonical_packages_expose_expected_entry_points(self) -> None:
         from flowlens.core.bridge import ExtensionBridge
+        from flowlens.xhs_cli import main as xhs_main
 
         self.assertTrue(ExtensionBridge)
+        self.assertTrue(xhs_main)
 
     def test_agent_cli_is_default_entry(self) -> None:
         from flowlens.agent.cli import main

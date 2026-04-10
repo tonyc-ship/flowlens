@@ -141,7 +141,8 @@ async def run_extension_reload(
         output_dir=str(out_dir),
         error=error,
     )
-    _write_report(result, out_dir)
+    if output_dir is not None:
+        _write_report(result, out_dir)
     return result
 
 

@@ -1,7 +1,7 @@
 """LLM backend abstraction for the agent loop.
 
-Provides a common interface for Anthropic API and local MLX inference,
-so the agent loop can use either backend transparently.
+Provides a common interface for hosted Anthropic/OpenAI models and local MLX
+inference, so the agent loop can use either backend transparently.
 """
 
 from __future__ import annotations
@@ -11,6 +11,15 @@ import re
 import uuid
 from abc import ABC, abstractmethod
 from dataclasses import dataclass, field
+
+from ..core.auth import (
+    METHOD_API_KEY,
+    PROVIDER_ANTHROPIC,
+    PROVIDER_OPENAI,
+    default_model_for_provider,
+    resolve_model_provider,
+    resolve_provider_auth,
+)
 
 
 @dataclass
@@ -156,7 +165,14 @@ class AnthropicBackend(Backend):
     def __init__(self, model: str = "claude-sonnet-4-6"):
         import anthropic
         self.model = model
-        self.client = anthropic.Anthropic()
+        credential = resolve_provider_auth(PROVIDER_ANTHROPIC)
+        kwargs = {}
+        if credential is not None:
+            if credential.method == METHOD_API_KEY:
+                kwargs["api_key"] = credential.secret
+            else:
+                kwargs["auth_token"] = credential.secret
+        self.client = anthropic.Anthropic(**kwargs)
 
     def create_message(
         self,
@@ -223,6 +239,174 @@ class AnthropicBackend(Backend):
                 "tool_use_id": tc.id,
                 "content": _summarize_result_blocks_for_history(result_blocks),
             })
+        return {"role": "user", "content": content}
+
+
+class OpenAIBackend(Backend):
+    """Backend using the OpenAI Responses API with function tools."""
+
+    def __init__(self, model: str | None = None):
+        from openai import OpenAI
+
+        self.model = model or default_model_for_provider(PROVIDER_OPENAI)
+        credential = resolve_provider_auth(PROVIDER_OPENAI)
+        kwargs = {}
+        if credential is not None:
+            kwargs["api_key"] = credential.secret
+        self.client = OpenAI(**kwargs)
+        self._previous_response_id: str | None = None
+        self._consumed_message_count = 0
+
+    @staticmethod
+    def _tool_to_openai_schema(tool: dict) -> dict:
+        return {
+            "type": "function",
+            "name": tool["name"],
+            "description": tool.get("description", ""),
+            "parameters": tool.get("input_schema") or {"type": "object", "properties": {}},
+        }
+
+    @staticmethod
+    def _input_text_message(role: str, text: str) -> dict:
+        return {
+            "type": "message",
+            "role": role,
+            "content": [{"type": "input_text", "text": text}],
+        }
+
+    def _message_to_input_items(self, message: dict) -> list[dict]:
+        role = str(message.get("role") or "user")
+        content = message.get("content")
+
+        if role == "assistant":
+            return []
+
+        if isinstance(content, str):
+            text = content.strip()
+            return [self._input_text_message(role, text)] if text else []
+
+        if isinstance(content, list):
+            function_outputs = [
+                item for item in content
+                if isinstance(item, dict) and item.get("type") == "function_call_output"
+            ]
+            if function_outputs:
+                return function_outputs
+
+            text_parts = [
+                str(item.get("text", "")).strip()
+                for item in content
+                if isinstance(item, dict) and item.get("type") == "text"
+            ]
+            text = "\n\n".join(part for part in text_parts if part)
+            return [self._input_text_message(role, text)] if text else []
+
+        return []
+
+    def create_message(
+        self,
+        *,
+        system: str,
+        messages: list[dict],
+        tools: list[dict],
+        max_tokens: int = 8192,
+    ) -> LLMResponse:
+        new_messages = messages[self._consumed_message_count :]
+        input_items: list[dict] = []
+        for message in new_messages:
+            input_items.extend(self._message_to_input_items(message))
+
+        openai_tools = [self._tool_to_openai_schema(tool) for tool in tools]
+        request: dict = {
+            "model": self.model,
+            "instructions": system,
+            "input": input_items,
+            "max_output_tokens": max_tokens,
+        }
+        if self._previous_response_id:
+            request["previous_response_id"] = self._previous_response_id
+        if openai_tools:
+            request["tools"] = openai_tools
+            request["parallel_tool_calls"] = True
+
+        response = self.client.responses.create(**request)
+        self._previous_response_id = response.id
+        self._consumed_message_count = len(messages)
+
+        text_blocks: list[str] = []
+        tool_calls: list[ToolCall] = []
+        assistant_content: list[dict] = []
+
+        for item in response.output:
+            item_type = getattr(item, "type", "")
+            if item_type == "message":
+                for content in getattr(item, "content", []):
+                    if getattr(content, "type", "") != "output_text":
+                        continue
+                    text = str(getattr(content, "text", "") or "")
+                    if not text:
+                        continue
+                    text_blocks.append(text)
+                    truncated = _truncate_assistant_text(text)
+                    if truncated:
+                        assistant_content.append({"type": "text", "text": truncated})
+            elif item_type == "function_call":
+                raw_arguments = str(getattr(item, "arguments", "") or "{}")
+                try:
+                    parsed_arguments = json.loads(raw_arguments)
+                except json.JSONDecodeError:
+                    parsed_arguments = {}
+                call_id = str(getattr(item, "call_id", "") or getattr(item, "id", "") or uuid.uuid4())
+                tool_calls.append(
+                    ToolCall(
+                        id=call_id,
+                        name=str(getattr(item, "name", "")),
+                        input=parsed_arguments if isinstance(parsed_arguments, dict) else {},
+                    )
+                )
+                assistant_content.append(
+                    {
+                        "type": "tool_use",
+                        "id": call_id,
+                        "name": str(getattr(item, "name", "")),
+                        "input": parsed_arguments if isinstance(parsed_arguments, dict) else {},
+                    }
+                )
+
+        usage = getattr(response, "usage", None)
+        return LLMResponse(
+            text_blocks=text_blocks,
+            tool_calls=tool_calls,
+            stop_reason="tool_use" if tool_calls else "end_turn",
+            input_tokens=int(getattr(usage, "input_tokens", 0) or 0),
+            output_tokens=int(getattr(usage, "output_tokens", 0) or 0),
+            raw={"assistant_content": assistant_content, "response": response},
+        )
+
+    def format_assistant_content(self, response: LLMResponse) -> object:
+        raw = response.raw if isinstance(response.raw, dict) else {}
+        return list(raw.get("assistant_content") or [])
+
+    def format_tool_results(
+        self,
+        tool_calls: list[ToolCall],
+        results: list[list[dict]],
+    ) -> dict:
+        content = []
+        for tc, result_blocks in zip(tool_calls, results):
+            summarized = _summarize_result_blocks_for_history(result_blocks)
+            output = "\n\n".join(
+                str(block.get("text", "")).strip()
+                for block in summarized
+                if isinstance(block, dict) and block.get("type") == "text"
+            ).strip()
+            content.append(
+                {
+                    "type": "function_call_output",
+                    "call_id": tc.id,
+                    "output": output or "(empty result)",
+                }
+            )
         return {"role": "user", "content": content}
 
 
@@ -544,4 +728,6 @@ def create_backend(model: str) -> Backend:
     if model == "qwen-local" or model.startswith("Qwen"):
         model_name = model if model != "qwen-local" else "Qwen3.5-9B-MLX-4bit"
         return LocalBackend(model_name=model_name)
+    if resolve_model_provider(model) == PROVIDER_OPENAI:
+        return OpenAIBackend(model=model)
     return AnthropicBackend(model=model)

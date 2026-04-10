@@ -4,14 +4,36 @@ from __future__ import annotations
 
 import sys
 
-from .agent.cli import main as agent_main
-from .debug_cli import main as debug_main
-from .desktop_cli import main as desktop_main
-from .extension_cli import main as extension_main
-from .observer.cli import main as observer_main
+from .auth_cli import main as auth_main
+from .xhs_cli import main as xhs_main
+
+
+def _lazy_import(module_path: str, attr: str):
+    """Import a CLI main function lazily, with a friendly error on missing deps."""
+    def wrapper(argv):
+        try:
+            mod = __import__(module_path, fromlist=[attr])
+        except ImportError as exc:
+            print(f"\n错误: 缺少依赖 — {exc}\n")
+            print("该功能需要额外依赖，请运行:")
+            print(f"  pip install -e '.[all]'\n")
+            return 1
+        return getattr(mod, attr)(argv)
+    return wrapper
+
+
+agent_main = _lazy_import("flowlens.agent.cli", "main")
+extension_main = _lazy_import("flowlens.extension_cli", "main")
+debug_main = _lazy_import("flowlens.debug_cli", "main")
+desktop_main = _lazy_import("flowlens.desktop_cli", "main")
+observer_main = _lazy_import("flowlens.observer.cli", "main")
 
 
 def main() -> None:
+    if len(sys.argv) > 1 and sys.argv[1] == "auth":
+        raise SystemExit(auth_main(sys.argv[2:]))
+    if len(sys.argv) > 1 and sys.argv[1] == "xhs":
+        raise SystemExit(xhs_main(sys.argv[2:]))
     if len(sys.argv) > 1 and sys.argv[1] == "agent":
         raise SystemExit(agent_main(sys.argv[2:]))
     if len(sys.argv) > 1 and sys.argv[1] == "extension":

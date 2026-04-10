@@ -41,19 +41,19 @@ def build_parser() -> argparse.ArgumentParser:
     extract = subparsers.add_parser("extract", help="Generate content summaries from OCR captures.")
     extract.add_argument("--dry-run", action="store_true")
     extract.add_argument("--limit", type=int, default=None)
-    extract.add_argument("--llm-backend", choices=["sonnet", "qwen-local"], default="sonnet")
+    extract.add_argument("--llm-backend", choices=["sonnet", "anthropic", "openai", "qwen-local"], default="sonnet")
     extract.add_argument("--with-vision", action="store_true", help="Also generate visual summaries from screenshots.")
 
     journal = subparsers.add_parser("journal", help="Generate an observer work journal.")
     journal.add_argument("hours", nargs="?", type=int, default=None)
     journal.add_argument("--no-llm", action="store_true")
-    journal.add_argument("--llm-backend", choices=["sonnet", "qwen-local"], default="sonnet")
+    journal.add_argument("--llm-backend", choices=["sonnet", "anthropic", "openai", "qwen-local"], default="sonnet")
 
     memory = subparsers.add_parser("memory", help="Show stored project memory.")
     memory.add_argument("project", nargs="?", default=None)
 
     ask = subparsers.add_parser("ask", help="Q&A over observer captures.")
-    ask.add_argument("--llm-backend", choices=["sonnet", "qwen-local"], default=BACKEND_SONNET)
+    ask.add_argument("--llm-backend", choices=["sonnet", "anthropic", "openai", "qwen-local"], default=BACKEND_SONNET)
     ask.add_argument("question", nargs=argparse.REMAINDER)
 
     subparsers.add_parser("install-agent", help="Install the launchd observer capture agent.")

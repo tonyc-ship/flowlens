@@ -475,13 +475,27 @@ class XHSSiteAdapter:
     async def close_note(self) -> dict:
         return await self.ext_bridge.send_command("close_note")
 
-    async def extract_author_profile(self, *, include_notes: bool = True) -> AuthorEntity:
+    async def extract_author_profile(
+        self, *, include_notes: bool = True, max_notes: int = 20
+    ) -> AuthorEntity:
         info = await self.ext_bridge.send_command("extract_profile_info")
         author = AuthorEntity.from_dom_dict(info.get("profile", {}))
         author.profile_url = await self._current_url()
         if include_notes:
             notes = await self.ext_bridge.send_command("extract_profile_notes")
-            author.note_cards = [NoteCard.from_dom_dict(item) for item in notes.get("notes", [])]
+            cards = [NoteCard.from_dom_dict(item) for item in notes.get("notes", [])]
+            # Scroll down to load more note cards until we reach max_notes
+            scroll_attempts = 0
+            while len(cards) < max_notes and scroll_attempts < 10:
+                await self.ext_bridge.send_command("scroll_page", {"pixels": 800})
+                await asyncio.sleep(1.5)
+                notes = await self.ext_bridge.send_command("extract_profile_notes")
+                new_cards = [NoteCard.from_dom_dict(item) for item in notes.get("notes", [])]
+                if len(new_cards) <= len(cards):
+                    break  # no new cards loaded
+                cards = new_cards
+                scroll_attempts += 1
+            author.note_cards = cards[:max_notes]
         return author
 
     async def extract_note(

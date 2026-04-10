@@ -7,7 +7,8 @@ LLM backend is selected via ``FLOWLENS_LLM_BACKEND`` env var or
 ``MediaConfig.backend``. For local backends, ``MediaConfig.model``
 selects the concrete MLX model name:
 
-- ``"sonnet"`` (default) — Anthropic Claude Sonnet API
+- ``"sonnet"`` / ``"anthropic"`` — Anthropic hosted models
+- ``"openai"`` — OpenAI Responses API
 - ``"qwen-local"`` — local Qwen MLX model via mlx-vlm
 - ``"ui-tars-local"`` — local UI-TARS MLX model via mlx-vlm
 """
@@ -23,17 +24,26 @@ import shutil
 import tempfile
 import time
 import urllib.request
-from dataclasses import dataclass, field
+from dataclasses import dataclass, replace
 from pathlib import Path
 
 import anthropic
 
+from ..core.auth import (
+    METHOD_API_KEY,
+    PROVIDER_ANTHROPIC,
+    PROVIDER_OPENAI,
+    default_model_for_provider,
+    resolve_model_provider,
+    resolve_provider_auth,
+)
 from ..core.runtime import load_runtime_env
 
 logger = logging.getLogger(__name__)
 
 DEFAULT_MODEL = "claude-sonnet-4-6"
 BACKEND_SONNET = "sonnet"
+BACKEND_OPENAI = "openai"
 BACKEND_QWEN_LOCAL = "qwen-local"
 BACKEND_UI_TARS_LOCAL = "ui-tars-local"
 DEFAULT_WHISPER_MODEL = "large-v3-turbo"
@@ -43,6 +53,8 @@ def _resolve_backend(explicit: str | None = None) -> str:
     """Return the active LLM backend name."""
     val = explicit or os.environ.get("FLOWLENS_LLM_BACKEND", "")
     val = val.strip().lower()
+    if val in (BACKEND_OPENAI, "gpt", "openai"):
+        return BACKEND_OPENAI
     if val in (BACKEND_UI_TARS_LOCAL, "ui-tars", "uitars", "uitars-local"):
         return BACKEND_UI_TARS_LOCAL
     if val in (BACKEND_QWEN_LOCAL, "qwen", "local"):
@@ -66,20 +78,60 @@ class MediaProcessor:
 
     def __init__(self, config: MediaConfig | None = None):
         load_runtime_env()
-        self.config = config or MediaConfig()
-        self.backend = _resolve_backend(self.config.backend)
+        raw_config = config or MediaConfig()
+        inferred_backend = _resolve_backend(raw_config.backend)
+        model = str(raw_config.model or "").strip()
+        model_provider = resolve_model_provider(model) if model else ""
+        if inferred_backend == BACKEND_SONNET and model_provider == PROVIDER_OPENAI:
+            inferred_backend = BACKEND_OPENAI
+        elif inferred_backend == BACKEND_SONNET and model_provider == "local":
+            if model == "ui-tars-local" or model.startswith("UI-TARS"):
+                inferred_backend = BACKEND_UI_TARS_LOCAL
+            elif model == "qwen-local" or model.startswith("Qwen"):
+                inferred_backend = BACKEND_QWEN_LOCAL
+
+        if inferred_backend == BACKEND_OPENAI:
+            if not model or model == DEFAULT_MODEL or resolve_model_provider(model) != PROVIDER_OPENAI:
+                model = default_model_for_provider(PROVIDER_OPENAI)
+        elif inferred_backend == BACKEND_SONNET:
+            if not model or resolve_model_provider(model) == PROVIDER_OPENAI:
+                model = default_model_for_provider(PROVIDER_ANTHROPIC)
+
+        self.config = replace(raw_config, model=model, backend=inferred_backend)
+        self.backend = inferred_backend
         self._anthropic_client = None
+        self._openai_client = None
         self._local_llm = None
         self._ocr = None
         self._transcriber = None
-        logger.info("MediaProcessor using backend: %s", self.backend)
+        logger.info("MediaProcessor using backend: %s model=%s", self.backend, self.config.model)
 
     @property
     def client(self):
         """Lazy Anthropic client — only created when the sonnet backend is used."""
         if self._anthropic_client is None:
-            self._anthropic_client = anthropic.Anthropic()
+            credential = resolve_provider_auth(PROVIDER_ANTHROPIC)
+            kwargs = {}
+            if credential is not None:
+                if credential.method == METHOD_API_KEY:
+                    kwargs["api_key"] = credential.secret
+                else:
+                    kwargs["auth_token"] = credential.secret
+            self._anthropic_client = anthropic.Anthropic(**kwargs)
         return self._anthropic_client
+
+    @property
+    def openai_client(self):
+        """Lazy OpenAI client for text and vision via Responses API."""
+        if self._openai_client is None:
+            from openai import OpenAI
+
+            credential = resolve_provider_auth(PROVIDER_OPENAI)
+            kwargs = {}
+            if credential is not None:
+                kwargs["api_key"] = credential.secret
+            self._openai_client = OpenAI(**kwargs)
+        return self._openai_client
 
     @property
     def local_llm(self):
@@ -114,6 +166,13 @@ class MediaProcessor:
         )
         if self.backend in {BACKEND_QWEN_LOCAL, BACKEND_UI_TARS_LOCAL}:
             result = self.local_llm.call_text(prompt, max_tokens=max_tokens)
+        elif self.backend == BACKEND_OPENAI:
+            resp = self.openai_client.responses.create(
+                model=self.config.model,
+                input=prompt,
+                max_output_tokens=max_tokens,
+            )
+            result = resp.output_text
         else:
             resp = self.client.messages.create(
                 model=self.config.model,
@@ -152,6 +211,19 @@ class MediaProcessor:
             result = self.local_llm.call_vision(
                 image_b64, prompt, media_type=media_type, max_tokens=max_tokens,
             )
+        elif self.backend == BACKEND_OPENAI:
+            resp = self.openai_client.responses.create(
+                model=self.config.model,
+                max_output_tokens=max_tokens,
+                input=[{
+                    "role": "user",
+                    "content": [
+                        {"type": "input_text", "text": prompt},
+                        {"type": "input_image", "image_url": f"data:{media_type};base64,{image_b64}", "detail": "high"},
+                    ],
+                }],
+            )
+            result = resp.output_text
         else:
             resp = self.client.messages.create(
                 model=self.config.model,

@@ -7,21 +7,9 @@ requires-python = ">=3.11"
 authors = [{ name = "Tony Chong" }]
 dependencies = [
     "anthropic>=0.40.0",
-    "numpy>=1.26.0",
-    "ultralytics>=8.2.0",
-    "transformers>=4.40.0",
-    "torch>=2.2.0",
-    "huggingface_hub>=0.20.0",
-    "paddleocr>=2.7.0",
-    "opencv-python>=4.9.0",
-    "mlx-lm>=0.31.0",
-    "mlx-vlm>=0.4.0",
-    "mlx-whisper>=0.4.3",
-    "modelscope>=1.28.0",
-    "pyobjc-framework-Quartz>=10.0",
-    "pyobjc-framework-Vision>=10.0",
-    "Pillow>=10.0.0",
+    "openai>=1.98.0",
     "websockets>=13.0",
+    "Pillow>=10.0.0",
 ]
 
 [project.urls]
@@ -30,6 +18,28 @@ Repository = "https://github.com/tonyc-ship/flowlens"
 Issues = "https://github.com/tonyc-ship/flowlens/issues"
 
 [project.optional-dependencies]
+local = [
+    "mlx-lm>=0.31.0",
+    "mlx-vlm>=0.4.0",
+    "mlx-whisper>=0.4.3",
+    "modelscope>=1.28.0",
+]
+observer = [
+    "numpy>=1.26.0",
+    "pyobjc-framework-Quartz>=10.0",
+    "pyobjc-framework-Vision>=10.0",
+]
+vision = [
+    "ultralytics>=8.2.0",
+    "transformers>=4.40.0",
+    "torch>=2.2.0",
+    "huggingface_hub>=0.20.0",
+    "paddleocr>=2.7.0",
+    "opencv-python>=4.9.0",
+]
+all = [
+    "flowlens[local,observer,vision]",
+]
 dev = [
     "pytest>=8.0",
     "ruff>=0.4.0",

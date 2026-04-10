@@ -8,8 +8,13 @@ from collections import defaultdict
 from datetime import datetime
 from difflib import SequenceMatcher
 
-import anthropic
-
+from ..agent.backends import create_backend
+from ..core.auth import (
+    PROVIDER_ANTHROPIC,
+    PROVIDER_OPENAI,
+    default_cloud_model,
+    default_model_for_provider,
+)
 from ..perception.media import BACKEND_QWEN_LOCAL, BACKEND_SONNET, MediaConfig, MediaProcessor
 from .paths import ObserverPaths
 from .store import ObserverStore
@@ -461,41 +466,39 @@ def _dispatch_tool(store: ObserverStore, name: str, input_data: dict) -> str:
     return json.dumps(result, ensure_ascii=False)
 
 
-def _run_ask_turn(client: anthropic.Anthropic, store: ObserverStore, system_prompt: str, messages: list[dict]) -> str:
-    for _ in range(10):
-        response = client.messages.create(
-            model=DEFAULT_TEXT_MODEL,
-            max_tokens=1200,
-            system=system_prompt,
-            tools=OBSERVER_TOOLS,
-            messages=messages,
-        )
-        assistant_content = response.content
-        messages.append({"role": "assistant", "content": assistant_content})
-        tool_uses = [item for item in assistant_content if item.type == "tool_use"]
-        if not tool_uses:
-            for block in assistant_content:
-                if hasattr(block, "text"):
-                    return block.text
-            return ""
+def _observer_model_for_backend(llm_backend: str | None) -> str:
+    normalized = str(llm_backend or "").strip().lower()
+    if normalized == BACKEND_QWEN_LOCAL:
+        return BACKEND_QWEN_LOCAL
+    if normalized in {"openai", "gpt"}:
+        return default_model_for_provider(PROVIDER_OPENAI)
+    if normalized in {BACKEND_SONNET, "anthropic", "claude", "sonnet"}:
+        return default_model_for_provider(PROVIDER_ANTHROPIC)
+    return default_cloud_model()
 
-        tool_results = []
+
+def _run_ask_turn(backend, store: ObserverStore, system_prompt: str, messages: list[dict]) -> str:
+    for _ in range(10):
+        response = backend.create_message(
+            system=system_prompt,
+            messages=messages,
+            tools=OBSERVER_TOOLS,
+            max_tokens=1200,
+        )
+        messages.append({"role": "assistant", "content": backend.format_assistant_content(response)})
+        tool_uses = response.tool_calls
+        if not tool_uses:
+            return "\n".join(response.text_blocks).strip()
+
+        tool_results: list[list[dict]] = []
         for tool_use in tool_uses:
-            payload = _dispatch_tool(store, tool_use.name, dict(tool_use.input))
-            tool_results.append(
-                {
-                    "type": "tool_result",
-                    "tool_use_id": tool_use.id,
-                    "content": payload,
-                }
-            )
-        messages.append({"role": "user", "content": tool_results})
+            payload = _dispatch_tool(store, tool_use.name, dict(tool_use.input or {}))
+            tool_results.append([{"type": "text", "text": payload}])
+        messages.append(backend.format_tool_results(tool_uses, tool_results))
     return "(max tool turns reached)"
 
 
 def ask_question(paths: ObserverPaths, question: str, *, llm_backend: str = BACKEND_SONNET) -> str:
-    if (llm_backend or BACKEND_SONNET).strip().lower() != BACKEND_SONNET:
-        raise ValueError("Observer ask currently requires the sonnet backend.")
     store = ObserverStore(paths)
     stats = store.stats()
     if stats["content_summary_count"] == 0:
@@ -514,9 +517,9 @@ Use tools to search and browse the user's desktop activity history.
 
 Answer in the same language as the user. Be concise and specific.
 """
-    client = anthropic.Anthropic()
+    backend = create_backend(_observer_model_for_backend(llm_backend))
     messages = [{"role": "user", "content": question}]
-    return _run_ask_turn(client, store, system_prompt, messages)
+    return _run_ask_turn(backend, store, system_prompt, messages)
 
 
 def run_query_repl(paths: ObserverPaths, *, llm_backend: str = BACKEND_SONNET) -> None:
@@ -525,13 +528,10 @@ def run_query_repl(paths: ObserverPaths, *, llm_backend: str = BACKEND_SONNET) -
     if stats["content_summary_count"] == 0:
         print("No content summaries found. Run `flowlens observer extract` first.")
         return
-    if (llm_backend or BACKEND_SONNET).strip().lower() != BACKEND_SONNET:
-        raise ValueError("Observer ask currently requires the sonnet backend.")
-
     print(f"FlowLens Observer Q&A ({stats['content_summary_count']} captures indexed)")
     print("Ask questions about your workflow. Type 'quit' to exit.\n")
 
-    client = anthropic.Anthropic()
+    backend = create_backend(_observer_model_for_backend(llm_backend))
     system_prompt = f"""You are FlowLens Observer, a personal workflow assistant.
 
 Current time: {datetime.now().strftime("%Y-%m-%d %H:%M")}
@@ -560,5 +560,5 @@ Answer in the same language as the user. Be concise and specific.
         messages.append({"role": "user", "content": question})
         if len(messages) > 60:
             messages = messages[-60:]
-        answer = _run_ask_turn(client, store, system_prompt, messages)
+        answer = _run_ask_turn(backend, store, system_prompt, messages)
         print(f"\nObserver: {answer}\n")

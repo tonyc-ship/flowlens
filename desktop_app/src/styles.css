@@ -172,18 +172,6 @@ textarea {
   color: var(--text-soft);
 }
 
-#chatbots-input {
-  width: 100%;
-  min-height: 180px;
-  resize: none;
-  border: 0;
-  outline: none;
-  background: transparent;
-  color: inherit;
-  font-size: 1.08rem;
-  line-height: 1.55;
-}
-
 .composer-actions {
   display: flex;
   align-items: flex-end;
@@ -404,128 +392,6 @@ textarea {
   font-weight: 700;
 }
 
-/* ── Chatbots Mode ────────────────────────── */
-
-.subtitle {
-  text-align: center;
-  color: var(--text-soft);
-  margin: -8px 0 20px;
-  font-size: 0.95rem;
-}
-
-.chatbot-composer-simple {
-  padding: 18px 18px 16px;
-}
-
-.composer-footer {
-  display: flex;
-  justify-content: flex-end;
-  margin-top: 12px;
-}
-
-.ask-all-button {
-  background: linear-gradient(135deg, #6366f1, #8b5cf6);
-  min-width: 120px;
-}
-
-.ask-all-button:hover:not(:disabled) {
-  border-color: rgba(99, 102, 241, 0.5);
-  background: linear-gradient(135deg, #7c7ff7, #a78bfa);
-}
-
-.chatbot-status-row {
-  display: flex;
-  gap: 12px;
-  margin-top: 20px;
-  justify-content: center;
-}
-
-.chatbot-status-row.launching {
-  margin-top: 24px;
-}
-
-.chatbot-card {
-  display: flex;
-  align-items: center;
-  gap: 10px;
-  border: 1px solid var(--line);
-  background: var(--panel-strong);
-  border-radius: 14px;
-  padding: 12px 18px;
-  font-size: 0.92rem;
-  font-weight: 560;
-  flex: 1;
-  max-width: 220px;
-  justify-content: center;
-}
-
-.chatbot-card.chatgpt {
-  border-color: rgba(16, 163, 127, 0.4);
-}
-
-.chatbot-card.gemini {
-  border-color: rgba(66, 133, 244, 0.4);
-}
-
-.chatbot-card.claude {
-  border-color: rgba(217, 119, 87, 0.4);
-}
-
-.chatbot-icon {
-  width: 28px;
-  height: 28px;
-  border-radius: 8px;
-  display: grid;
-  place-items: center;
-  font-weight: 800;
-  font-size: 0.85rem;
-}
-
-.chatbot-card.chatgpt .chatbot-icon {
-  background: rgba(16, 163, 127, 0.2);
-  color: #10a37f;
-}
-
-.chatbot-card.gemini .chatbot-icon {
-  background: rgba(66, 133, 244, 0.2);
-  color: #4285f4;
-}
-
-.chatbot-card.claude .chatbot-icon {
-  background: rgba(217, 119, 87, 0.2);
-  color: #d97757;
-}
-
-.chatbot-card.pulsing {
-  animation: pulse 1.4s ease-in-out infinite;
-}
-
-@keyframes pulse {
-  0%,
-  100% {
-    opacity: 0.5;
-  }
-  50% {
-    opacity: 1;
-  }
-}
-
-.chatbot-launched-msg {
-  text-align: center;
-  color: var(--ok);
-  margin-top: 16px;
-  font-weight: 560;
-}
-
-.chatbot-output-path {
-  margin: 8px auto 0;
-  max-width: 100%;
-  text-align: center;
-  color: var(--text-soft);
-  font-size: 0.82rem;
-  word-break: break-all;
-}
-
 .wechat-workbench {
   width: min(1200px, 100%);
   margin: 44px auto 0;
@@ -680,15 +546,6 @@ textarea {
 
   .recent {
     margin-top: -42px;
-  }
-
-  .chatbot-status-row {
-    flex-direction: column;
-    align-items: stretch;
-  }
-
-  .chatbot-card {
-    max-width: none;
   }
 
   .wechat-workbench {

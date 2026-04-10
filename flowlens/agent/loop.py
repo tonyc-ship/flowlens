@@ -1,12 +1,13 @@
 """Core agent loop — LLM-driven browser automation.
 
-The loop sends messages + tools to an LLM backend (Anthropic API or local
-Qwen MLX). When the LLM returns tool calls, we execute them and feed results
+The loop sends messages + tools to an LLM backend (Anthropic, OpenAI, or local
+MLX models). When the LLM returns tool calls, we execute them and feed results
 back. When the LLM returns only text, the task is complete.
 
-Supports two backends:
-- Anthropic (claude-sonnet-4-6 etc.) — native tool_use API
-- Local Qwen (qwen-local) — text-based tool calling via <tool_call> tags
+Supports three backend families:
+- Anthropic hosted models — native tool_use API
+- OpenAI hosted models — Responses API function tools
+- Local Qwen / UI-TARS — text-based tool calling via <tool_call> tags
 """
 
 from __future__ import annotations
@@ -19,9 +20,11 @@ from datetime import datetime
 from pathlib import Path
 
 from ..core.bridge import ExtensionBridge, TabBridge, ensure_extension_connection
+from ..core.auth import PROVIDER_OPENAI, resolve_model_provider
 from ..core.process_metrics import append_jsonl, system_resource_snapshot
 from ..knowledge.loader import detect_site, get_knowledge_for_url
 from ..perception.media import (
+    BACKEND_OPENAI,
     BACKEND_QWEN_LOCAL,
     BACKEND_SONNET,
     BACKEND_UI_TARS_LOCAL,
@@ -137,6 +140,8 @@ def _make_media_for_model(model: str) -> MediaProcessor:
         return MediaProcessor(MediaConfig(backend=BACKEND_UI_TARS_LOCAL, model=normalized))
     if normalized == "qwen-local" or normalized.startswith("Qwen"):
         return MediaProcessor(MediaConfig(backend=BACKEND_QWEN_LOCAL, model=normalized))
+    if resolve_model_provider(normalized) == PROVIDER_OPENAI:
+        return MediaProcessor(MediaConfig(backend=BACKEND_OPENAI, model=normalized))
     return MediaProcessor(MediaConfig(backend=BACKEND_SONNET, model=normalized or DEFAULT_MODEL))
 
 
@@ -146,6 +151,8 @@ def _infer_media_backend(model_name: str) -> str:
         return BACKEND_UI_TARS_LOCAL
     if normalized == "qwen-local" or normalized.startswith("Qwen"):
         return BACKEND_QWEN_LOCAL
+    if resolve_model_provider(normalized) == PROVIDER_OPENAI:
+        return BACKEND_OPENAI
     return BACKEND_SONNET
 
 
@@ -285,7 +292,7 @@ async def run_agent(
     *,
     bridge: ExtensionBridge | TabBridge | None = None,
     run_dir: str | Path | None = None,
-    max_turns: int = 40,
+    max_turns: int = 30,
     model: str = "claude-sonnet-4-6",
     extra_instructions: str = "",
     media=None,
@@ -757,6 +764,9 @@ async def _agent_loop(
         for entry in reasoning_log:
             f.write(json.dumps(entry, ensure_ascii=False) + "\n")
 
+    # Collect site result artifacts (notes, search cards, etc.) from tool runs
+    site_results = _collect_site_results(run_dir)
+
     # Save summary metadata
     log_path = run_dir / "agent_log.json"
     log_data = {
@@ -771,6 +781,7 @@ async def _agent_loop(
         "resource_log_file": "resource_log.jsonl",
         "usage_summary": _summarize_usage(reasoning_log),
         "resource_summary": _summarize_resources(resource_snapshots),
+        "site_results": site_results,
     }
     log_path.write_text(json.dumps(log_data, ensure_ascii=False, indent=2), encoding="utf-8")
 
@@ -785,7 +796,26 @@ async def _agent_loop(
         "run_dir": str(run_dir),
         "reasoning_log": str(reasoning_log_path),
         "total_duration_s": total_duration,
+        "site_results": site_results,
     }
+
+
+def _collect_site_results(run_dir: Path) -> list[dict]:
+    """Collect all site result JSON artifacts produced during the agent run."""
+    results_dir = run_dir / "site_results"
+    if not results_dir.is_dir():
+        return []
+    collected = []
+    for path in sorted(results_dir.iterdir()):
+        if path.suffix != ".json" or not path.is_file():
+            continue
+        try:
+            data = json.loads(path.read_text(encoding="utf-8"))
+            data["_source_file"] = path.name
+            collected.append(data)
+        except Exception:
+            continue
+    return collected
 
 
 def _summarize_usage(reasoning_log: list[dict]) -> dict:

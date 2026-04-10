@@ -1803,14 +1803,12 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
           break;
 
         case 'extract_note_content': {
-          // Detect whether a note-detail modal is actually visible. If not,
-          // the caller almost certainly has a stale or failed-to-close state
-          // and any scraped fields would be misleading (or echo the last
-          // opened note). Fail loudly instead of silently returning garbage.
+          // Detect whether a note-detail modal OR a direct note page is visible.
           const overlaySelectors = '.note-detail-mask, .note-overlay, .note-detail-modal, #noteContainer';
           const overlay = document.querySelector(overlaySelectors);
           const overlayVisible = !!(overlay && overlay.offsetHeight > 0);
-          if (!overlayVisible) {
+          const isDirectNotePage = !!extractNoteIdFromUrl(window.location.href);
+          if (!overlayVisible && !isDirectNotePage) {
             result = {
               error: 'no_note_modal_open',
               message: 'extract_note_content called but no note detail modal is open. Use extract_page_data with command=click_card (or click_note_by_id) to open a note first, or close_note if a stuck modal needs to be dismissed.',

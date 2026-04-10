@@ -4,14 +4,11 @@ use std::env;
 extern crate libc;
 use std::ffi::OsString;
 use std::fs::{self, File};
-use std::io::{BufRead, BufReader, Write};
 use std::path::{Path, PathBuf};
-use std::process::{Child, ChildStdin, ChildStdout, Command, Stdio};
+use std::process::{Command, Stdio};
 use std::sync::Mutex;
 use std::time::{SystemTime, UNIX_EPOCH};
-use tauri::{AppHandle, Emitter, Manager, State};
-use tauri_plugin_deep_link::DeepLinkExt;
-use url::Url;
+use tauri::{AppHandle, Manager, State};
 
 #[derive(Serialize)]
 #[serde(rename_all = "camelCase")]
@@ -75,19 +72,7 @@ struct TaskStub {
 }
 
 #[derive(Default)]
-struct LatestChatbotsTask(Mutex<Option<TaskStub>>);
-
-#[derive(Default)]
 struct RunningTasks(Mutex<Vec<TaskStub>>);
-
-#[derive(Default)]
-struct ChatbotsCompanionState(Mutex<Option<ChatbotsCompanionHandle>>);
-
-struct ChatbotsCompanionHandle {
-    child: Child,
-    stdin: ChildStdin,
-    stdout: BufReader<ChildStdout>,
-}
 
 enum LauncherKind {
     Binary,
@@ -487,283 +472,6 @@ fn spawn_flowlens(
     ))
 }
 
-fn companion_is_alive(handle: &mut ChatbotsCompanionHandle) -> bool {
-    matches!(handle.child.try_wait(), Ok(None))
-}
-
-fn stop_chatbots_companion(app: &AppHandle) {
-    let state = app.state::<ChatbotsCompanionState>();
-    if let Ok(mut guard) = state.0.lock() {
-        if let Some(mut handle) = guard.take() {
-            let _ = handle.child.kill();
-            let _ = handle.child.wait();
-        }
-    };
-}
-
-fn parse_task_stub(value: &Value) -> Result<TaskStub, String> {
-    serde_json::from_value::<TaskStub>(value.clone())
-        .map_err(|err| format!("Failed to parse companion task payload: {err}"))
-}
-
-fn spawn_chatbots_companion(app: &AppHandle) -> Result<ChatbotsCompanionHandle, String> {
-    let runtime = resolve_runtime(app)?;
-    let companion_dir = app
-        .path()
-        .app_data_dir()
-        .map_err(|err| format!("Failed to resolve app data dir: {err}"))?
-        .join("companion");
-    fs::create_dir_all(&companion_dir)
-        .map_err(|err| format!("Failed to create companion dir: {err}"))?;
-    let log_path = companion_dir.join("chatbots-companion.log");
-    let stderr =
-        File::create(&log_path).map_err(|err| format!("Failed to create companion log: {err}"))?;
-
-    let mut child = Command::new(&runtime.launcher);
-    child
-        .current_dir(&runtime.workdir)
-        .env("PYTHONUNBUFFERED", "1")
-        .stdin(Stdio::piped())
-        .stdout(Stdio::piped())
-        .stderr(Stdio::from(stderr));
-
-    match runtime.launcher_kind {
-        LauncherKind::Binary => {}
-        LauncherKind::Python => {
-            child
-                .env("PYTHONPATH", build_pythonpath(&runtime.workdir)?)
-                .arg("-m")
-                .arg("flowlens");
-        }
-    }
-
-    child
-        .arg("chatbots-companion")
-        .arg("--port")
-        .arg("8765")
-        .arg("--vision")
-        .arg("qwen-local")
-        .arg("--output-root-base")
-        .arg(runtime.output_root.join("multi_chat"));
-
-    let mut child = child
-        .spawn()
-        .map_err(|err| format!("Failed to start chatbot companion: {err}"))?;
-    let stdin = child
-        .stdin
-        .take()
-        .ok_or_else(|| "Companion stdin not available".to_string())?;
-    let stdout = child
-        .stdout
-        .take()
-        .ok_or_else(|| "Companion stdout not available".to_string())?;
-    let mut stdout = BufReader::new(stdout);
-    let mut skipped_lines: Vec<String> = Vec::new();
-    let mut saw_ready = false;
-    for _ in 0..32 {
-        let mut ready_line = String::new();
-        let read = stdout
-            .read_line(&mut ready_line)
-            .map_err(|err| format!("Failed to read companion ready line: {err}"))?;
-        if read == 0 {
-            break;
-        }
-        let trimmed = ready_line.trim();
-        if trimmed.is_empty() {
-            continue;
-        }
-        match serde_json::from_str::<Value>(trimmed) {
-            Ok(value) if value.get("type").and_then(Value::as_str) == Some("ready") => {
-                saw_ready = true;
-                break;
-            }
-            Ok(_) => {
-                skipped_lines.push(trimmed.to_string());
-            }
-            Err(_) => {
-                skipped_lines.push(trimmed.to_string());
-            }
-        }
-    }
-    if !saw_ready {
-        let context = if skipped_lines.is_empty() {
-            "none".to_string()
-        } else {
-            skipped_lines.join(" | ")
-        };
-        return Err(format!(
-            "Chatbot companion exited before sending ready line. Preceding output: {context}"
-        ));
-    }
-
-    Ok(ChatbotsCompanionHandle {
-        child,
-        stdin,
-        stdout,
-    })
-}
-
-fn with_chatbots_companion<T>(
-    app: &AppHandle,
-    mut f: impl FnMut(&mut ChatbotsCompanionHandle) -> Result<T, String>,
-) -> Result<T, String> {
-    let state = app.state::<ChatbotsCompanionState>();
-    let mut guard = state
-        .0
-        .lock()
-        .map_err(|_| "Chatbots companion state is poisoned".to_string())?;
-
-    let needs_spawn = match guard.as_mut() {
-        Some(handle) => !companion_is_alive(handle),
-        None => true,
-    };
-    if needs_spawn {
-        *guard = Some(spawn_chatbots_companion(app)?);
-    }
-
-    f(guard
-        .as_mut()
-        .ok_or_else(|| "Chatbots companion unavailable".to_string())?)
-}
-
-fn request_chatbots_companion(app: &AppHandle, request: Value) -> Result<Value, String> {
-    with_chatbots_companion(app, |handle| {
-        let line = serde_json::to_string(&request)
-            .map_err(|err| format!("Failed to encode companion request: {err}"))?;
-        handle
-            .stdin
-            .write_all(line.as_bytes())
-            .and_then(|_| handle.stdin.write_all(b"\n"))
-            .and_then(|_| handle.stdin.flush())
-            .map_err(|err| format!("Failed to write companion request: {err}"))?;
-
-        let mut response_line = String::new();
-        handle
-            .stdout
-            .read_line(&mut response_line)
-            .map_err(|err| format!("Failed to read companion response: {err}"))?;
-        if response_line.trim().is_empty() {
-            return Err("Companion returned an empty response".to_string());
-        }
-        serde_json::from_str::<Value>(response_line.trim())
-            .map_err(|err| format!("Failed to decode companion response: {err}"))
-    })
-}
-
-fn store_chatbots_task(app: &AppHandle, task: &TaskStub) {
-    if let Ok(mut slot) = app.state::<LatestChatbotsTask>().0.lock() {
-        *slot = Some(task.clone());
-    }
-    let _ = app.emit("chatbots-launch-requested", task);
-}
-
-fn spawn_chatbots_task(
-    app: &AppHandle,
-    question: &str,
-    launch_source: &str,
-) -> Result<TaskStub, String> {
-    let trimmed = question.trim();
-    if trimmed.is_empty() {
-        return Err("Question is empty".to_string());
-    }
-
-    let response = request_chatbots_companion(
-        app,
-        serde_json::json!({
-            "action": "ask_chatbots",
-            "question": trimmed,
-            "closeWindowsOnFinish": false,
-            "launchSource": launch_source,
-        }),
-    )?;
-    if response.get("ok").and_then(Value::as_bool) != Some(true) {
-        return Err(response
-            .get("error")
-            .and_then(Value::as_str)
-            .unwrap_or("Chatbots companion request failed")
-            .to_string());
-    }
-    let task = parse_task_stub(
-        response
-            .get("task")
-            .ok_or_else(|| "Chatbots companion response missing task".to_string())?,
-    )?;
-
-    store_chatbots_task(app, &task);
-
-    if let Some(window) = app.get_webview_window("main") {
-        let _ = window.show();
-        let _ = window.unminimize();
-        let _ = window.set_focus();
-    }
-
-    let _ = app.emit(
-        "chatbots-launch-source",
-        serde_json::json!({
-            "source": launch_source,
-            "taskId": task.id,
-        }),
-    );
-
-    Ok(task)
-}
-
-fn extract_question_from_deep_link(url: &Url) -> Option<String> {
-    let host = url.host_str().unwrap_or_default();
-    let path = url.path().trim_matches('/');
-    let target = host.eq_ignore_ascii_case("ask")
-        || host.eq_ignore_ascii_case("chatbots")
-        || path.eq_ignore_ascii_case("ask")
-        || path.eq_ignore_ascii_case("chatbots");
-    if !target {
-        return None;
-    }
-
-    let question = url
-        .query_pairs()
-        .find_map(|(key, value)| (key == "question").then(|| value.into_owned()))?;
-    let trimmed = question.trim();
-    if trimmed.is_empty() {
-        return None;
-    }
-    Some(trimmed.to_string())
-}
-
-fn handle_deep_links(app: &AppHandle, urls: &[Url]) {
-    for url in urls {
-        if let Some(question) = extract_question_from_deep_link(url) {
-            let _ = spawn_chatbots_task(app, &question, "deep_link");
-        }
-    }
-}
-
-#[tauri::command]
-fn latest_chatbots_task(
-    app: AppHandle,
-    state: State<'_, LatestChatbotsTask>,
-) -> Result<Option<TaskStub>, String> {
-    if let Ok(response) =
-        request_chatbots_companion(&app, serde_json::json!({ "action": "latest_task" }))
-    {
-        if response.get("ok").and_then(Value::as_bool) == Some(true) {
-            let task = match response.get("task") {
-                Some(value) if !value.is_null() => Some(parse_task_stub(value)?),
-                _ => None,
-            };
-            if let Ok(mut slot) = state.0.lock() {
-                *slot = task.clone();
-            }
-            return Ok(task);
-        }
-    }
-
-    let guard = state
-        .0
-        .lock()
-        .map_err(|_| "Latest chatbots task state is poisoned".to_string())?;
-    Ok(guard.clone())
-}
-
 fn is_pid_alive(pid: u32) -> bool {
     // kill(pid, 0) checks if process exists without sending a signal
     unsafe { libc::kill(pid as i32, 0) == 0 }
@@ -915,9 +623,6 @@ fn start_task(
     } else {
         parse_xhs_model_mode(&requested_model_mode)?
     };
-    // Stop the chatbots companion if running — it holds the WebSocket port
-    // the task runner needs for the Chrome extension bridge.
-    stop_chatbots_companion(&app);
 
     let task = spawn_flowlens(
         &app,
@@ -954,42 +659,15 @@ fn start_task(
     Ok(task)
 }
 
-#[tauri::command]
-fn ask_chatbots(app: AppHandle, question: String) -> Result<TaskStub, String> {
-    spawn_chatbots_task(&app, &question, "desktop_ui")
-}
-
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
-    let builder = tauri::Builder::default()
-        .manage(LatestChatbotsTask::default())
+    tauri::Builder::default()
         .manage(RunningTasks::default())
-        .manage(ChatbotsCompanionState::default())
-        .plugin(tauri_plugin_deep_link::init())
-        .setup(|app| {
-            let app_handle = app.handle().clone();
-
-            if let Some(urls) = app.deep_link().get_current()? {
-                handle_deep_links(&app_handle, &urls);
-            }
-
-            let app_handle_for_events = app_handle.clone();
-            app.deep_link().on_open_url(move |event| {
-                let urls = event.urls();
-                handle_deep_links(&app_handle_for_events, &urls);
-            });
-
-            Ok(())
-        });
-
-    builder
         .invoke_handler(tauri::generate_handler![
             app_health,
             start_task,
             check_task_status,
             stop_task,
-            ask_chatbots,
-            latest_chatbots_task,
             reveal_path
         ])
         .run(tauri::generate_context!())
@@ -998,12 +676,8 @@ pub fn run() {
 
 #[cfg(test)]
 mod tests {
-    use super::{
-        extract_profile_url, extract_question_from_deep_link, infer_kind, parse_xhs_model_mode,
-        task_status_from_log,
-    };
+    use super::{extract_profile_url, infer_kind, parse_xhs_model_mode, task_status_from_log};
     use std::fs;
-    use url::Url;
 
     #[test]
     fn extracts_profile_url_from_prompt() {
@@ -1023,21 +697,6 @@ mod tests {
             infer_kind("请总结微信会话“冬虫夏草”的聊天记录").unwrap(),
             "wechat_chat_summary"
         );
-    }
-
-    #[test]
-    fn extracts_question_from_chatbots_deep_link() {
-        let url = Url::parse("flowlens://ask?question=Reply%20READY").expect("url");
-        assert_eq!(
-            extract_question_from_deep_link(&url).as_deref(),
-            Some("Reply READY")
-        );
-    }
-
-    #[test]
-    fn ignores_unrelated_deep_link() {
-        let url = Url::parse("flowlens://settings?question=ignored").expect("url");
-        assert!(extract_question_from_deep_link(&url).is_none());
     }
 
     #[test]

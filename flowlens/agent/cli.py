@@ -6,6 +6,8 @@ import argparse
 import asyncio
 import sys
 
+from ..core.auth import default_cloud_model
+
 
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(
@@ -22,13 +24,13 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument(
         "--model",
         default=None,
-        help="Model ID (default: claude-sonnet-4-6, or qwen-local for local)",
+        help="Model ID override. Defaults to the best available cloud model or the selected local alias.",
     )
     parser.add_argument(
         "--backend",
-        choices=["anthropic", "qwen-local", "ui-tars-local"],
-        default="anthropic",
-        help="LLM backend: anthropic (default), qwen-local, or ui-tars-local",
+        choices=["anthropic", "openai", "qwen-local", "ui-tars-local"],
+        default=None,
+        help="LLM backend override: anthropic, openai, qwen-local, or ui-tars-local",
     )
     parser.add_argument(
         "--run-dir",
@@ -45,8 +47,12 @@ def main(argv: list[str] | None = None) -> int:
         model = "qwen-local"
     elif args.backend == "ui-tars-local":
         model = "ui-tars-local"
+    elif args.backend == "openai":
+        model = default_cloud_model(provider="openai")
+    elif args.backend == "anthropic":
+        model = default_cloud_model(provider="anthropic")
     else:
-        model = "claude-sonnet-4-6"
+        model = default_cloud_model()
 
     from .loop import run_agent
 

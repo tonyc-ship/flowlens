@@ -77,14 +77,26 @@ class TabBridge:
     async def find_chat_input(self, selectors: list[str]) -> dict:
         return await self.bridge.find_chat_input(selectors, tab_id=self.tab_id)
 
+    async def find_text_input(self, selectors: list[str]) -> dict:
+        return await self.bridge.find_text_input(selectors, tab_id=self.tab_id)
+
     async def set_chat_input_text(self, selectors: list[str], text: str) -> dict:
         return await self.bridge.set_chat_input_text(selectors, text, tab_id=self.tab_id)
+
+    async def set_text_input(self, selectors: list[str], text: str) -> dict:
+        return await self.bridge.set_text_input(selectors, text, tab_id=self.tab_id)
 
     async def get_chat_input_state(self, selectors: list[str]) -> dict:
         return await self.bridge.get_chat_input_state(selectors, tab_id=self.tab_id)
 
+    async def get_text_input_state(self, selectors: list[str]) -> dict:
+        return await self.bridge.get_text_input_state(selectors, tab_id=self.tab_id)
+
     async def click_chat_submit(self, selectors: list[str], *, anchor: dict | None = None) -> dict:
         return await self.bridge.click_chat_submit(selectors, tab_id=self.tab_id, anchor=anchor)
+
+    async def click_submit_button(self, selectors: list[str], *, anchor: dict | None = None) -> dict:
+        return await self.bridge.click_submit_button(selectors, tab_id=self.tab_id, anchor=anchor)
 
     async def click_at(self, x: int, y: int) -> dict:
         return await self.bridge.click_at(x, y, tab_id=self.tab_id)
@@ -155,14 +167,14 @@ class ExtensionBridge:
             if remaining <= 0:
                 raise RuntimeError(
                     f"Extension did not connect within {timeout}s. "
-                    "Make sure the extension is loaded and click 'Connect' in the popup."
+                    "Make sure Chrome is open and the FlowLens extension is loaded at chrome://extensions/."
                 )
             try:
                 await asyncio.wait_for(self._connected.wait(), remaining)
             except asyncio.TimeoutError:
                 raise RuntimeError(
                     f"Extension did not connect within {timeout}s. "
-                    "Make sure the extension is loaded and click 'Connect' in the popup."
+                    "Make sure Chrome is open and the FlowLens extension is loaded at chrome://extensions/."
                 )
 
             if not require_watch or self._capabilities.get("watch_mode") is True:
@@ -421,6 +433,10 @@ class ExtensionBridge:
         """Find the best visible chatbot input candidate in the current tab."""
         return await self.send_command("find_chat_input", self._with_tab({"selectors": selectors}, tab_id))
 
+    async def find_text_input(self, selectors: list[str], *, tab_id: int | None = None) -> dict:
+        """Find the best visible text/composer input candidate in the current tab."""
+        return await self.find_chat_input(selectors, tab_id=tab_id)
+
     async def set_chat_input_text(self, selectors: list[str], text: str, *, tab_id: int | None = None) -> dict:
         """Set chatbot input text directly through DOM-safe execution."""
         return await self.send_command(
@@ -428,9 +444,17 @@ class ExtensionBridge:
             self._with_tab({"selectors": selectors, "text": text}, tab_id),
         )
 
+    async def set_text_input(self, selectors: list[str], text: str, *, tab_id: int | None = None) -> dict:
+        """Set text into a generic composer/input using DOM-safe execution."""
+        return await self.set_chat_input_text(selectors, text, tab_id=tab_id)
+
     async def get_chat_input_state(self, selectors: list[str], *, tab_id: int | None = None) -> dict:
         """Inspect the current chat input value / focus state in a specific tab."""
         return await self.send_command("get_chat_input_state", self._with_tab({"selectors": selectors}, tab_id))
+
+    async def get_text_input_state(self, selectors: list[str], *, tab_id: int | None = None) -> dict:
+        """Inspect a generic composer/input value and focus state in a specific tab."""
+        return await self.get_chat_input_state(selectors, tab_id=tab_id)
 
     async def click_chat_submit(
         self,
@@ -444,6 +468,16 @@ class ExtensionBridge:
         if anchor:
             params["anchor"] = anchor
         return await self.send_command("click_chat_submit", self._with_tab(params, tab_id))
+
+    async def click_submit_button(
+        self,
+        selectors: list[str],
+        *,
+        tab_id: int | None = None,
+        anchor: dict | None = None,
+    ) -> dict:
+        """Click the best visible submit/send button near an input region."""
+        return await self.click_chat_submit(selectors, tab_id=tab_id, anchor=anchor)
 
     async def click_at(self, x: int, y: int, *, tab_id: int | None = None) -> dict:
         """CDP-based real mouse click at viewport coordinates."""

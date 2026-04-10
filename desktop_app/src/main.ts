@@ -1,5 +1,4 @@
 import { invoke } from "@tauri-apps/api/core";
-import { listen } from "@tauri-apps/api/event";
 import appIcon from "./app-icon.png";
 
 type HealthStatus = {
@@ -42,7 +41,7 @@ type WatchEvent = {
   actionName?: string;
 };
 
-type AppMode = "xhs" | "chatbots" | "wechat";
+type AppMode = "xhs" | "wechat";
 type XhsModelMode = "cloud" | "local9b";
 
 type State = {
@@ -54,10 +53,6 @@ type State = {
   recentTasks: TaskStub[];
   launchError: string;
   mode: AppMode;
-  chatbotsLaunching: boolean;
-  chatbotsError: string;
-  chatbotsQuestion: string;
-  chatbotsResult: TaskStub | null;
   xhsModelMode: XhsModelMode;
   wechatConversation: string;
   wechatLaunching: boolean;
@@ -72,11 +67,7 @@ const state: State = {
   prompt: "",
   recentTasks: [],
   launchError: "",
-  mode: "chatbots",
-  chatbotsLaunching: false,
-  chatbotsError: "",
-  chatbotsQuestion: "",
-  chatbotsResult: null,
+  mode: "xhs",
   xhsModelMode: "cloud",
   wechatConversation: "",
   wechatLaunching: false,
@@ -112,9 +103,6 @@ function render() {
       </header>
 
       <nav class="mode-tabs">
-        <button class="mode-tab ${state.mode === "chatbots" ? "active" : ""}" data-mode="chatbots">
-          Ask All Chatbots
-        </button>
         <button class="mode-tab ${state.mode === "wechat" ? "active" : ""}" data-mode="wechat">
           WeChat Summary
         </button>
@@ -123,51 +111,17 @@ function render() {
         </button>
       </nav>
 
-      ${state.mode === "chatbots" ? renderChatbotsMode() : state.mode === "wechat" ? renderWeChatMode() : renderXhsMode()}
+      ${state.mode === "wechat" ? renderWeChatMode() : renderXhsMode()}
     </main>
   `;
 
   bindCommonEvents(app);
 
-  if (state.mode === "chatbots") {
-    bindChatbotsEvents(app);
-  } else if (state.mode === "wechat") {
+  if (state.mode === "wechat") {
     bindWeChatEvents(app);
   } else {
     bindXhsEvents(app);
   }
-}
-
-function renderChatbotsMode(): string {
-  const launchDisabled = state.chatbotsLaunching || !state.chatbotsQuestion.trim();
-
-  return `
-    <section class="hero">
-      <div class="composer-wrap">
-        <h1>Ask ChatGPT, Gemini &amp; Claude</h1>
-
-        <form class="composer chatbot-composer-simple" id="chatbots-form">
-          <textarea
-            id="chatbots-input"
-            rows="4"
-            aria-label="Ask ChatGPT, Gemini, and Claude"
-          >${escapeHtml(state.chatbotsQuestion)}</textarea>
-
-          <div class="composer-footer">
-            <button id="ask-all" type="submit" class="start-button ask-all-button" ${launchDisabled ? "disabled" : ""}>
-              ${state.chatbotsLaunching ? "Opening..." : "Ask All"}
-            </button>
-          </div>
-        </form>
-
-        ${
-          state.chatbotsError
-            ? `<p class="inline-error">${escapeHtml(state.chatbotsError)}</p>`
-            : ""
-        }
-      </div>
-    </section>
-  `;
 }
 
 function renderWeChatMode(): string {
@@ -334,29 +288,6 @@ function bindCommonEvents(app: HTMLElement) {
   }
 }
 
-function bindChatbotsEvents(app: HTMLElement) {
-  app.querySelector<HTMLFormElement>("#chatbots-form")?.addEventListener("submit", (event) => {
-    event.preventDefault();
-    void askChatbots();
-  });
-
-  const input = app.querySelector<HTMLTextAreaElement>("#chatbots-input");
-  input?.addEventListener("input", (event) => {
-    state.chatbotsQuestion = (event.target as HTMLTextAreaElement).value;
-    syncAskButton();
-  });
-  input?.addEventListener("keydown", (event) => {
-    if ((event.metaKey || event.ctrlKey) && event.key === "Enter") {
-      event.preventDefault();
-      void askChatbots();
-    }
-  });
-
-  app.querySelector<HTMLButtonElement>("#ask-all")?.addEventListener("click", () => {
-    void askChatbots();
-  });
-}
-
 function bindWeChatEvents(app: HTMLElement) {
   const input = app.querySelector<HTMLTextAreaElement>("#wechat-conversation-input");
   input?.addEventListener("input", (event) => {
@@ -486,12 +417,6 @@ function syncWeChatStartButton() {
   button.disabled = state.wechatLaunching;
 }
 
-function syncAskButton() {
-  const button = document.querySelector<HTMLButtonElement>("#ask-all");
-  if (!button) return;
-  button.disabled = state.chatbotsLaunching || !state.chatbotsQuestion.trim();
-}
-
 async function refreshHealth() {
   state.loadingHealth = true;
   state.healthError = "";
@@ -585,32 +510,6 @@ async function startWeChatTask() {
   }
 }
 
-async function askChatbots() {
-  if (!state.chatbotsQuestion.trim() || state.chatbotsLaunching) return;
-
-  state.chatbotsLaunching = true;
-  state.chatbotsError = "";
-  state.chatbotsResult = null;
-  render();
-
-  try {
-    const task = await invoke<TaskStub>("ask_chatbots", { question: state.chatbotsQuestion.trim() });
-    applyChatbotsTask(task);
-  } catch (error) {
-    state.chatbotsError = String(error);
-  } finally {
-    state.chatbotsLaunching = false;
-    render();
-  }
-}
-
-function applyChatbotsTask(task: TaskStub) {
-  state.mode = "chatbots";
-  state.chatbotsResult = task;
-  state.chatbotsQuestion = "";
-  state.chatbotsError = "";
-}
-
 function renderTaskOutcome(task: TaskStub): string {
   const hasAssessment = typeof task.assessmentConfidence === "number";
   const assessment = hasAssessment
@@ -679,23 +578,6 @@ function renderWeChatMonitor(task: TaskStub | null): string {
   `;
 }
 
-async function initializeDesktopHooks() {
-  await listen<TaskStub>("chatbots-launch-requested", (event) => {
-    applyChatbotsTask(event.payload);
-    render();
-  });
-
-  try {
-    const latest = await invoke<TaskStub | null>("latest_chatbots_task");
-    if (latest) {
-      applyChatbotsTask(latest);
-      render();
-    }
-  } catch (error) {
-    console.warn("latest_chatbots_task failed", error);
-  }
-}
-
 function escapeHtml(text: string) {
   return text
     .replace(/&/g, "&amp;")
@@ -711,5 +593,4 @@ function escapeHtmlAttr(text: string) {
 window.addEventListener("DOMContentLoaded", () => {
   render();
   void refreshHealth();
-  void initializeDesktopHooks();
 });

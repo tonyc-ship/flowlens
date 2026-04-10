@@ -24,15 +24,16 @@ def main(argv: list[str] | None = None) -> int:
     args = parser.parse_args(argv)
 
     if args.command == "reload":
+        output_dir = Path(args.output) if args.output else None
         result = run_extension_reload_sync(
             port=args.port,
             timeout=args.timeout,
-            output_dir=Path(args.output) if args.output else None,
+            output_dir=output_dir,
         )
-        print(f"success={result.success}")
-        print(f"report={result.output_dir}/report.html")
-        if result.error:
-            print(f"error={result.error}")
+        if result.success:
+            print("Extension reloaded.")
+        else:
+            print(f"Extension reload failed: {result.error}")
         return 0 if result.success else 1
 
     parser.error(f"Unknown command: {args.command}")
