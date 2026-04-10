@@ -299,8 +299,8 @@ def _render_note_markdown(note, downloaded_images: list[tuple[int, str]]) -> str
         lines.append(f"## 图片 ({len(downloaded_images)})")
         lines.append("")
         for idx, filename in downloaded_images:
-            lines.append(f"![image {idx}](images/{filename})")
-            lines.append("")
+            lines.append(f'<img src="images/{filename}" width="280" alt="图片 {idx}"> ')
+        lines.append("")
 
     # Comments
     if note.comments:
