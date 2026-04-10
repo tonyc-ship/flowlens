@@ -2,7 +2,7 @@
 
 FlowLens is a computer use and browser use framework with lightweight local multimodal models and observation-learning loop. These designs enable a fast, stable and privacy-first CUA compared to other frameworks. FlowLens comes with a Chrome extension and a thin desktop app. Currently there are task specific knowledge for Xiaohongshu research and WeChat use.
 
-## 小红书助手
+## 📕 小红书助手
 
 FlowLens 专门沉淀了小红书站点知识，并通过 Chrome 插件连接你当前登录态下的浏览器，执行小红书调研、内容抽取和自定义 agent 任务。
 
@@ -61,13 +61,13 @@ flowlens xhs agent "找最近高互动的露营清单帖子并总结标题套路
 
 ### 结果示例
 
-<img src="docs/example_search_1.png" width="250"> <img src="docs/example_search_2.png" width="250"> <img src="docs/example_note.png" width="250">
+<img src="docs/example_search_1.png" width="260"> <img src="docs/example_search_2.png" width="260"> <img src="docs/example_note.png" width="260">
 
 ### 交流群
 
 <img src="docs/wechat_group.jpeg" width="300" alt="微信群: flowlens小红书使用">
 
-## Computer Use Agent
+## 💻 Computer Use Agent
 
 - Python 3.11+
 - Node.js + npm and Rust toolchain, only if you want the desktop app

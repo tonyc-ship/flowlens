@@ -247,8 +247,11 @@ class MediaProcessor:
     @property
     def ocr(self):
         if self._ocr is None and self.config.use_apple_ocr:
-            from .apple_ocr import AppleOCR
-            self._ocr = AppleOCR()
+            try:
+                from .apple_ocr import AppleOCR
+                self._ocr = AppleOCR()
+            except ImportError:
+                pass
         return self._ocr
 
     def ocr_image(self, img_bytes: bytes) -> str:
