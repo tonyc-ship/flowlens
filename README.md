@@ -59,7 +59,7 @@ flowlens xhs agent "找最近高互动的露营清单帖子并总结标题套路
 
 任务结果保存在 `task_runs/`，包含 `result.json`、`report.md`、截图和推理日志。
 
-### 示例
+### 结果示例
 
 <img src="docs/example_search_1.png" width="280"> <img src="docs/example_search_2.png" width="280"> <img src="docs/example_note.png" width="280">
 
