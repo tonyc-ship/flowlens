@@ -57,10 +57,17 @@ class AnalyzeScreenshotTool(Tool):
         if path is None:
             return "No screenshots found. Take a screenshot first."
 
-        b64_data = base64.b64encode(path.read_bytes()).decode()
+        img_bytes = path.read_bytes()
+        b64_data = base64.b64encode(img_bytes).decode()
 
         if self._media:
-            result = self._media.call_vision(b64_data, question, max_tokens=2048)
+            media_type = self._media.detect_media_type(img_bytes)
+            result = self._media.call_vision(
+                b64_data,
+                question,
+                media_type=media_type,
+                max_tokens=2048,
+            )
             return result
 
         return f"Vision analysis not available. Screenshot saved at: {path.name}"

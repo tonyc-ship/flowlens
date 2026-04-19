@@ -16,7 +16,6 @@ import hashlib
 import json
 import re
 import time
-from urllib.parse import quote
 from dataclasses import dataclass, field
 from pathlib import Path
 
@@ -26,7 +25,6 @@ from .capabilities import NoteExtractionPlan, plan_for_level
 from .entities import AuthorEntity, Comment, ImageInfo, NoteCard, NoteEntity, NoteType, VideoInfo, parse_count_text
 
 XHS_REFERER = "https://www.xiaohongshu.com"
-XHS_SEARCH_URL_TEMPLATE = "https://www.xiaohongshu.com/search_result?keyword={encoded_keyword}&source=web_search_result_notes"
 
 _SEARCH_INPUT_JS = r"""
 return (function() {
@@ -92,20 +90,52 @@ return (function() {
 })()
 """
 
-_CLEAR_SEARCH_INPUT_JS = r"""
-return (function() {
-  const input = document.querySelector('input#search-input, input[type="search"], input[placeholder*="搜索"], .search-input input, .search-container input');
-  if (!input) return false;
+def _set_search_input_js(query: str) -> str:
+    encoded_query = json.dumps(str(query or ""), ensure_ascii=False)
+    return f"""
+return (function() {{
+  const targetValue = {encoded_query};
+  const selectors = [
+    'input#search-input',
+    'input[type="search"]',
+    'input[placeholder*="搜索"]',
+    '.search-input input',
+    '.search-container input'
+  ];
+  const input = selectors
+    .map((selector) => document.querySelector(selector))
+    .find((el) => el instanceof HTMLElement && el.getBoundingClientRect().width >= 120);
+  if (!input) return JSON.stringify({{ok: false, error: 'search_input_not_found'}});
+
   input.focus();
-  if (typeof input.value === 'string') {
-    input.value = '';
-    input.dispatchEvent(new InputEvent('input', { bubbles: true, inputType: 'deleteContentBackward', data: '' }));
-    input.dispatchEvent(new Event('change', { bubbles: true }));
-  } else if (input.isContentEditable) {
-    input.textContent = '';
-  }
-  return true;
-})()
+  if (input instanceof HTMLInputElement || input instanceof HTMLTextAreaElement) {{
+    const proto = input instanceof HTMLTextAreaElement
+      ? HTMLTextAreaElement.prototype
+      : HTMLInputElement.prototype;
+    const descriptor = Object.getOwnPropertyDescriptor(proto, 'value');
+    if (descriptor && descriptor.set) descriptor.set.call(input, targetValue);
+    else input.value = targetValue;
+  }} else if (input.isContentEditable) {{
+    input.textContent = targetValue;
+  }} else {{
+    return JSON.stringify({{ok: false, error: 'unsupported_search_input'}});
+  }}
+
+  input.dispatchEvent(new InputEvent('input', {{
+    bubbles: true,
+    inputType: 'insertReplacementText',
+    data: targetValue,
+  }}));
+  input.dispatchEvent(new Event('change', {{ bubbles: true }}));
+
+  const actualValue = input instanceof HTMLInputElement || input instanceof HTMLTextAreaElement
+    ? input.value
+    : input.textContent;
+  return JSON.stringify({{
+    ok: String(actualValue || '').trim() === String(targetValue || '').trim(),
+    value: String(actualValue || '').trim(),
+  }});
+}})()
 """
 
 
@@ -288,10 +318,12 @@ class XHSSiteAdapter:
         url_keyword = str(state.get("url_keyword") or "").strip().lower()
         if page_state != "search_results":
             return False
-        if keyword and visible_keyword and visible_keyword != keyword:
-            return False
-        if keyword and url_keyword and url_keyword != keyword:
-            return False
+        if keyword:
+            if visible_keyword:
+                if visible_keyword != keyword:
+                    return False
+            elif url_keyword and url_keyword != keyword:
+                return False
         if state.get("loading"):
             return False
         return bool(state.get("tabs") or state.get("card_count") or state.get("has_no_results"))
@@ -321,10 +353,15 @@ class XHSSiteAdapter:
         input_pos = loc.get("input") or {}
         await self.bridge.click_at(int(input_pos.get("x", 0)), int(input_pos.get("y", 0)))
         await asyncio.sleep(0.3)
-        await self.bridge.run_js(_CLEAR_SEARCH_INPUT_JS)
+        input_result = await self._run_js_json(_set_search_input_js(query))
+        if not input_result.get("ok"):
+            return {
+                "ok": False,
+                "strategy": "manual_input_failed",
+                "input": input_result,
+                "error": "Search input did not accept the requested keyword",
+            }
         await asyncio.sleep(0.2)
-        await self.bridge.type_text(query)
-        await asyncio.sleep(0.4)
         await self.bridge.press_key("Enter")
         state = await self._wait_for_search_transition(query, timeout_s=max(1.2, min(wait_seconds, 2.0)))
         if self._search_transition_ok(state, query):
@@ -358,20 +395,6 @@ class XHSSiteAdapter:
             "error": "Manual search fallback did not transition to search_results",
         }
 
-    async def _navigate_search_url(self, query: str, *, wait_seconds: float = 2.0) -> dict:
-        url = XHS_SEARCH_URL_TEMPLATE.format(encoded_keyword=quote(str(query or "").strip(), safe=""))
-        nav = await self.bridge.navigate(url, wait_ms=max(800, int(wait_seconds * 1000)))
-        state = await self._wait_for_search_transition(query, timeout_s=max(1.0, wait_seconds))
-        return {
-            "ok": self._search_transition_ok(state, query),
-            "strategy": "direct_search_url",
-            "state": state.get("page_state", ""),
-            "searchState": state,
-            "url": await self._current_url(),
-            "navigate": nav,
-            "error": "" if self._search_transition_ok(state, query) else "Direct search URL did not stabilize",
-        }
-
     async def search_notes(
         self,
         query: str,
@@ -379,44 +402,35 @@ class XHSSiteAdapter:
         tab_label: str | None = None,
         wait_seconds: float = 4.0,
     ) -> dict:
-        t0 = time.time()
-        submit = await self._manual_search_submit(query, wait_seconds=max(wait_seconds, 1.8))
-        self.timing.record("search_submit", time.time() - t0)
+        effective_wait = max(0.8, min(float(wait_seconds or 0), 2.0))
 
+        t0 = time.time()
+        submit = await self._manual_search_submit(query, wait_seconds=effective_wait)
+        self.timing.record("search_submit", time.time() - t0)
+        state = submit.get("searchState") or await self._wait_for_search_transition(
+            query,
+            timeout_s=max(0.6, effective_wait),
+        )
+        ok = self._search_transition_ok(state, query)
+        active_submit = submit
         recovery = None
-        if not submit.get("ok"):
+
+        if not ok:
             t0 = time.time()
             recovery = await self.ext_bridge.send_command("submit_search_query", {"keyword": query})
             self.timing.record("search_recovery", time.time() - t0)
             state = recovery.get("searchState") or await self._wait_for_search_transition(
                 query,
-                timeout_s=max(0.6, min(wait_seconds, 1.8)),
+                timeout_s=max(0.6, effective_wait),
             )
-        else:
-            state = submit.get("searchState") or await self._wait_for_search_transition(
-                query,
-                timeout_s=max(0.6, min(wait_seconds, 1.8)),
-            )
-        ok = self._search_transition_ok(state, query)
-        active_submit = recovery if recovery and recovery.get("ok") else submit
-        if recovery and not ok:
-            active_submit = recovery
-        if not ok:
-            t0 = time.time()
-            direct = await self._navigate_search_url(query, wait_seconds=max(1.2, min(wait_seconds, 2.5)))
-            self.timing.record("search_direct_fallback", time.time() - t0)
-            direct_state = direct.get("searchState") or await self.get_search_page_state()
-            if self._search_transition_ok(direct_state, query):
-                ok = True
-                state = direct_state
-                active_submit = direct
-            else:
-                state = direct_state
-                active_submit = direct if direct.get("ok") else active_submit
+            ok = self._search_transition_ok(state, query)
+            active_submit = recovery if recovery and recovery.get("ok") else submit
+            if recovery and not ok:
+                active_submit = recovery
 
         tab_result = None
         if ok and tab_label and _normalize_search_tab(tab_label) != "全部":
-            tab_result = await self.open_search_tab(tab_label, wait_seconds=1.5)
+            tab_result = await self.open_search_tab(tab_label, wait_seconds=min(effective_wait, 1.2))
             state = await self.get_search_page_state()
 
         cards = await self.extract_search_cards() if ok else []

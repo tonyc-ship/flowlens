@@ -13,12 +13,15 @@ import subprocess
 import sys
 
 from .core.auth import (
+    CLOUD_PROVIDERS,
     METHOD_API_KEY,
     METHOD_OAUTH,
     PROVIDER_ANTHROPIC,
     PROVIDER_OPENAI,
+    PROVIDERS,
     available_provider_statuses,
     clear_auth_secret,
+    provider_config,
     save_auth_secret,
 )
 
@@ -93,7 +96,8 @@ def _clear_screen() -> None:
 def _status_banner() -> str:
     lines: list[str] = ["  Current credentials:\n"]
     for s in available_provider_statuses():
-        name = "Anthropic" if s.provider == PROVIDER_ANTHROPIC else "OpenAI"
+        config = provider_config(s.provider)
+        name = config.display_name if config else s.provider
         parts: list[str] = []
         if s.api_key_available:
             parts.append(f"API Key ✓ ({s.api_key_source})")
@@ -154,40 +158,36 @@ def _interactive() -> int:
         sys.stderr.write("Interactive mode requires a terminal. Use subcommands instead.\n")
         return 1
 
+    # Menu entries built dynamically from the provider registry so new
+    # providers show up without touching this function.
+    api_key_entries: list[tuple[str, str]] = [
+        (PROVIDERS[name].display_name, name) for name in CLOUD_PROVIDERS
+    ]
+
     while True:
         banner = _status_banner()
-        options = [
-            "Set Anthropic API Key",
-            "Set OpenAI API Key",
-            "Login with OpenAI OAuth (opens browser, requires codex CLI)",
-            "Clear a credential",
-            "Exit",
-        ]
+        options: list[str] = [f"Set {label} API Key" for label, _ in api_key_entries]
+        options.append("Login with OpenAI OAuth (opens browser, requires codex CLI)")
+        options.append("Clear a credential")
+        options.append("Exit")
+
         choice = _pick("What would you like to do?", options, show_status=banner)
 
         if choice is None or choice == len(options) - 1:
             _clear_screen()
             return 0
 
-        if choice == 0:
-            key = _prompt_api_key("Anthropic")
+        if choice < len(api_key_entries):
+            label, provider = api_key_entries[choice]
+            key = _prompt_api_key(label)
             if key:
-                save_auth_secret(PROVIDER_ANTHROPIC, METHOD_API_KEY, key)
+                save_auth_secret(provider, METHOD_API_KEY, key)
                 _clear_screen()
-                sys.stderr.write("\n  ✓ Anthropic API Key saved.\n")
+                sys.stderr.write(f"\n  ✓ {label} API Key saved.\n")
                 sys.stderr.flush()
                 _wait_enter()
 
-        elif choice == 1:
-            key = _prompt_api_key("OpenAI")
-            if key:
-                save_auth_secret(PROVIDER_OPENAI, METHOD_API_KEY, key)
-                _clear_screen()
-                sys.stderr.write("\n  ✓ OpenAI API Key saved.\n")
-                sys.stderr.flush()
-                _wait_enter()
-
-        elif choice == 2:
+        elif choice == len(api_key_entries):
             ok = _run_codex_oauth()
             _clear_screen()
             if ok:
@@ -197,13 +197,13 @@ def _interactive() -> int:
             sys.stderr.flush()
             _wait_enter()
 
-        elif choice == 3:
-            creds = [
-                ("Anthropic API Key", PROVIDER_ANTHROPIC, METHOD_API_KEY),
-                ("OpenAI API Key", PROVIDER_OPENAI, METHOD_API_KEY),
-                ("OpenAI OAuth token", PROVIDER_OPENAI, METHOD_OAUTH),
-                "Back",
+        elif choice == len(api_key_entries) + 1:
+            creds: list[tuple[str, str, str] | str] = [
+                (f"{PROVIDERS[name].display_name} API Key", name, METHOD_API_KEY)
+                for name in CLOUD_PROVIDERS
             ]
+            creds.append(("OpenAI OAuth token", PROVIDER_OPENAI, METHOD_OAUTH))
+            creds.append("Back")
             labels = [c[0] if isinstance(c, tuple) else c for c in creds]
             pick = _pick("Which credential to clear?", labels)
             if pick is not None and pick < len(creds) - 1:
@@ -238,12 +238,14 @@ def build_parser() -> argparse.ArgumentParser:
 
     subparsers.add_parser("status", help="Show discovered Anthropic / OpenAI credentials.")
 
+    provider_choices = list(CLOUD_PROVIDERS)
+
     login = subparsers.add_parser("login", help="Open the official provider login flow when available.")
-    login.add_argument("provider", choices=[PROVIDER_ANTHROPIC, PROVIDER_OPENAI])
+    login.add_argument("provider", choices=provider_choices)
     login.add_argument("method", choices=[METHOD_API_KEY, METHOD_OAUTH])
 
     set_parser = subparsers.add_parser("set", help="Persist a credential into ~/.flowlens/auth.json.")
-    set_parser.add_argument("provider", choices=[PROVIDER_ANTHROPIC, PROVIDER_OPENAI])
+    set_parser.add_argument("provider", choices=provider_choices)
     set_parser.add_argument("method", choices=[METHOD_API_KEY, METHOD_OAUTH])
     set_parser.add_argument(
         "--value",
@@ -252,7 +254,7 @@ def build_parser() -> argparse.ArgumentParser:
     )
 
     clear_parser = subparsers.add_parser("clear", help="Remove a stored credential from ~/.flowlens/auth.json.")
-    clear_parser.add_argument("provider", choices=[PROVIDER_ANTHROPIC, PROVIDER_OPENAI])
+    clear_parser.add_argument("provider", choices=provider_choices)
     clear_parser.add_argument("method", choices=[METHOD_API_KEY, METHOD_OAUTH])
 
     return parser
@@ -282,8 +284,18 @@ def _run_login(provider: str, method: str) -> int:
         return 0
     if provider == PROVIDER_ANTHROPIC and method == METHOD_OAUTH:
         return subprocess.call(["claude", "auth", "login"])
-    print("Use `flowlens auth set anthropic api_key` or write ANTHROPIC_API_KEY into `.env.local`.")
-    return 0
+
+    # All other providers (including Chinese vendors) only support api_key.
+    config = provider_config(provider)
+    if config is not None:
+        hint = config.env_var_hint or f"{provider.upper()}_API_KEY"
+        print(
+            f"{config.display_name} only supports API keys. "
+            f"Use `flowlens auth set {provider} api_key` or set ${hint}."
+        )
+        return 0
+    print(f"Unknown provider: {provider}")
+    return 2
 
 
 def _set_secret(provider: str, method: str, value: str) -> int:

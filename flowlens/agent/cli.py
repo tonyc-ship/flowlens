@@ -4,7 +4,6 @@ from __future__ import annotations
 
 import argparse
 import asyncio
-import sys
 
 from ..core.auth import default_cloud_model
 
@@ -28,9 +27,16 @@ def main(argv: list[str] | None = None) -> int:
     )
     parser.add_argument(
         "--backend",
-        choices=["anthropic", "openai", "qwen-local", "ui-tars-local"],
+        choices=[
+            "anthropic", "openai",
+            "deepseek", "kimi", "qwen",
+            "qwen-local", "ui-tars-local",
+        ],
         default=None,
-        help="LLM backend override: anthropic, openai, qwen-local, or ui-tars-local",
+        help=(
+            "LLM backend override. Hosted: anthropic, openai, deepseek, kimi, qwen. "
+            "Local MLX: qwen-local, ui-tars-local."
+        ),
     )
     parser.add_argument(
         "--run-dir",
@@ -47,10 +53,8 @@ def main(argv: list[str] | None = None) -> int:
         model = "qwen-local"
     elif args.backend == "ui-tars-local":
         model = "ui-tars-local"
-    elif args.backend == "openai":
-        model = default_cloud_model(provider="openai")
-    elif args.backend == "anthropic":
-        model = default_cloud_model(provider="anthropic")
+    elif args.backend in {"anthropic", "openai", "deepseek", "kimi", "qwen"}:
+        model = default_cloud_model(provider=args.backend)
     else:
         model = default_cloud_model()
 

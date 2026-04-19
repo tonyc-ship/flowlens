@@ -33,7 +33,7 @@ const sidePanelPortWindows = new Map();
 let watchMode = false;
 let watchStartTime = Date.now();
 let watchLog = [];
-const WATCH_LOG_MAX = 500;
+const WATCH_LOG_MAX = 0; // 0 means keep the full task history for the overlay.
 
 function targetTabId() {
   return pinnedTabId || activeTabId;
@@ -69,6 +69,10 @@ function withTimeout(promise, timeoutMs, label = 'debugger operation') {
   ]);
 }
 
+function sleep(ms) {
+  return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
 async function withTabDebugger(tabId, work, timeoutMs = 5000) {
   return enqueueDebuggerTask(tabId, async () => {
     const target = { tabId };
@@ -79,6 +83,37 @@ async function withTabDebugger(tabId, work, timeoutMs = 5000) {
       try { await chrome.debugger.detach(target); } catch {}
     }
   });
+}
+
+async function setCaptureOverlayHidden(tabId, hidden) {
+  if (!tabId) return;
+  try {
+    await chrome.tabs.sendMessage(tabId, { type: 'flowlens_capture_overlay', hidden });
+  } catch {}
+  try {
+    await chrome.scripting.executeScript({
+      target: { tabId },
+      func: (shouldHide) => {
+        const ids = ['flowlens-watch-overlay', 'flowlens-watch-root'];
+        ids.forEach((id) => {
+          const el = document.getElementById(id);
+          if (!el) return;
+          if (shouldHide) {
+            if (el.dataset.flowlensCaptureDisplay === undefined) {
+              el.dataset.flowlensCaptureDisplay = el.style.display || '';
+            }
+            el.style.display = 'none';
+          } else if (el.dataset.flowlensCaptureDisplay !== undefined) {
+            el.style.display = el.dataset.flowlensCaptureDisplay;
+            delete el.dataset.flowlensCaptureDisplay;
+          } else {
+            el.style.display = '';
+          }
+        });
+      },
+      args: [hidden],
+    });
+  } catch {}
 }
 
 // ── Watch Mode Helpers ────────────────────────────────────────
@@ -137,7 +172,7 @@ function broadcastWatch(data) {
   if (data.timestamp === undefined) data.timestamp = watchElapsed();
 
   watchLog.push(data);
-  if (watchLog.length > WATCH_LOG_MAX) watchLog.shift();
+  if (WATCH_LOG_MAX > 0 && watchLog.length > WATCH_LOG_MAX) watchLog.shift();
   broadcastSidePanel({ type: 'watch_event', data });
   broadcastOverlay({ type: 'watch_event', data });
   broadcastStatus();
@@ -508,40 +543,52 @@ async function captureScreenshot(params = {}) {
   const quality = params.quality || 70;
   const format = params.format || 'jpeg';
   const tabId = commandTabId(params);
+  const shouldHideOverlay = params.includeOverlay !== true;
 
-  // Method 1: CDP via chrome.debugger (most reliable in MV3)
-  if (tabId) {
-    try {
-      const debugResult = await withTabDebugger(tabId, async (target) => {
-        const result = await chrome.debugger.sendCommand(
-          target,
-          'Page.captureScreenshot',
-          { format, quality, optimizeForSpeed: true }
-        );
-        if (result && result.data) {
-          const mimeType = format === 'png' ? 'image/png' : 'image/jpeg';
-          return { screenshot: `data:${mimeType};base64,${result.data}` };
-        }
-        return null;
-      });
-      if (debugResult) return debugResult;
-    } catch (attachErr) {
-      console.error('[BG] debugger.attach failed:', attachErr.message);
-      return { screenshot: '', error: `Debugger screenshot failed for tab ${tabId}: ${attachErr.message}` };
-    }
+  if (tabId && shouldHideOverlay) {
+    await setCaptureOverlayHidden(tabId, true);
+    await sleep(80);
   }
 
-  // Method 2: captureVisibleTab fallback
   try {
-    const tab = tabId ? await chrome.tabs.get(tabId) : null;
-    const dataUrl = await chrome.tabs.captureVisibleTab(
-      tab?.windowId || chrome.windows.WINDOW_ID_CURRENT,
-      { format, quality }
-    );
-    return { screenshot: dataUrl };
-  } catch (err) {
-    console.error('[BG] captureVisibleTab fallback failed:', err.message);
-    return { screenshot: '', error: `Screenshot failed: ${err.message}` };
+    // Method 1: CDP via chrome.debugger (most reliable in MV3)
+    if (tabId) {
+      try {
+        const debugResult = await withTabDebugger(tabId, async (target) => {
+          const result = await chrome.debugger.sendCommand(
+            target,
+            'Page.captureScreenshot',
+            { format, quality, optimizeForSpeed: true }
+          );
+          if (result && result.data) {
+            const mimeType = format === 'png' ? 'image/png' : 'image/jpeg';
+            return { screenshot: `data:${mimeType};base64,${result.data}` };
+          }
+          return null;
+        });
+        if (debugResult) return debugResult;
+      } catch (attachErr) {
+        console.error('[BG] debugger.attach failed:', attachErr.message);
+        return { screenshot: '', error: `Debugger screenshot failed for tab ${tabId}: ${attachErr.message}` };
+      }
+    }
+
+    // Method 2: captureVisibleTab fallback
+    try {
+      const tab = tabId ? await chrome.tabs.get(tabId) : null;
+      const dataUrl = await chrome.tabs.captureVisibleTab(
+        tab?.windowId || chrome.windows.WINDOW_ID_CURRENT,
+        { format, quality }
+      );
+      return { screenshot: dataUrl };
+    } catch (err) {
+      console.error('[BG] captureVisibleTab fallback failed:', err.message);
+      return { screenshot: '', error: `Screenshot failed: ${err.message}` };
+    }
+  } finally {
+    if (tabId && shouldHideOverlay) {
+      await setCaptureOverlayHidden(tabId, false);
+    }
   }
 }
 

@@ -98,10 +98,8 @@ def _backend_to_model(backend: str) -> str:
         return "qwen-local"
     if backend == "ui-tars-local":
         return "ui-tars-local"
-    if backend == "openai":
-        return default_cloud_model(provider="openai")
-    if backend == "anthropic":
-        return default_cloud_model(provider="anthropic")
+    if backend in {"anthropic", "openai", "deepseek", "kimi", "qwen"}:
+        return default_cloud_model(provider=backend)
     return default_cloud_model()
 
 
@@ -191,7 +189,11 @@ def main(argv: list[str] | None = None) -> int:
     run_parser.add_argument("--port", type=int, default=8765, help="Extension websocket port.")
     run_parser.add_argument(
         "--llm-backend",
-        choices=["sonnet", "anthropic", "openai", "qwen-local", "ui-tars-local"],
+        choices=[
+            "sonnet", "anthropic", "openai",
+            "deepseek", "kimi", "qwen",
+            "qwen-local", "ui-tars-local",
+        ],
         default="sonnet",
         help="Reasoning/vision backend for the agent loop.",
     )

@@ -385,8 +385,8 @@ class RunSiteActionTool(Tool):
                 },
                 "wait_seconds": {
                     "type": "number",
-                    "description": "Wait after search/open actions.",
-                    "default": 3,
+                    "description": "Wait after search/open actions. Keep this <= 2 unless retrying.",
+                    "default": 1.5,
                 },
                 "close_after": {
                     "type": "boolean",
@@ -421,7 +421,11 @@ class RunSiteActionTool(Tool):
         }
 
     async def execute(self, params: dict, ctx: ToolContext) -> str:
+        action = str(params["action"])
         site_name = await _detect_current_site(self._bridge)
+        if site_name != "xiaohongshu" and action == "search_notes":
+            await self._bridge.navigate("https://www.xiaohongshu.com/explore", wait_ms=1500)
+            site_name = await _detect_current_site(self._bridge)
         if site_name != "xiaohongshu":
             return (
                 f"Unsupported site for run_site_action: {site_name or 'unknown'} "
@@ -429,8 +433,7 @@ class RunSiteActionTool(Tool):
             )
 
         adapter = _make_xhs_adapter(self._bridge, self._ext_bridge, self._media, ctx)
-        action = str(params["action"])
-        wait_seconds = float(params.get("wait_seconds", 3) or 0)
+        wait_seconds = min(max(float(params.get("wait_seconds", 1.5) or 0), 0.0), 2.0)
 
         if action == "search_notes":
             query = str(params.get("query", "")).strip()
@@ -475,10 +478,15 @@ class RunSiteActionTool(Tool):
                 include_comments=params.get("include_comments"),
                 include_media=params.get("include_media"),
                 open_wait_seconds=max(wait_seconds, 0),
-                close_after=bool(params.get("close_after", False)),
+                close_after=False,
             )
             saved = await self._bridge.save_screenshot(screenshot_path)
             note.screenshot_path = Path(saved).name if saved else ""
+            if bool(params.get("close_after", False)):
+                try:
+                    await adapter.close_note()
+                except Exception:
+                    pass
             payload = {
                 "site": site_name,
                 "action": action,
@@ -568,8 +576,8 @@ class XHSTopicScanTool(Tool):
                 },
                 "wait_seconds": {
                     "type": "number",
-                    "description": "Wait after navigation/search/open actions.",
-                    "default": 3,
+                    "description": "Wait after navigation/search/open actions. Keep this <= 2 unless retrying.",
+                    "default": 1.5,
                 },
             },
             "required": ["query"],
@@ -577,6 +585,9 @@ class XHSTopicScanTool(Tool):
 
     async def execute(self, params: dict, ctx: ToolContext) -> str:
         site_name = await _detect_current_site(self._bridge)
+        if site_name != "xiaohongshu":
+            await self._bridge.navigate("https://www.xiaohongshu.com/explore", wait_ms=1500)
+            site_name = await _detect_current_site(self._bridge)
         if site_name != "xiaohongshu":
             return (
                 f"Unsupported site for xhs_topic_scan: {site_name or 'unknown'} "
@@ -588,7 +599,7 @@ class XHSTopicScanTool(Tool):
             return "xhs_topic_scan requires query."
 
         adapter = _make_xhs_adapter(self._bridge, self._ext_bridge, self._media, ctx)
-        wait_seconds = float(params.get("wait_seconds", 3) or 0)
+        wait_seconds = min(max(float(params.get("wait_seconds", 1.5) or 0), 0.0), 2.0)
         max_deep = max(0, int(params.get("max_deep_notes", 2)))
         max_lite = max(0, int(params.get("max_lite_notes", 4)))
         total_limit = max_deep + max_lite

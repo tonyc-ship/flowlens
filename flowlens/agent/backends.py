@@ -13,10 +13,15 @@ from abc import ABC, abstractmethod
 from dataclasses import dataclass, field
 
 from ..core.auth import (
+    API_STYLE_OPENAI_COMPAT,
     METHOD_API_KEY,
     PROVIDER_ANTHROPIC,
+    PROVIDER_DEEPSEEK,
+    PROVIDER_KIMI,
     PROVIDER_OPENAI,
+    PROVIDER_QWEN,
     default_model_for_provider,
+    provider_config,
     resolve_model_provider,
     resolve_provider_auth,
 )
@@ -162,9 +167,9 @@ class Backend(ABC):
 class AnthropicBackend(Backend):
     """Backend using the Anthropic Messages API."""
 
-    def __init__(self, model: str = "claude-sonnet-4-6"):
+    def __init__(self, model: str | None = None):
         import anthropic
-        self.model = model
+        self.model = model or default_model_for_provider(PROVIDER_ANTHROPIC)
         credential = resolve_provider_auth(PROVIDER_ANTHROPIC)
         kwargs = {}
         if credential is not None:
@@ -408,6 +413,292 @@ class OpenAIBackend(Backend):
                 }
             )
         return {"role": "user", "content": content}
+
+
+class OpenAICompatibleBackend(Backend):
+    """Backend for any OpenAI-compatible ``/v1/chat/completions`` endpoint.
+
+    Used by Chinese hosted vendors (DeepSeek, Moonshot/Kimi, Alibaba Qwen /
+    DashScope) which all expose OpenAI-compatible APIs with function calling.
+
+    Subclasses preset the provider's ``base_url`` and default model so adding a
+    new vendor usually means 3 lines: ``PROVIDER_*``, a :class:`ProviderConfig`
+    entry in ``flowlens.core.auth``, and a subclass here.
+    """
+
+    PROVIDER: str = ""
+    PRESERVE_REASONING_CONTENT = False
+
+    def __init__(self, model: str | None = None, provider: str | None = None):
+        from openai import OpenAI
+
+        provider_name = provider or self.PROVIDER
+        config = provider_config(provider_name)
+        if config is None:
+            raise ValueError(f"Unknown OpenAI-compatible provider: {provider_name!r}")
+
+        self.provider = config.name
+        self.model = model or default_model_for_provider(self.provider)
+
+        credential = resolve_provider_auth(self.provider)
+        if credential is None or not credential.secret:
+            hint = config.env_var_hint or f"{self.provider.upper()}_API_KEY"
+            raise RuntimeError(
+                f"No API key found for {config.display_name}. "
+                f"Set ${hint} or run `flowlens auth set {self.provider} api_key`."
+            )
+
+        client_kwargs: dict = {"api_key": credential.secret}
+        if config.base_url:
+            client_kwargs["base_url"] = config.base_url
+        self.client = OpenAI(**client_kwargs)
+
+    @staticmethod
+    def _tool_to_schema(tool: dict) -> dict:
+        return {
+            "type": "function",
+            "function": {
+                "name": tool["name"],
+                "description": tool.get("description", ""),
+                "parameters": tool.get("input_schema") or {"type": "object", "properties": {}},
+            },
+        }
+
+    @staticmethod
+    def _blocks_to_text(blocks: list[dict]) -> str:
+        parts: list[str] = []
+        for block in blocks:
+            if not isinstance(block, dict):
+                continue
+            btype = block.get("type")
+            if btype == "text":
+                parts.append(str(block.get("text", "")))
+            elif btype == "image":
+                parts.append("[image omitted — use analyze_screenshot to inspect visually]")
+        return "\n\n".join(p for p in parts if p).strip() or "(empty)"
+
+    @staticmethod
+    def _message_extra_value(message: object, key: str) -> object:
+        value = getattr(message, key, None)
+        if value is not None:
+            return value
+        extra = getattr(message, "model_extra", None)
+        if isinstance(extra, dict):
+            return extra.get(key)
+        return None
+
+    def _request_extra_body(self, *, has_tools: bool) -> dict:
+        return {}
+
+    def _message_to_chat(self, message: dict) -> list[dict]:
+        """Convert the agent loop's message dicts into chat.completions format."""
+        role = str(message.get("role") or "user")
+        content = message.get("content")
+
+        if role == "assistant":
+            # content is the list we produced in format_assistant_content
+            text_parts: list[str] = []
+            tool_calls: list[dict] = []
+            reasoning_content: str | None = None
+            if isinstance(content, list):
+                for item in content:
+                    if not isinstance(item, dict):
+                        continue
+                    if item.get("type") == "text":
+                        text_parts.append(str(item.get("text", "")))
+                    elif item.get("type") == "reasoning_content":
+                        reasoning_content = str(item.get("text") or "")
+                    elif item.get("type") == "tool_use":
+                        tool_calls.append({
+                            "id": str(item.get("id") or ""),
+                            "type": "function",
+                            "function": {
+                                "name": str(item.get("name") or ""),
+                                "arguments": json.dumps(item.get("input") or {}, ensure_ascii=False),
+                            },
+                        })
+            elif isinstance(content, str):
+                text_parts.append(content)
+
+            msg: dict = {"role": "assistant"}
+            text_joined = "\n".join(p for p in text_parts if p).strip()
+            msg["content"] = text_joined or None
+            if tool_calls:
+                msg["tool_calls"] = tool_calls
+            if self.PRESERVE_REASONING_CONTENT and tool_calls:
+                msg["reasoning_content"] = reasoning_content or ""
+            return [msg]
+
+        if role == "user":
+            # User content may be plain text (task) or a list including tool_result blocks.
+            if isinstance(content, str):
+                text = content.strip()
+                return [{"role": "user", "content": text}] if text else []
+
+            if isinstance(content, list):
+                tool_messages: list[dict] = []
+                text_parts: list[str] = []
+                for item in content:
+                    if not isinstance(item, dict):
+                        continue
+                    if item.get("type") == "tool_result":
+                        result_blocks = item.get("content") or []
+                        if not isinstance(result_blocks, list):
+                            result_blocks = [{"type": "text", "text": str(result_blocks)}]
+                        tool_messages.append({
+                            "role": "tool",
+                            "tool_call_id": str(item.get("tool_use_id") or ""),
+                            "content": self._blocks_to_text(result_blocks),
+                        })
+                    elif item.get("type") == "text":
+                        text_parts.append(str(item.get("text", "")))
+                result: list[dict] = list(tool_messages)
+                joined = "\n".join(p for p in text_parts if p).strip()
+                if joined:
+                    result.append({"role": "user", "content": joined})
+                return result
+
+        return []
+
+    def create_message(
+        self,
+        *,
+        system: str,
+        messages: list[dict],
+        tools: list[dict],
+        max_tokens: int = 8192,
+    ) -> LLMResponse:
+        chat_messages: list[dict] = [{"role": "system", "content": system}]
+        for message in messages:
+            chat_messages.extend(self._message_to_chat(message))
+
+        chat_tools = [self._tool_to_schema(tool) for tool in tools]
+        request: dict = {
+            "model": self.model,
+            "messages": chat_messages,
+            "max_tokens": max_tokens,
+        }
+        if chat_tools:
+            request["tools"] = chat_tools
+            request["tool_choice"] = "auto"
+        extra_body = self._request_extra_body(has_tools=bool(chat_tools))
+        if extra_body:
+            request["extra_body"] = extra_body
+
+        response = self.client.chat.completions.create(**request)
+        choice = response.choices[0]
+        message = choice.message
+        reasoning_content = self._message_extra_value(message, "reasoning_content")
+
+        text_blocks: list[str] = []
+        if getattr(message, "content", None):
+            text_blocks.append(str(message.content))
+
+        tool_calls: list[ToolCall] = []
+        raw_tool_calls = getattr(message, "tool_calls", None) or []
+        for tc in raw_tool_calls:
+            fn = getattr(tc, "function", None)
+            name = str(getattr(fn, "name", "") or "")
+            raw_args = str(getattr(fn, "arguments", "") or "{}")
+            try:
+                parsed_args = json.loads(raw_args)
+            except json.JSONDecodeError:
+                parsed_args = {}
+            call_id = str(getattr(tc, "id", "") or uuid.uuid4().hex)
+            tool_calls.append(ToolCall(
+                id=call_id,
+                name=name,
+                input=parsed_args if isinstance(parsed_args, dict) else {},
+            ))
+
+        finish = str(choice.finish_reason or "")
+        if finish == "tool_calls":
+            stop_reason = "tool_use"
+        elif finish == "length":
+            stop_reason = "max_tokens"
+        else:
+            stop_reason = "end_turn"
+
+        usage = getattr(response, "usage", None)
+        return LLMResponse(
+            text_blocks=text_blocks,
+            tool_calls=tool_calls,
+            stop_reason=stop_reason,
+            input_tokens=int(getattr(usage, "prompt_tokens", 0) or 0),
+            output_tokens=int(getattr(usage, "completion_tokens", 0) or 0),
+            raw={"response": response, "reasoning_content": reasoning_content},
+        )
+
+    def format_assistant_content(self, response: LLMResponse) -> object:
+        content: list[dict] = []
+        raw = response.raw if isinstance(response.raw, dict) else {}
+        if self.PRESERVE_REASONING_CONTENT and raw.get("reasoning_content") is not None:
+            content.append({
+                "type": "reasoning_content",
+                "text": str(raw["reasoning_content"] or ""),
+            })
+        for text in response.text_blocks:
+            truncated = _truncate_assistant_text(text)
+            if truncated:
+                content.append({"type": "text", "text": truncated})
+        for tc in response.tool_calls:
+            content.append({
+                "type": "tool_use",
+                "id": tc.id,
+                "name": tc.name,
+                "input": tc.input,
+            })
+        return content
+
+    def format_tool_results(
+        self,
+        tool_calls: list[ToolCall],
+        results: list[list[dict]],
+    ) -> dict:
+        content = []
+        for tc, result_blocks in zip(tool_calls, results):
+            content.append({
+                "type": "tool_result",
+                "tool_use_id": tc.id,
+                "content": _summarize_result_blocks_for_history(result_blocks),
+            })
+        return {"role": "user", "content": content}
+
+
+class DeepSeekBackend(OpenAICompatibleBackend):
+    """DeepSeek (https://api.deepseek.com) — deepseek-chat / deepseek-reasoner."""
+
+    PROVIDER = PROVIDER_DEEPSEEK
+
+
+class KimiBackend(OpenAICompatibleBackend):
+    """Moonshot AI / Kimi (https://api.moonshot.cn) — kimi-k2 and moonshot-v1 family."""
+
+    PROVIDER = PROVIDER_KIMI
+    PRESERVE_REASONING_CONTENT = True
+
+    def _request_extra_body(self, *, has_tools: bool) -> dict:
+        if not has_tools:
+            return {}
+        if self.model.startswith("kimi-k2.5"):
+            return {"thinking": {"type": "disabled"}}
+        return {}
+
+
+class QwenBackend(OpenAICompatibleBackend):
+    """Alibaba Tongyi Qianwen / DashScope OpenAI-compatible endpoint."""
+
+    PROVIDER = PROVIDER_QWEN
+    PRESERVE_REASONING_CONTENT = True
+
+    def _request_extra_body(self, *, has_tools: bool) -> dict:
+        if not has_tools:
+            return {}
+        # DashScope enables Qwen thinking on some models by default. With tools,
+        # its validator then requires reasoning_content in every assistant
+        # tool-call history message. The browser agent does not need hidden
+        # reasoning for mechanical tool turns, so disable it for tool requests.
+        return {"enable_thinking": False}
 
 
 class LocalBackend(Backend):
@@ -720,14 +1011,42 @@ class LocalBackend(Backend):
         return {"role": "user", "content": "\n\n".join(parts)}
 
 
+_OPENAI_COMPAT_BACKENDS: dict[str, type[OpenAICompatibleBackend]] = {
+    PROVIDER_DEEPSEEK: DeepSeekBackend,
+    PROVIDER_KIMI: KimiBackend,
+    PROVIDER_QWEN: QwenBackend,
+}
+
+
 def create_backend(model: str) -> Backend:
-    """Factory: create the appropriate backend for a model identifier."""
-    if model == "ui-tars-local" or model.startswith("UI-TARS"):
-        model_name = model if model != "ui-tars-local" else "UI-TARS-1.5-7B-6bit"
+    """Factory: create the appropriate backend for a model identifier.
+
+    Dispatch order:
+    1. Local aliases (``qwen-local`` / ``ui-tars-local``) and capitalized MLX
+       model names (``Qwen*`` / ``UI-TARS*``) → :class:`LocalBackend`.
+    2. Everything else is routed via :func:`resolve_model_provider`, which
+       matches the model against ``PROVIDERS[...].model_prefixes``. The
+       matched provider's ``api_style`` picks the backend class.
+    """
+    normalized = str(model or "").strip()
+
+    if normalized == "ui-tars-local" or normalized.startswith("UI-TARS"):
+        model_name = normalized if normalized != "ui-tars-local" else "UI-TARS-1.5-7B-6bit"
         return LocalBackend(model_name=model_name)
-    if model == "qwen-local" or model.startswith("Qwen"):
-        model_name = model if model != "qwen-local" else "Qwen3.5-9B-MLX-4bit"
+    if normalized == "qwen-local" or normalized.startswith("Qwen"):
+        model_name = normalized if normalized != "qwen-local" else "Qwen3.5-9B-MLX-4bit"
         return LocalBackend(model_name=model_name)
-    if resolve_model_provider(model) == PROVIDER_OPENAI:
-        return OpenAIBackend(model=model)
-    return AnthropicBackend(model=model)
+
+    provider = resolve_model_provider(normalized)
+    config = provider_config(provider)
+
+    if config is not None and config.api_style == API_STYLE_OPENAI_COMPAT:
+        cls = _OPENAI_COMPAT_BACKENDS.get(provider)
+        if cls is None:
+            raise ValueError(f"No backend class registered for provider {provider!r}")
+        return cls(model=normalized or None)
+
+    if provider == PROVIDER_OPENAI:
+        return OpenAIBackend(model=normalized or None)
+
+    return AnthropicBackend(model=normalized or default_model_for_provider(PROVIDER_ANTHROPIC))

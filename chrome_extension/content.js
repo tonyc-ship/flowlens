@@ -61,15 +61,15 @@ function watchHighlightElement(el) {
 
 // ── Watch Mode: In-Page Overlay ───────────────────────────────
 
-const WATCH_OVERLAY_MAX_ENTRIES = 10;
 let watchOverlayHost = null;
 let watchOverlayShadow = null;
 let watchOverlayFeed = null;
 let watchOverlayDot = null;
 let watchOverlayStatusText = null;
-let watchOverlayCount = null;
 let watchOverlayEntries = [];
 let watchOverlayStartTime = Date.now();
+let watchOverlayTaskText = '';
+let watchOverlayAutoScroll = true;
 
 function ensureWatchOverlay() {
   if (watchOverlayHost) return watchOverlayHost;
@@ -98,10 +98,10 @@ function ensureWatchOverlay() {
       overflow: hidden;
       border: 1px solid rgba(99, 102, 241, 0.24);
       border-radius: 14px;
-      background: rgba(14, 17, 24, 0.92);
-      backdrop-filter: blur(16px);
+      background: rgba(14, 17, 24, 0.68);
+      backdrop-filter: blur(10px);
       color: #e5e7eb;
-      box-shadow: 0 20px 60px rgba(0, 0, 0, 0.35);
+      box-shadow: 0 20px 60px rgba(0, 0, 0, 0.24);
       font-family: -apple-system, BlinkMacSystemFont, "SF Pro Text", "Helvetica Neue", sans-serif;
     }
     .header {
@@ -110,7 +110,7 @@ function ensureWatchOverlay() {
       gap: 10px;
       padding: 10px 12px;
       border-bottom: 1px solid rgba(148, 163, 184, 0.14);
-      background: linear-gradient(180deg, rgba(30, 41, 59, 0.65), rgba(15, 23, 42, 0.35));
+      background: rgba(15, 23, 42, 0.48);
     }
     .title {
       font-size: 12px;
@@ -121,7 +121,8 @@ function ensureWatchOverlay() {
     .subtitle {
       margin-top: 2px;
       font-size: 11px;
-      color: #94a3b8;
+      color: rgba(203, 213, 225, 0.9);
+      word-break: break-word;
     }
     .grow { flex: 1; min-width: 0; }
     .dot {
@@ -136,14 +137,9 @@ function ensureWatchOverlay() {
       background: #34d399;
       box-shadow: 0 0 10px rgba(52, 211, 153, 0.75);
     }
-    .count {
-      font-size: 10px;
-      color: #64748b;
-      flex-shrink: 0;
-    }
     .toggle {
       border: 0;
-      background: rgba(30, 41, 59, 0.8);
+      background: rgba(30, 41, 59, 0.58);
       color: #cbd5e1;
       border-radius: 999px;
       width: 26px;
@@ -160,6 +156,7 @@ function ensureWatchOverlay() {
       overflow-y: auto;
       padding: 10px 12px 12px;
       max-height: 360px;
+      overscroll-behavior: contain;
     }
     .feed.hidden { display: none; }
     .feed::-webkit-scrollbar { width: 6px; }
@@ -171,7 +168,7 @@ function ensureWatchOverlay() {
       border-radius: 10px;
       padding: 8px 10px;
       border: 1px solid rgba(148, 163, 184, 0.08);
-      background: rgba(15, 23, 42, 0.6);
+      background: rgba(15, 23, 42, 0.48);
     }
     .entry-head {
       display: flex;
@@ -222,10 +219,9 @@ function ensureWatchOverlay() {
     <div class="header">
       <span class="dot" id="cvWatchDot"></span>
       <div class="grow">
-        <div class="title">FlowLens Live</div>
+        <div class="title">FlowLens Agent Status</div>
         <div class="subtitle" id="cvWatchStatus">Waiting for agent activity...</div>
       </div>
-      <span class="count" id="cvWatchCount">0 events</span>
       <button class="toggle" id="cvWatchToggle" title="Collapse">−</button>
     </div>
     <div class="feed" id="cvWatchFeed">
@@ -237,12 +233,14 @@ function ensureWatchOverlay() {
   watchOverlayFeed = watchOverlayShadow.getElementById('cvWatchFeed');
   watchOverlayDot = watchOverlayShadow.getElementById('cvWatchDot');
   watchOverlayStatusText = watchOverlayShadow.getElementById('cvWatchStatus');
-  watchOverlayCount = watchOverlayShadow.getElementById('cvWatchCount');
 
   const toggle = watchOverlayShadow.getElementById('cvWatchToggle');
   toggle.addEventListener('click', () => {
     const hidden = watchOverlayFeed.classList.toggle('hidden');
     toggle.textContent = hidden ? '+' : '−';
+  });
+  watchOverlayFeed.addEventListener('scroll', () => {
+    watchOverlayAutoScroll = watchOverlayFeed.scrollHeight - watchOverlayFeed.scrollTop - watchOverlayFeed.clientHeight < 48;
   });
 
   return watchOverlayHost;
@@ -257,6 +255,27 @@ function hideWatchOverlay() {
 function showWatchOverlay() {
   ensureWatchOverlay();
   watchOverlayHost.style.display = '';
+}
+
+function setWatchOverlayCaptureHidden(hidden) {
+  const hosts = [
+    watchOverlayHost,
+    document.getElementById('flowlens-watch-overlay'),
+    document.getElementById('flowlens-watch-root'),
+  ].filter(Boolean);
+  hosts.forEach((host) => {
+    if (hidden) {
+      if (host.dataset.flowlensCaptureDisplay === undefined) {
+        host.dataset.flowlensCaptureDisplay = host.style.display || '';
+      }
+      host.style.display = 'none';
+    } else if (host.dataset.flowlensCaptureDisplay !== undefined) {
+      host.style.display = host.dataset.flowlensCaptureDisplay;
+      delete host.dataset.flowlensCaptureDisplay;
+    } else {
+      host.style.display = '';
+    }
+  });
 }
 
 function watchOverlayTime(ts) {
@@ -277,39 +296,136 @@ function watchOverlaySummary(entry) {
   ).trim();
 }
 
+function escapeWatchHtml(value) {
+  const node = document.createElement('div');
+  node.textContent = String(value || '');
+  return node.innerHTML;
+}
+
+function isXhsWatchContext() {
+  return /(^|\.)xiaohongshu\.com$/i.test(window.location.hostname);
+}
+
+const WATCH_KIND_LABELS_ZH = {
+  think: '思考',
+  command: '指令',
+  action: '操作',
+  result: '结果',
+  click: '点击',
+  extract: '提取',
+  warning: '警告',
+  error: '错误',
+  info: '信息',
+  session: '会话',
+};
+
+const WATCH_ACTION_LABELS_ZH = {
+  start: '开始任务',
+  turn: '执行轮次',
+  thinking: '思考总结',
+  tool: '调用工具',
+  navigate: '打开页面',
+  go_back: '返回上一页',
+  click_at: '点击坐标',
+  click_card: '打开笔记卡片',
+  click_note_by_id: '打开指定笔记',
+  click_note_link: '打开笔记链接',
+  click_search_tab: '切换搜索分类',
+  submit_search_query: '提交搜索关键词',
+  extract_search_cards: '读取搜索结果',
+  extract_note_content: '读取笔记内容',
+  extract_comments: '读取评论',
+  extract_profile_info: '读取作者主页',
+  extract_profile_notes: '读取作者笔记',
+  collect_carousel_images: '收集笔记图片',
+  detect_state: '识别页面状态',
+  get_search_page_state: '检查搜索状态',
+  scroll_page: '滚动页面',
+  scroll_note: '滚动笔记',
+  press_key: '按键操作',
+  type_text: '输入文字',
+  run_js: '执行页面脚本',
+  get_tab_info: '读取标签页信息',
+  create_background_window: '创建任务窗口',
+  create_watch_window: '打开状态栏',
+  xhs_topic_scan: '小红书话题扫描',
+  run_site_action: '小红书页面操作',
+  extract_site_entity: '提取小红书页面信息',
+};
+
+function watchKindLabel(kind) {
+  if (!isXhsWatchContext()) return String(kind || 'info').toUpperCase();
+  return WATCH_KIND_LABELS_ZH[kind] || String(kind || '信息');
+}
+
+function watchActionLabel(entry) {
+  const raw = String(entry.action || entry.phase || 'update');
+  if (!isXhsWatchContext()) return raw;
+  const lower = raw.toLowerCase();
+  if (lower === 'turn') {
+    const match = String(entry.message || '').match(/Turn\s+(\d+)\/(\d+)/i);
+    return match ? `第 ${match[1]}/${match[2]} 轮` : '执行轮次';
+  }
+  if (entry.phase === 'tool' && entry.action) {
+    return WATCH_ACTION_LABELS_ZH[lower] || `调用工具：${entry.action}`;
+  }
+  return WATCH_ACTION_LABELS_ZH[lower] || raw;
+}
+
+function taskTextFromEntry(entry) {
+  const message = String(entry?.message || '').trim();
+  if (!message) return '';
+  if (entry?.phase === 'start' || /^Task started:/i.test(message)) {
+    return message.replace(/^Task started:\s*/i, '').trim();
+  }
+  return '';
+}
+
+function updateWatchTaskFromEntry(entry) {
+  const taskText = taskTextFromEntry(entry);
+  if (taskText) {
+    watchOverlayTaskText = `问题：${taskText}`;
+    if (watchOverlayStatusText) {
+      watchOverlayStatusText.textContent = watchOverlayTaskText;
+    }
+  }
+}
+
 function renderWatchOverlay() {
   ensureWatchOverlay();
-  watchOverlayCount.textContent = `${watchOverlayEntries.length} events`;
   if (!watchOverlayEntries.length) {
     watchOverlayFeed.innerHTML = '<div class="empty">Waiting for agent activity...</div>';
     return;
   }
 
+  const previousScrollTop = watchOverlayFeed.scrollTop;
   watchOverlayFeed.innerHTML = watchOverlayEntries.map((entry) => {
-    const kind = String(entry.kind || 'info').toUpperCase();
-    const action = String(entry.action || entry.phase || 'update');
+    const kind = String(entry.kind || 'info');
+    const action = watchActionLabel(entry);
     const message = watchOverlaySummary(entry);
     return `
       <div class="entry">
         <div class="entry-head">
-          <span class="entry-kind">${kind}</span>
+          <span class="entry-kind">${escapeWatchHtml(watchKindLabel(kind))}</span>
           <span class="entry-time">${watchOverlayTime(entry.timestamp)}</span>
         </div>
-        <div class="entry-action">${action}</div>
-        <div class="entry-message">${message || 'No details yet.'}</div>
+        <div class="entry-action">${escapeWatchHtml(action)}</div>
+        <div class="entry-message">${escapeWatchHtml(message || 'No details yet.')}</div>
       </div>
     `;
   }).join('');
-  watchOverlayFeed.scrollTop = watchOverlayFeed.scrollHeight;
+  if (watchOverlayAutoScroll) {
+    watchOverlayFeed.scrollTop = watchOverlayFeed.scrollHeight;
+  } else {
+    watchOverlayFeed.scrollTop = previousScrollTop;
+  }
 }
 
 function updateWatchOverlayStatus(status) {
   ensureWatchOverlay();
   const active = !!status?.watchMode;
   watchOverlayDot.classList.toggle('on', active);
-  watchOverlayStatusText.textContent = active
-    ? `Watching tab ${status?.pinnedTabId || status?.activeTabId || ''}`.trim()
-    : 'Watch mode idle';
+  watchOverlayStatusText.textContent = watchOverlayTaskText || (active ? '任务运行中' : '任务空闲');
   if (active) {
     showWatchOverlay();
   } else if (!watchOverlayEntries.length) {
@@ -320,8 +436,10 @@ function updateWatchOverlayStatus(status) {
 function setWatchOverlayState(payload) {
   watchOverlayStartTime = payload?.startTime || Date.now();
   watchOverlayEntries = Array.isArray(payload?.entries)
-    ? payload.entries.slice(-WATCH_OVERLAY_MAX_ENTRIES)
+    ? payload.entries.slice()
     : [];
+  const startEntry = watchOverlayEntries.find((entry) => taskTextFromEntry(entry));
+  if (startEntry) updateWatchTaskFromEntry(startEntry);
   if (payload?.status) {
     updateWatchOverlayStatus(payload.status);
   } else {
@@ -335,10 +453,8 @@ function appendWatchOverlayEntry(entry) {
   if (entry.timestamp === undefined) {
     entry.timestamp = Math.max(0, (Date.now() - watchOverlayStartTime) / 1000);
   }
+  updateWatchTaskFromEntry(entry);
   watchOverlayEntries.push(entry);
-  if (watchOverlayEntries.length > WATCH_OVERLAY_MAX_ENTRIES) {
-    watchOverlayEntries = watchOverlayEntries.slice(-WATCH_OVERLAY_MAX_ENTRIES);
-  }
   showWatchOverlay();
   renderWatchOverlay();
 }
@@ -797,12 +913,16 @@ async function submitSearchQuery(keyword) {
     const normalizedKeyword = String(targetKeyword || '').trim().toLowerCase();
     const visibleKeyword = String(state.input_keyword || '').trim().toLowerCase();
     const urlKeyword = String(state.url_keyword || '').trim().toLowerCase();
-    const visibleMatches = !normalizedKeyword || visibleKeyword === normalizedKeyword;
-    const urlMatches = !normalizedKeyword || !urlKeyword || urlKeyword === normalizedKeyword;
+    let keywordMatches = true;
+    if (normalizedKeyword) {
+      keywordMatches = visibleKeyword
+        ? visibleKeyword === normalizedKeyword
+        : (!urlKeyword || urlKeyword === normalizedKeyword);
+    }
     const isSearchResults = state.page_state === 'search_results';
     const hasSearchSurface = state.tabs.length > 0 || state.has_no_results || state.card_count > 0;
     return {
-      ok: isSearchResults && visibleMatches && urlMatches && hasSearchSurface && !state.loading,
+      ok: isSearchResults && keywordMatches && hasSearchSurface && !state.loading,
       state,
       url: window.location.href,
     };
@@ -1723,6 +1843,12 @@ connectKeepalive();
 chrome.runtime.sendMessage({ type: 'content_ready', url: window.location.href });
 
 chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
+  if (msg.type === 'flowlens_capture_overlay') {
+    setWatchOverlayCaptureHidden(!!msg.hidden);
+    try { sendResponse({ ok: true }); } catch {}
+    return;
+  }
+
   if (msg.type === 'watch_highlight') {
     if (msg.mode === 'coords') {
       const overlay = document.createElement('div');

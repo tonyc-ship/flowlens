@@ -32,8 +32,12 @@ import anthropic
 from ..core.auth import (
     METHOD_API_KEY,
     PROVIDER_ANTHROPIC,
+    PROVIDER_DEEPSEEK,
+    PROVIDER_KIMI,
     PROVIDER_OPENAI,
+    PROVIDER_QWEN,
     default_model_for_provider,
+    provider_config,
     resolve_model_provider,
     resolve_provider_auth,
 )
@@ -44,6 +48,9 @@ logger = logging.getLogger(__name__)
 DEFAULT_MODEL = "claude-sonnet-4-6"
 BACKEND_SONNET = "sonnet"
 BACKEND_OPENAI = "openai"
+BACKEND_DEEPSEEK = "deepseek"
+BACKEND_KIMI = "kimi"
+BACKEND_QWEN_CLOUD = "qwen"
 BACKEND_QWEN_LOCAL = "qwen-local"
 BACKEND_UI_TARS_LOCAL = "ui-tars-local"
 DEFAULT_WHISPER_MODEL = "large-v3-turbo"
@@ -55,9 +62,15 @@ def _resolve_backend(explicit: str | None = None) -> str:
     val = val.strip().lower()
     if val in (BACKEND_OPENAI, "gpt", "openai"):
         return BACKEND_OPENAI
+    if val in (BACKEND_DEEPSEEK, "deepseek"):
+        return BACKEND_DEEPSEEK
+    if val in (BACKEND_KIMI, "moonshot", "kimi"):
+        return BACKEND_KIMI
+    if val in (BACKEND_QWEN_CLOUD, "dashscope"):
+        return BACKEND_QWEN_CLOUD
     if val in (BACKEND_UI_TARS_LOCAL, "ui-tars", "uitars", "uitars-local"):
         return BACKEND_UI_TARS_LOCAL
-    if val in (BACKEND_QWEN_LOCAL, "qwen", "local"):
+    if val in (BACKEND_QWEN_LOCAL, "qwen-local", "local"):
         return BACKEND_QWEN_LOCAL
     return BACKEND_SONNET
 
@@ -84,6 +97,12 @@ class MediaProcessor:
         model_provider = resolve_model_provider(model) if model else ""
         if inferred_backend == BACKEND_SONNET and model_provider == PROVIDER_OPENAI:
             inferred_backend = BACKEND_OPENAI
+        elif inferred_backend == BACKEND_SONNET and model_provider == PROVIDER_DEEPSEEK:
+            inferred_backend = BACKEND_DEEPSEEK
+        elif inferred_backend == BACKEND_SONNET and model_provider == PROVIDER_KIMI:
+            inferred_backend = BACKEND_KIMI
+        elif inferred_backend == BACKEND_SONNET and model_provider == PROVIDER_QWEN:
+            inferred_backend = BACKEND_QWEN_CLOUD
         elif inferred_backend == BACKEND_SONNET and model_provider == "local":
             if model == "ui-tars-local" or model.startswith("UI-TARS"):
                 inferred_backend = BACKEND_UI_TARS_LOCAL
@@ -93,6 +112,15 @@ class MediaProcessor:
         if inferred_backend == BACKEND_OPENAI:
             if not model or model == DEFAULT_MODEL or resolve_model_provider(model) != PROVIDER_OPENAI:
                 model = default_model_for_provider(PROVIDER_OPENAI)
+        elif inferred_backend == BACKEND_DEEPSEEK:
+            if not model or model == DEFAULT_MODEL or resolve_model_provider(model) != PROVIDER_DEEPSEEK:
+                model = default_model_for_provider(PROVIDER_DEEPSEEK)
+        elif inferred_backend == BACKEND_KIMI:
+            if not model or model == DEFAULT_MODEL or resolve_model_provider(model) != PROVIDER_KIMI:
+                model = default_model_for_provider(PROVIDER_KIMI)
+        elif inferred_backend == BACKEND_QWEN_CLOUD:
+            if not model or model == DEFAULT_MODEL or resolve_model_provider(model) != PROVIDER_QWEN:
+                model = default_model_for_provider(PROVIDER_QWEN)
         elif inferred_backend == BACKEND_SONNET:
             if not model or resolve_model_provider(model) == PROVIDER_OPENAI:
                 model = default_model_for_provider(PROVIDER_ANTHROPIC)
@@ -101,6 +129,7 @@ class MediaProcessor:
         self.backend = inferred_backend
         self._anthropic_client = None
         self._openai_client = None
+        self._openai_compat_client = None
         self._local_llm = None
         self._ocr = None
         self._transcriber = None
@@ -132,6 +161,52 @@ class MediaProcessor:
                 kwargs["api_key"] = credential.secret
             self._openai_client = OpenAI(**kwargs)
         return self._openai_client
+
+    @property
+    def openai_compat_client(self):
+        """Lazy OpenAI-compatible client for hosted vendors."""
+        if self._openai_compat_client is None:
+            from openai import OpenAI
+
+            provider = {
+                BACKEND_DEEPSEEK: PROVIDER_DEEPSEEK,
+                BACKEND_KIMI: PROVIDER_KIMI,
+                BACKEND_QWEN_CLOUD: PROVIDER_QWEN,
+            }.get(self.backend)
+            if not provider:
+                raise RuntimeError(f"No OpenAI-compatible provider for media backend {self.backend!r}")
+
+            config = provider_config(provider)
+            credential = resolve_provider_auth(provider)
+            kwargs = {}
+            if credential is not None:
+                kwargs["api_key"] = credential.secret
+            if config and config.base_url:
+                kwargs["base_url"] = config.base_url
+            self._openai_compat_client = OpenAI(**kwargs)
+        return self._openai_compat_client
+
+    def _openai_compat_extra_body(self) -> dict:
+        if self.backend == BACKEND_KIMI and self.config.model.startswith("kimi-k2.5"):
+            return {"thinking": {"type": "disabled"}}
+        if self.backend == BACKEND_QWEN_CLOUD:
+            return {"enable_thinking": False}
+        return {}
+
+    @staticmethod
+    def _chat_message_text(message) -> str:
+        content = getattr(message, "content", "")
+        if isinstance(content, str):
+            return content
+        if isinstance(content, list):
+            parts = []
+            for item in content:
+                if isinstance(item, dict):
+                    parts.append(str(item.get("text") or item.get("content") or ""))
+                else:
+                    parts.append(str(item))
+            return "\n".join(part for part in parts if part)
+        return str(content or "")
 
     @property
     def local_llm(self):
@@ -173,6 +248,17 @@ class MediaProcessor:
                 max_output_tokens=max_tokens,
             )
             result = resp.output_text
+        elif self.backend in {BACKEND_DEEPSEEK, BACKEND_KIMI, BACKEND_QWEN_CLOUD}:
+            request = {
+                "model": self.config.model,
+                "messages": [{"role": "user", "content": prompt}],
+                "max_tokens": max_tokens,
+            }
+            extra_body = self._openai_compat_extra_body()
+            if extra_body:
+                request["extra_body"] = extra_body
+            resp = self.openai_compat_client.chat.completions.create(**request)
+            result = self._chat_message_text(resp.choices[0].message)
         else:
             resp = self.client.messages.create(
                 model=self.config.model,
@@ -224,6 +310,30 @@ class MediaProcessor:
                 }],
             )
             result = resp.output_text
+        elif self.backend in {BACKEND_KIMI, BACKEND_QWEN_CLOUD}:
+            request = {
+                "model": self.config.model,
+                "max_tokens": max_tokens,
+                "messages": [{
+                    "role": "user",
+                    "content": [
+                        {"type": "text", "text": prompt},
+                        {
+                            "type": "image_url",
+                            "image_url": {
+                                "url": f"data:{media_type};base64,{image_b64}",
+                            },
+                        },
+                    ],
+                }],
+            }
+            extra_body = self._openai_compat_extra_body()
+            if extra_body:
+                request["extra_body"] = extra_body
+            resp = self.openai_compat_client.chat.completions.create(**request)
+            result = self._chat_message_text(resp.choices[0].message)
+        elif self.backend == BACKEND_DEEPSEEK:
+            result = "Vision analysis not available for the DeepSeek media backend."
         else:
             resp = self.client.messages.create(
                 model=self.config.model,

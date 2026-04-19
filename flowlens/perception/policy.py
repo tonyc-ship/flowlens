@@ -7,6 +7,9 @@ from dataclasses import dataclass
 
 BACKEND_CLOUD = "sonnet"
 BACKEND_OPENAI = "openai"
+BACKEND_DEEPSEEK = "deepseek"
+BACKEND_KIMI = "kimi"
+BACKEND_QWEN_CLOUD = "qwen"
 BACKEND_LOCAL = "qwen-local"
 BACKEND_UI_TARS_LOCAL = "ui-tars-local"
 
@@ -15,9 +18,16 @@ def normalize_backend_choice(value: str | None) -> str:
     normalized = str(value or "").strip().lower()
     if normalized in {"openai", "gpt", "gpt-5", "gpt-5.4"}:
         return BACKEND_OPENAI
+    if normalized in {"deepseek"}:
+        return BACKEND_DEEPSEEK
+    if normalized in {"kimi", "moonshot"}:
+        return BACKEND_KIMI
+    # "qwen" (lowercase, cloud DashScope); local MLX uses "qwen-local".
+    if normalized == "qwen":
+        return BACKEND_QWEN_CLOUD
     if normalized in {"ui-tars", "uitars", "ui-tars-local", "uitars-local"}:
         return BACKEND_UI_TARS_LOCAL
-    if normalized in {"local", "qwen", "qwen-local"}:
+    if normalized in {"local", "qwen-local"}:
         return BACKEND_LOCAL
     return BACKEND_CLOUD
 
@@ -54,6 +64,28 @@ class TaskModelPolicy:
                 reasoning_backend=BACKEND_OPENAI,
                 vision_backend=BACKEND_OPENAI,
                 label="OpenAI GPT",
+            )
+        if backend == BACKEND_DEEPSEEK:
+            # DeepSeek is text-only; use Sonnet for vision/OCR fallback.
+            return cls(
+                mode="cloud",
+                reasoning_backend=BACKEND_DEEPSEEK,
+                vision_backend=BACKEND_CLOUD,
+                label="DeepSeek (Sonnet vision)",
+            )
+        if backend == BACKEND_KIMI:
+            return cls(
+                mode="cloud",
+                reasoning_backend=BACKEND_KIMI,
+                vision_backend=BACKEND_KIMI,
+                label="Kimi",
+            )
+        if backend == BACKEND_QWEN_CLOUD:
+            return cls(
+                mode="cloud",
+                reasoning_backend=BACKEND_QWEN_CLOUD,
+                vision_backend=BACKEND_QWEN_CLOUD,
+                label="Qwen DashScope",
             )
         return cls(
             mode="cloud",

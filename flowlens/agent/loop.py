@@ -15,16 +15,19 @@ from __future__ import annotations
 import asyncio
 import json
 import os
+import re
 import time
 from datetime import datetime
 from pathlib import Path
 
 from ..core.bridge import ExtensionBridge, TabBridge, ensure_extension_connection
-from ..core.auth import PROVIDER_OPENAI, resolve_model_provider
+from ..core.auth import PROVIDER_KIMI, PROVIDER_OPENAI, PROVIDER_QWEN, resolve_model_provider
 from ..core.process_metrics import append_jsonl, system_resource_snapshot
 from ..knowledge.loader import detect_site, get_knowledge_for_url
 from ..perception.media import (
     BACKEND_OPENAI,
+    BACKEND_KIMI,
+    BACKEND_QWEN_CLOUD,
     BACKEND_QWEN_LOCAL,
     BACKEND_SONNET,
     BACKEND_UI_TARS_LOCAL,
@@ -34,7 +37,7 @@ from ..perception.media import (
     MediaProcessor,
 )
 from ..perception.local_llm import DEFAULT_LOCAL_IMAGE_MAX_DIM, LocalLLM
-from .backends import Backend, create_backend
+from .backends import create_backend
 from .tool import Tool, ToolContext
 from .tools.browser import make_browser_tools
 from .tools.vision import AnalyzeScreenshotTool, OcrScreenshotTool
@@ -51,16 +54,15 @@ tools to accomplish tasks on websites.
 
 ## How to work
 
-1. **Plan first**: Before acting, briefly state your plan for the overall task. \
-Break the task into logical steps. Revise the plan as you learn more.
-2. **Observe**: Take a screenshot and prefer site-specific extractors when they exist. Screenshots are saved to disk; if you need visual understanding, call `analyze_screenshot` or `ocr_screenshot`. Use read_page only when there is no site-specific extractor for the current need or when you need exact coordinates for a manual fallback.
+1. **Plan briefly**: Keep planning terse and action-oriented.
+2. **Observe efficiently**: Prefer site-specific extractors/macros when they exist. Take generic screenshots only when no site-specific tool can answer the question or when you need to debug a failed action.
 3. **Act**: Execute one action, then observe the result.
 4. **Verify**: After important actions, take a screenshot to confirm they worked.
 5. **Report**: When done, write a comprehensive, detailed report.
 
 ## Important rules
 
-- Always take a screenshot at the start to see the current page.
+- Do not take a generic starting screenshot when the task names a supported site and a site-specific tool can start the workflow.
 - **Before manual clicking on generic pages**: Use read_page to find exact \
 element coordinates. Do NOT guess coordinates from screenshots alone — use the \
 (x,y) coordinates from read_page elements, clicking at the center of the \
@@ -74,8 +76,7 @@ already on the relevant page state. Use raw `extract_page_data` only for \
 low-level actions and DOM-only helpers.
 - When site knowledge marks a command as PREFERRED, use that command before \
 trying read_page + click/type fallbacks.
-- Use the wait tool between actions to add natural delays (2-5 seconds). \
-This is critical for avoiding anti-bot detection.
+- Do not use standalone `wait` when a site-specific action already has a `wait_seconds` parameter. Keep waits short unless recovering from an error.
 - If something goes wrong, take a screenshot to diagnose before retrying.
 - If search results show "没找到相关内容" or similar empty state, wait 5-10 \
 seconds and try again with a simpler query. This is usually anti-bot throttling.
@@ -134,14 +135,30 @@ def _text_summary(content_blocks: list[dict], max_len: int = 500) -> str:
     return " | ".join(parts)[:max_len]
 
 
+def _markdown_alt(text: str) -> str:
+    return re.sub(r"[\[\]\n\r]+", " ", str(text or "")).strip()[:80] or "笔记截图"
+
+
+def _log_excerpt(text: str, max_len: int = 200) -> str:
+    text = str(text or "").replace("\n", "\\n").strip()
+    if len(text) <= max_len:
+        return text
+    return text[:max_len] + "... [truncated]"
+
+
 def _make_media_for_model(model: str) -> MediaProcessor:
     normalized = str(model or DEFAULT_MODEL).strip()
     if normalized == "ui-tars-local" or normalized.startswith("UI-TARS"):
         return MediaProcessor(MediaConfig(backend=BACKEND_UI_TARS_LOCAL, model=normalized))
     if normalized == "qwen-local" or normalized.startswith("Qwen"):
         return MediaProcessor(MediaConfig(backend=BACKEND_QWEN_LOCAL, model=normalized))
-    if resolve_model_provider(normalized) == PROVIDER_OPENAI:
+    provider = resolve_model_provider(normalized)
+    if provider == PROVIDER_OPENAI:
         return MediaProcessor(MediaConfig(backend=BACKEND_OPENAI, model=normalized))
+    if provider == PROVIDER_KIMI:
+        return MediaProcessor(MediaConfig(backend=BACKEND_KIMI, model=normalized))
+    if provider == PROVIDER_QWEN:
+        return MediaProcessor(MediaConfig(backend=BACKEND_QWEN_CLOUD, model=normalized))
     return MediaProcessor(MediaConfig(backend=BACKEND_SONNET, model=normalized or DEFAULT_MODEL))
 
 
@@ -151,8 +168,13 @@ def _infer_media_backend(model_name: str) -> str:
         return BACKEND_UI_TARS_LOCAL
     if normalized == "qwen-local" or normalized.startswith("Qwen"):
         return BACKEND_QWEN_LOCAL
-    if resolve_model_provider(normalized) == PROVIDER_OPENAI:
+    provider = resolve_model_provider(normalized)
+    if provider == PROVIDER_OPENAI:
         return BACKEND_OPENAI
+    if provider == PROVIDER_KIMI:
+        return BACKEND_KIMI
+    if provider == PROVIDER_QWEN:
+        return BACKEND_QWEN_CLOUD
     return BACKEND_SONNET
 
 
@@ -189,6 +211,9 @@ def _make_site_media_for_model(model: str) -> MediaProcessor:
             )
         )
 
+    if resolve_model_provider(normalized) in {PROVIDER_OPENAI, PROVIDER_KIMI, PROVIDER_QWEN}:
+        return _make_media_for_model(model)
+
     preferred_local_model = "Qwen3.5-0.8B-8bit"
     if LocalLLM.is_available(preferred_local_model):
         return MediaProcessor(
@@ -207,6 +232,11 @@ def _task_is_topic_research(task: str) -> bool:
     return "task type: topic_research" in lowered or "话题研究" in task
 
 
+def _task_targets_xhs(task: str) -> bool:
+    lowered = str(task or "").lower()
+    return "小红书" in task or "xiaohongshu" in lowered or "xhs" in lowered
+
+
 def _recent_manual_fallback_allowed(messages: list[dict]) -> bool:
     recent = messages[-6:]
     for msg in recent:
@@ -218,9 +248,17 @@ def _recent_manual_fallback_allowed(messages: list[dict]) -> bool:
 
 
 def _dynamic_extra_instructions(task: str, site_name: str | None, page_state: str | None) -> str:
-    if site_name != "xiaohongshu":
+    if site_name != "xiaohongshu" and not _task_targets_xhs(task):
         return ""
     parts = []
+    if _task_targets_xhs(task):
+        parts.append(
+            "For Xiaohongshu research tasks, start with `xhs_topic_scan(query=...)` "
+            "when it is available; otherwise navigate to Xiaohongshu and call "
+            "`run_site_action(action='search_notes', query=...)`. Do not take a "
+            "generic initial screenshot, do not analyze a screenshot before the "
+            "first search, and never search for `小红书网页版` unless the user explicitly asks for that phrase."
+        )
     if page_state in {"homepage", "search_results"}:
         parts.append(
             "On Xiaohongshu homepage/search pages, prefer `run_site_action(search_notes)` "
@@ -233,6 +271,11 @@ def _dynamic_extra_instructions(task: str, site_name: str | None, page_state: st
             "For topic research, search first, inspect the visible cards, and then open the most relevant notes "
             "one by one with `run_site_action(action='read_note', ...)`."
         )
+    parts.append(
+        "In the final Xiaohongshu report, embed each useful note screenshot using "
+        "`![note title](screenshot_filename.png)`. Treat screenshots as primary evidence because direct "
+        "Xiaohongshu links are often blocked or rate-limited."
+    )
     return "\n".join(parts)
 
 
@@ -248,23 +291,31 @@ def _select_active_tools(
         return tools
 
     manual_allowed = _recent_manual_fallback_allowed(messages)
-    active_names = {"navigate", "go_back", "screenshot", "scroll", "wait"}
+    active_names = {"navigate", "go_back"}
 
-    if page_state in {"homepage", "search_results"}:
+    if page_state in {None, "", "homepage", "search_results"}:
         active_names.update({"extract_page_data", "run_site_action", "extract_site_entity", "xhs_topic_scan"})
-        active_names.update({"analyze_screenshot", "ocr_screenshot"})
+        if page_state == "search_results":
+            active_names.add("scroll")
         if manual_allowed:
-            active_names.update({"click", "type_text", "press_key", "read_page", "run_javascript"})
+            active_names.update({
+                "click", "type_text", "press_key", "read_page", "run_javascript",
+                "screenshot", "analyze_screenshot", "ocr_screenshot", "wait",
+            })
     elif page_state == "note_detail":
         active_names.update({"extract_page_data", "run_site_action", "extract_site_entity"})
-        active_names.update({"analyze_screenshot", "ocr_screenshot"})
         if manual_allowed:
-            active_names.update({"click", "read_page", "run_javascript"})
+            active_names.update({
+                "click", "read_page", "run_javascript",
+                "screenshot", "analyze_screenshot", "ocr_screenshot", "wait",
+            })
     elif page_state == "profile_page":
         active_names.update({"extract_page_data", "run_site_action", "extract_site_entity", "xhs_topic_scan"})
-        active_names.update({"analyze_screenshot", "ocr_screenshot"})
         if manual_allowed:
-            active_names.update({"click", "read_page", "run_javascript"})
+            active_names.update({
+                "click", "read_page", "run_javascript",
+                "screenshot", "analyze_screenshot", "ocr_screenshot", "wait",
+            })
     else:
         return tools
 
@@ -295,6 +346,7 @@ async def run_agent(
     max_turns: int = 30,
     model: str = "claude-sonnet-4-6",
     extra_instructions: str = "",
+    start_url: str | None = None,
     media=None,
     log_callback=None,
 ) -> dict:
@@ -344,9 +396,10 @@ async def run_agent(
     agent_tab_id = None
     if isinstance(bridge, ExtensionBridge):
         try:
-            win = await bridge.create_background_window(
-                url="about:blank", focused=False
+            initial_url = start_url or (
+                "https://www.xiaohongshu.com/explore" if _task_targets_xhs(task) else "about:blank"
             )
+            win = await bridge.create_background_window(url=initial_url, focused=False)
             agent_window_id = win.get("windowId")
             agent_tab_id = win.get("tabId")
             log("window", f"Created agent window {agent_window_id}, tab {agent_tab_id}")
@@ -590,7 +643,7 @@ async def _agent_loop(
         thinking_texts = []
         visible_texts = []
         for text in text_blocks:
-            log("text", text[:200])
+            log("text", _log_excerpt(text))
             if text.startswith("[Thinking] "):
                 thinking = text[len("[Thinking] "):]
                 thinking_texts.append(thinking)
@@ -753,6 +806,11 @@ async def _agent_loop(
     total_duration = round(time.time() - task_start_time, 2)
     resource_entry("task_end", turn_number=turn, extra={"total_duration_s": total_duration})
 
+    # Collect site result artifacts before rendering the final markdown so we can
+    # add reliable local screenshot evidence even when the model omits it.
+    site_results = _collect_site_results(run_dir)
+    final_text = _append_missing_note_screenshots(final_text, site_results)
+
     # Save final report
     report_path = run_dir / "report.md"
     report_path.write_text(final_text, encoding="utf-8")
@@ -763,9 +821,6 @@ async def _agent_loop(
     with open(reasoning_log_path, "w", encoding="utf-8") as f:
         for entry in reasoning_log:
             f.write(json.dumps(entry, ensure_ascii=False) + "\n")
-
-    # Collect site result artifacts (notes, search cards, etc.) from tool runs
-    site_results = _collect_site_results(run_dir)
 
     # Save summary metadata
     log_path = run_dir / "agent_log.json"
@@ -868,3 +923,87 @@ def _summarize_resources(resource_snapshots: list[dict]) -> dict:
         "max_current_process_rss_mb": round(max_current_rss, 2),
         "max_observer_rss_mb": round(max_observer_rss, 2),
     }
+
+
+def _append_missing_note_screenshots(report: str, site_results: list[dict]) -> str:
+    """Ensure XHS reports include local note screenshots as visual evidence."""
+    used_targets = set(re.findall(r"!\[[^\]]*\]\(([^)]+)\)", report or ""))
+    used_note_keys: set[str] = set()
+    items: list[dict] = []
+    entities: list[dict] = []
+
+    def note_key(entity: dict) -> str:
+        note_id = str(entity.get("note_id") or "").strip()
+        if note_id:
+            return f"id:{note_id}"
+        url = str(entity.get("url") or entity.get("resolved_url") or "").strip()
+        match = re.search(r"xiaohongshu\.com/(?:explore|discovery/item)/([^/?#]+)", url)
+        if match:
+            return f"id:{match.group(1)}"
+        if url:
+            return f"url:{url.split('#', 1)[0]}"
+        title = str(entity.get("title") or "").strip().lower()
+        author = str(entity.get("author") or "").strip().lower()
+        return f"title:{title}|author:{author}" if title and author else ""
+
+    def collect_entity(entity: dict):
+        if entity.get("screenshot"):
+            entities.append(entity)
+
+    for result in site_results:
+        entity = result.get("entity")
+        if isinstance(entity, dict):
+            collect_entity(entity)
+        notes = result.get("notes")
+        if isinstance(notes, list):
+            for note in notes:
+                note_entity = note.get("entity") if isinstance(note, dict) else None
+                if isinstance(note_entity, dict):
+                    collect_entity(note_entity)
+
+    for entity in entities:
+        screenshot = str(entity.get("screenshot") or "").strip()
+        key = note_key(entity)
+        if screenshot in used_targets and key:
+            used_note_keys.add(key)
+
+    def add_entity(entity: dict):
+        screenshot = str(entity.get("screenshot") or "").strip()
+        if not screenshot or screenshot in used_targets:
+            return
+        key = note_key(entity)
+        if key and key in used_note_keys:
+            return
+        items.append({
+            "screenshot": screenshot,
+            "title": entity.get("title") or entity.get("note_id") or "笔记截图",
+            "author": entity.get("author") or "",
+            "url": entity.get("url") or entity.get("resolved_url") or "",
+        })
+        used_targets.add(screenshot)
+        if key:
+            used_note_keys.add(key)
+
+    for entity in entities:
+        add_entity(entity)
+
+    if not items:
+        return report
+
+    lines = [
+        "",
+        "## 笔记截图索引",
+        "",
+        "小红书直链经常被风控或限流，下面保留本次搜索过程中打开过的笔记截图，方便离线快速核对。",
+        "",
+    ]
+    for item in items:
+        title = str(item["title"] or "笔记截图")
+        meta = f" - {item['author']}" if item.get("author") else ""
+        lines.append(f"### {title}{meta}")
+        lines.append(f"![{_markdown_alt(title)}]({item['screenshot']})")
+        if item.get("url"):
+            lines.append(f"[笔记链接]({item['url']})")
+        lines.append("")
+
+    return (report or "").rstrip() + "\n" + "\n".join(lines).rstrip() + "\n"

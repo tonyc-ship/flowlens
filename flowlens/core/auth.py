@@ -1,4 +1,9 @@
-"""Credential discovery and model selection for hosted LLM providers."""
+"""Credential discovery and model selection for hosted LLM providers.
+
+Providers are described by :class:`ProviderConfig` entries in ``PROVIDERS``.
+Adding a new hosted model vendor usually means adding one entry there plus a
+matching backend class — no other file in this module needs to change.
+"""
 
 from __future__ import annotations
 
@@ -12,10 +17,23 @@ from pathlib import Path
 from .runtime import load_runtime_env
 
 
+# ---------------------------------------------------------------------------
+# Provider registry
+# ---------------------------------------------------------------------------
+
 PROVIDER_ANTHROPIC = "anthropic"
 PROVIDER_OPENAI = "openai"
+PROVIDER_DEEPSEEK = "deepseek"
+PROVIDER_KIMI = "kimi"
+PROVIDER_QWEN = "qwen"
+
 METHOD_API_KEY = "api_key"
 METHOD_OAUTH = "oauth"
+
+# API styles supported by the agent backends.
+API_STYLE_ANTHROPIC = "anthropic"            # Anthropic Messages API
+API_STYLE_OPENAI_RESPONSES = "openai_responses"  # OpenAI Responses API
+API_STYLE_OPENAI_COMPAT = "openai_compat"    # Standard OpenAI /v1/chat/completions
 
 FLOWLENS_DIR = Path.home() / ".flowlens"
 FLOWLENS_AUTH_FILE = FLOWLENS_DIR / "auth.json"
@@ -24,6 +42,114 @@ CODEX_CONFIG_FILE = Path.home() / ".codex" / "config.toml"
 
 DEFAULT_ANTHROPIC_MODEL = "claude-sonnet-4-6"
 DEFAULT_OPENAI_MODEL = "gpt-5.4"
+DEFAULT_DEEPSEEK_MODEL = "deepseek-chat"            # rolling alias → latest DeepSeek (V3.x, text-only)
+DEFAULT_KIMI_MODEL = "kimi-k2.5"                    # Kimi K2.5: native multimodal (text + image + video)
+DEFAULT_QWEN_MODEL = "qwen-vl-max-latest"           # rolling alias → latest Qwen-VL Max (multimodal)
+
+
+@dataclass(frozen=True)
+class ProviderConfig:
+    """Static metadata for a hosted LLM provider."""
+
+    name: str
+    display_name: str
+    api_style: str
+    api_key_env: tuple[str, ...]                  # env var names checked in order
+    auth_token_env: tuple[str, ...] = ()          # OAuth / bearer env vars
+    base_url: str | None = None                   # None = provider SDK default
+    default_model: str = ""
+    model_prefixes: tuple[str, ...] = ()          # used by resolve_model_provider
+    # env var name that overrides the default model (e.g. FLOWLENS_DEEPSEEK_MODEL)
+    model_env: tuple[str, ...] = ()
+    supports_oauth: bool = False
+
+    @property
+    def env_var_hint(self) -> str:
+        """Primary env var name (for CLI hints)."""
+        return self.api_key_env[0] if self.api_key_env else ""
+
+
+PROVIDERS: dict[str, ProviderConfig] = {
+    PROVIDER_ANTHROPIC: ProviderConfig(
+        name=PROVIDER_ANTHROPIC,
+        display_name="Anthropic",
+        api_style=API_STYLE_ANTHROPIC,
+        api_key_env=("ANTHROPIC_API_KEY",),
+        auth_token_env=("ANTHROPIC_AUTH_TOKEN",),
+        base_url=None,
+        default_model=DEFAULT_ANTHROPIC_MODEL,
+        model_prefixes=("claude-", "sonnet", "opus", "haiku"),
+        model_env=("FLOWLENS_ANTHROPIC_MODEL",),
+        supports_oauth=True,
+    ),
+    PROVIDER_OPENAI: ProviderConfig(
+        name=PROVIDER_OPENAI,
+        display_name="OpenAI",
+        api_style=API_STYLE_OPENAI_RESPONSES,
+        api_key_env=("OPENAI_API_KEY",),
+        auth_token_env=("OPENAI_AUTH_TOKEN",),
+        base_url=None,
+        default_model=DEFAULT_OPENAI_MODEL,
+        model_prefixes=("gpt-", "gpt5", "o1", "o3", "o4"),
+        model_env=("FLOWLENS_OPENAI_MODEL", "OPENAI_MODEL"),
+        supports_oauth=True,
+    ),
+    PROVIDER_DEEPSEEK: ProviderConfig(
+        name=PROVIDER_DEEPSEEK,
+        display_name="DeepSeek",
+        api_style=API_STYLE_OPENAI_COMPAT,
+        api_key_env=("DEEPSEEK_API_KEY",),
+        base_url="https://api.deepseek.com/v1",
+        default_model=DEFAULT_DEEPSEEK_MODEL,
+        model_prefixes=("deepseek-",),
+        model_env=("FLOWLENS_DEEPSEEK_MODEL",),
+    ),
+    PROVIDER_KIMI: ProviderConfig(
+        name=PROVIDER_KIMI,
+        display_name="Kimi (Moonshot)",
+        api_style=API_STYLE_OPENAI_COMPAT,
+        # MOONSHOT_API_KEY is the vendor-official name; KIMI_API_KEY is a friendly alias.
+        api_key_env=("MOONSHOT_API_KEY", "KIMI_API_KEY"),
+        base_url="https://api.moonshot.cn/v1",
+        default_model=DEFAULT_KIMI_MODEL,
+        model_prefixes=("kimi-", "moonshot-"),
+        model_env=("FLOWLENS_KIMI_MODEL",),
+    ),
+    PROVIDER_QWEN: ProviderConfig(
+        name=PROVIDER_QWEN,
+        display_name="通义千问 (Qwen / DashScope)",
+        api_style=API_STYLE_OPENAI_COMPAT,
+        api_key_env=("DASHSCOPE_API_KEY", "QWEN_API_KEY"),
+        base_url="https://dashscope.aliyuncs.com/compatible-mode/v1",
+        default_model=DEFAULT_QWEN_MODEL,
+        # Cloud Qwen uses lowercase prefixes; local MLX models use capitalized
+        # "Qwen..." and are handled as provider="local" before this lookup runs.
+        model_prefixes=(
+            "qwen-max", "qwen-plus", "qwen-turbo", "qwen-long",
+            "qwen-coder", "qwen-vl-", "qwen-audio-", "qwen-omni-",
+            "qwen3-", "qwen2.5-", "qwen2-", "qwq-", "qvq-",
+        ),
+        model_env=("FLOWLENS_QWEN_MODEL",),
+    ),
+}
+
+# Providers recognised as "cloud" for status / fallback purposes.
+CLOUD_PROVIDERS: tuple[str, ...] = (
+    PROVIDER_ANTHROPIC,
+    PROVIDER_OPENAI,
+    PROVIDER_DEEPSEEK,
+    PROVIDER_KIMI,
+    PROVIDER_QWEN,
+)
+
+
+def provider_config(provider: str) -> ProviderConfig | None:
+    return PROVIDERS.get(str(provider or "").strip().lower())
+
+
+# ---------------------------------------------------------------------------
+# Credential dataclasses
+# ---------------------------------------------------------------------------
 
 
 @dataclass(frozen=True)
@@ -47,6 +173,11 @@ class ProviderStatus:
     @property
     def available(self) -> bool:
         return self.api_key_available or self.oauth_available
+
+
+# ---------------------------------------------------------------------------
+# flowlens/auth.json storage helpers
+# ---------------------------------------------------------------------------
 
 
 def _read_json(path: Path) -> dict:
@@ -109,6 +240,11 @@ def _config_secret(provider: str, key: str) -> str:
     return value
 
 
+# ---------------------------------------------------------------------------
+# External tool integrations (Codex for OpenAI OAuth)
+# ---------------------------------------------------------------------------
+
+
 def _codex_auth() -> dict:
     if not CODEX_AUTH_FILE.exists():
         return {}
@@ -157,6 +293,11 @@ def codex_login_status() -> dict:
     return output if isinstance(output, dict) else {}
 
 
+# ---------------------------------------------------------------------------
+# Credential discovery
+# ---------------------------------------------------------------------------
+
+
 def discover_credential(
     provider: str,
     method: str,
@@ -167,24 +308,30 @@ def discover_credential(
     provider = str(provider or "").strip().lower()
     method = str(method or "").strip().lower()
 
+    config = provider_config(provider)
+    if config is None:
+        return None
+
     env_sources: list[tuple[str, str]] = []
     config_sources: list[tuple[str, str]] = []
     file_sources: list[tuple[str, str]] = []
 
-    if provider == PROVIDER_ANTHROPIC and method == METHOD_API_KEY:
-        env_sources.append(("ANTHROPIC_API_KEY", os.environ.get("ANTHROPIC_API_KEY", "")))
+    if method == METHOD_API_KEY:
+        for env_name in config.api_key_env:
+            env_sources.append((env_name, os.environ.get(env_name, "")))
         config_sources.append(("flowlens auth file", _config_secret(provider, "api_key")))
-    elif provider == PROVIDER_ANTHROPIC and method == METHOD_OAUTH:
-        env_sources.append(("ANTHROPIC_AUTH_TOKEN", os.environ.get("ANTHROPIC_AUTH_TOKEN", "")))
+        if provider == PROVIDER_OPENAI:
+            file_sources.append((str(CODEX_AUTH_FILE), _codex_api_key()))
+    elif method == METHOD_OAUTH:
+        if not config.supports_oauth:
+            return None
+        for env_name in config.auth_token_env:
+            env_sources.append((env_name, os.environ.get(env_name, "")))
         config_sources.append(("flowlens auth file", _config_secret(provider, "auth_token")))
-    elif provider == PROVIDER_OPENAI and method == METHOD_API_KEY:
-        env_sources.append(("OPENAI_API_KEY", os.environ.get("OPENAI_API_KEY", "")))
-        config_sources.append(("flowlens auth file", _config_secret(provider, "api_key")))
-        file_sources.append((str(CODEX_AUTH_FILE), _codex_api_key()))
-    elif provider == PROVIDER_OPENAI and method == METHOD_OAUTH:
-        env_sources.append(("OPENAI_AUTH_TOKEN", os.environ.get("OPENAI_AUTH_TOKEN", "")))
-        config_sources.append(("flowlens auth file", _config_secret(provider, "auth_token")))
-        file_sources.append((str(CODEX_AUTH_FILE), _codex_access_token()))
+        if provider == PROVIDER_OPENAI:
+            file_sources.append((str(CODEX_AUTH_FILE), _codex_access_token()))
+    else:
+        return None
 
     for source, value in [*env_sources, *config_sources, *file_sources]:
         secret = str(value or "").strip()
@@ -200,52 +347,58 @@ def discover_credential(
 
 def provider_status(provider: str) -> ProviderStatus:
     provider = str(provider or "").strip().lower()
+    config = provider_config(provider)
+    if config is None:
+        return ProviderStatus(provider=provider, api_key_available=False)
 
+    api = discover_credential(provider, METHOD_API_KEY, allow_fallback=False)
+    oauth = (
+        discover_credential(provider, METHOD_OAUTH, allow_fallback=False)
+        if config.supports_oauth
+        else None
+    )
+
+    logged_in = False
+    login_hint = ""
     if provider == PROVIDER_ANTHROPIC:
-        api = discover_credential(provider, METHOD_API_KEY, allow_fallback=False)
-        oauth = discover_credential(provider, METHOD_OAUTH, allow_fallback=False)
         status = claude_auth_status()
         logged_in = bool(status.get("loggedIn"))
-        return ProviderStatus(
-            provider=provider,
-            api_key_available=api is not None,
-            api_key_source=api.source if api else "",
-            oauth_available=oauth is not None,
-            oauth_source=oauth.source if oauth else "",
-            oauth_logged_in=logged_in,
-            oauth_login_hint="claude auth login" if not logged_in else "",
-        )
+        if not logged_in:
+            login_hint = "claude auth login"
+    elif provider == PROVIDER_OPENAI:
+        codex_state = codex_login_status()
+        logged_in = bool(codex_state.get("logged_in") or oauth is not None)
+        if not logged_in:
+            login_hint = "codex login --device-auth"
 
-    api = discover_credential(PROVIDER_OPENAI, METHOD_API_KEY, allow_fallback=False)
-    oauth = discover_credential(PROVIDER_OPENAI, METHOD_OAUTH, allow_fallback=False)
-    codex_state = codex_login_status()
-    logged_in = bool(codex_state.get("logged_in") or oauth is not None)
     return ProviderStatus(
-        provider=PROVIDER_OPENAI,
+        provider=provider,
         api_key_available=api is not None,
         api_key_source=api.source if api else "",
         oauth_available=oauth is not None,
         oauth_source=oauth.source if oauth else "",
         oauth_logged_in=logged_in,
-        oauth_login_hint="codex login --device-auth" if not logged_in else "",
+        oauth_login_hint=login_hint,
     )
 
 
 def available_provider_statuses() -> list[ProviderStatus]:
-    return [
-        provider_status(PROVIDER_ANTHROPIC),
-        provider_status(PROVIDER_OPENAI),
-    ]
+    return [provider_status(name) for name in CLOUD_PROVIDERS]
+
+
+# ---------------------------------------------------------------------------
+# Provider / model resolution
+# ---------------------------------------------------------------------------
 
 
 def preferred_provider() -> str | None:
     load_runtime_env()
     explicit = str(os.environ.get("FLOWLENS_MODEL_PROVIDER", "")).strip().lower()
-    if explicit in {PROVIDER_ANTHROPIC, PROVIDER_OPENAI}:
+    if explicit in CLOUD_PROVIDERS:
         return explicit
     block = _flowlens_auth_config().get("defaults") or {}
     configured = str(block.get("provider") or "").strip().lower()
-    if configured in {PROVIDER_ANTHROPIC, PROVIDER_OPENAI}:
+    if configured in CLOUD_PROVIDERS:
         return configured
     return None
 
@@ -265,65 +418,70 @@ def preferred_auth_method() -> str | None:
 def default_model_for_provider(provider: str) -> str:
     load_runtime_env()
     provider = str(provider or "").strip().lower()
-    config = _flowlens_auth_config().get("defaults") or {}
+    config = provider_config(provider)
+    if config is None:
+        return DEFAULT_ANTHROPIC_MODEL
 
-    if provider == PROVIDER_OPENAI:
-        explicit = str(os.environ.get("FLOWLENS_OPENAI_MODEL", "") or os.environ.get("OPENAI_MODEL", "")).strip()
+    for env_name in config.model_env:
+        explicit = str(os.environ.get(env_name, "")).strip()
         if explicit:
             return explicit
-        configured = str(config.get("openai_model") or "").strip()
-        if configured:
-            return configured
-        if CODEX_CONFIG_FILE.exists():
-            try:
-                parsed = tomllib.loads(CODEX_CONFIG_FILE.read_text(encoding="utf-8"))
-            except Exception:
-                parsed = {}
-            model = str(parsed.get("model") or "").strip()
-            if model:
-                return model
-        return DEFAULT_OPENAI_MODEL
 
-    explicit = str(os.environ.get("FLOWLENS_ANTHROPIC_MODEL", "")).strip()
-    if explicit:
-        return explicit
-    configured = str(config.get("anthropic_model") or "").strip()
+    defaults_block = _flowlens_auth_config().get("defaults") or {}
+    configured = str(defaults_block.get(f"{provider}_model") or "").strip()
     if configured:
         return configured
-    return DEFAULT_ANTHROPIC_MODEL
+
+    if provider == PROVIDER_OPENAI and CODEX_CONFIG_FILE.exists():
+        try:
+            parsed = tomllib.loads(CODEX_CONFIG_FILE.read_text(encoding="utf-8"))
+        except Exception:
+            parsed = {}
+        model = str(parsed.get("model") or "").strip()
+        if model:
+            return model
+
+    return config.default_model
 
 
 def resolve_model_provider(model: str | None) -> str:
+    """Return the provider name for a model identifier.
+
+    Returns "local" for MLX / UI-TARS models, a provider key from ``PROVIDERS``
+    for hosted models, and falls back to the preferred / first available cloud
+    provider when the model name carries no prefix hint.
+    """
     normalized = str(model or "").strip()
-    if normalized == "qwen-local" or normalized.startswith("Qwen"):
+
+    # Local MLX models — checked first so lowercase `qwen-...` DashScope models
+    # don't collide with capitalized `Qwen...` local aliases.
+    if normalized == "qwen-local" or normalized == "ui-tars-local":
         return "local"
-    if normalized == "ui-tars-local" or normalized.startswith("UI-TARS"):
+    if normalized.startswith("Qwen") or normalized.startswith("UI-TARS"):
         return "local"
+
     lowered = normalized.lower()
-    if lowered.startswith(("gpt-", "o1", "o3", "o4")) or lowered.startswith("gpt5") or lowered.startswith("gpt-5"):
-        return PROVIDER_OPENAI
-    if lowered.startswith(("claude-", "sonnet", "opus", "haiku")):
-        return PROVIDER_ANTHROPIC
+    for pkey, pconfig in PROVIDERS.items():
+        for prefix in pconfig.model_prefixes:
+            if lowered.startswith(prefix):
+                return pkey
+
     preferred = preferred_provider()
     if preferred:
         return preferred
-    if provider_status(PROVIDER_ANTHROPIC).available:
-        return PROVIDER_ANTHROPIC
-    if provider_status(PROVIDER_OPENAI).available:
-        return PROVIDER_OPENAI
+    for name in CLOUD_PROVIDERS:
+        if provider_status(name).available:
+            return name
     return PROVIDER_ANTHROPIC
 
 
 def default_cloud_model(*, provider: str | None = None) -> str:
     chosen_provider = provider or preferred_provider()
-    if chosen_provider in {PROVIDER_ANTHROPIC, PROVIDER_OPENAI}:
+    if chosen_provider and chosen_provider in PROVIDERS:
         return default_model_for_provider(chosen_provider)
-    anth = provider_status(PROVIDER_ANTHROPIC)
-    if anth.available:
-        return default_model_for_provider(PROVIDER_ANTHROPIC)
-    openai = provider_status(PROVIDER_OPENAI)
-    if openai.available:
-        return default_model_for_provider(PROVIDER_OPENAI)
+    for name in CLOUD_PROVIDERS:
+        if provider_status(name).available:
+            return default_model_for_provider(name)
     return default_model_for_provider(PROVIDER_ANTHROPIC)
 
 

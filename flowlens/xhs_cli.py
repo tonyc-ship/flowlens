@@ -115,6 +115,24 @@ def _normalize_agent_request(request: str) -> str:
     return f"在小红书上{trimmed}"
 
 
+def _agent_query_hint(request: str) -> str:
+    topic = _clean_topic(request)
+    topic = re.sub(r"(怎么样|如何|好吗|好不好|测评|评价)$", "", topic).strip()
+    return topic or request.strip()
+
+
+def _xhs_agent_instructions(query_hint: str) -> str:
+    return (
+        "This is a Xiaohongshu research task. The dedicated browser window starts on Xiaohongshu. "
+        f"Begin by calling `xhs_topic_scan` with query `{query_hint}`. "
+        "If that macro is unavailable, call `run_site_action(action='search_notes', query=...)` directly. "
+        "Do not take a generic initial screenshot, do not analyze screenshots before searching, "
+        "do not use standalone wait before the first search, and never search for `小红书网页版` unless the user explicitly asks for it. "
+        "In the final report, embed the note screenshots returned in `entity.screenshot` with markdown image syntax, "
+        "because direct Xiaohongshu links are often blocked or rate-limited."
+    )
+
+
 async def _run_freeform_agent_request(request: str) -> dict:
     from .agent.loop import run_agent
 
@@ -125,6 +143,8 @@ async def _run_freeform_agent_request(request: str) -> dict:
         task=task,
         model=model,
         run_dir=output_dir,
+        start_url="https://www.xiaohongshu.com/explore",
+        extra_instructions=_xhs_agent_instructions(_agent_query_hint(request)),
     )
     payload = {
         "task": {
@@ -433,14 +453,14 @@ def _handle_error(exc: Exception) -> int:
     """Print a friendly Chinese error message for common failures."""
     msg = str(exc)
     if "extension" in msg.lower() or "websocket" in msg.lower() or "connection" in msg.lower():
-        print(f"\n错误: 无法连接 Chrome Extension。\n")
+        print("\n错误: 无法连接 Chrome Extension。\n")
         print("请确认:")
         print("  1. Chrome 浏览器已打开")
         print("  2. FlowLens Extension 已加载 (chrome://extensions/)")
         print("  3. Extension 已启用（没有被禁用）\n")
         return 1
     if "no_note_modal_open" in msg or "error_page" in msg:
-        print(f"\n错误: 页面未正常加载，可能触发了小红书反爬机制。\n")
+        print("\n错误: 页面未正常加载，可能触发了小红书反爬机制。\n")
         print("建议:")
         print("  1. 在浏览器中手动打开该链接，确认能正常显示")
         print("  2. 稍等几分钟后重试\n")
