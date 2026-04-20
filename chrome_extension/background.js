@@ -18,6 +18,7 @@
  */
 
 const DEFAULT_PORT = 8765;
+const CONTENT_SCRIPT_FILES = ['content.js', 'content_xhs.js'];
 let ws = null;
 let activeTabId = null;
 let activeTabUrl = '';
@@ -1412,7 +1413,7 @@ async function handleCommand(msg) {
     }
 
     case 'reload_extension': {
-      // Reload the extension to pick up code changes (content.js, etc.)
+      // Reload the extension to pick up code changes (content scripts, adapters, etc.)
       // Sends response first, then reloads after a short delay
       setTimeout(() => chrome.runtime.reload(), 200);
       return { ok: true, message: 'Reloading in 200ms — reconnect after' };
@@ -1586,7 +1587,7 @@ async function sendToContentScript(tabId, msg, retries = 3) {
         try {
           await chrome.scripting.executeScript({
             target: { tabId },
-            files: ['content.js'],
+            files: CONTENT_SCRIPT_FILES,
           });
         } catch {}
         await new Promise(r => setTimeout(r, 500));
@@ -1612,7 +1613,7 @@ async function waitForContentScript(tabId, timeout = 5000) {
   try {
     await chrome.scripting.executeScript({
       target: { tabId },
-      files: ['content.js'],
+      files: CONTENT_SCRIPT_FILES,
     });
     await new Promise(r => setTimeout(r, 500));
   } catch {}
