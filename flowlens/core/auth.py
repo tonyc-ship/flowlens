@@ -10,7 +10,6 @@ from __future__ import annotations
 import json
 import os
 import subprocess
-import tomllib
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -38,13 +37,12 @@ API_STYLE_OPENAI_COMPAT = "openai_compat"    # Standard OpenAI /v1/chat/completi
 FLOWLENS_DIR = Path.home() / ".flowlens"
 FLOWLENS_AUTH_FILE = FLOWLENS_DIR / "auth.json"
 CODEX_AUTH_FILE = Path.home() / ".codex" / "auth.json"
-CODEX_CONFIG_FILE = Path.home() / ".codex" / "config.toml"
 
 DEFAULT_ANTHROPIC_MODEL = "claude-sonnet-4-6"
 DEFAULT_OPENAI_MODEL = "gpt-5.4"
 DEFAULT_DEEPSEEK_MODEL = "deepseek-chat"            # rolling alias → latest DeepSeek (V3.x, text-only)
 DEFAULT_KIMI_MODEL = "kimi-k2.5"                    # Kimi K2.5: native multimodal (text + image + video)
-DEFAULT_QWEN_MODEL = "qwen-vl-max-latest"           # rolling alias → latest Qwen-VL Max (multimodal)
+DEFAULT_QWEN_MODEL = "qwen3.6-plus"                # Qwen3.6-Plus: current hosted Qwen default (multimodal)
 
 
 @dataclass(frozen=True)
@@ -59,8 +57,6 @@ class ProviderConfig:
     base_url: str | None = None                   # None = provider SDK default
     default_model: str = ""
     model_prefixes: tuple[str, ...] = ()          # used by resolve_model_provider
-    # env var name that overrides the default model (e.g. FLOWLENS_DEEPSEEK_MODEL)
-    model_env: tuple[str, ...] = ()
     supports_oauth: bool = False
 
     @property
@@ -79,7 +75,6 @@ PROVIDERS: dict[str, ProviderConfig] = {
         base_url=None,
         default_model=DEFAULT_ANTHROPIC_MODEL,
         model_prefixes=("claude-", "sonnet", "opus", "haiku"),
-        model_env=("FLOWLENS_ANTHROPIC_MODEL",),
         supports_oauth=True,
     ),
     PROVIDER_OPENAI: ProviderConfig(
@@ -91,7 +86,6 @@ PROVIDERS: dict[str, ProviderConfig] = {
         base_url=None,
         default_model=DEFAULT_OPENAI_MODEL,
         model_prefixes=("gpt-", "gpt5", "o1", "o3", "o4"),
-        model_env=("FLOWLENS_OPENAI_MODEL", "OPENAI_MODEL"),
         supports_oauth=True,
     ),
     PROVIDER_DEEPSEEK: ProviderConfig(
@@ -102,22 +96,20 @@ PROVIDERS: dict[str, ProviderConfig] = {
         base_url="https://api.deepseek.com/v1",
         default_model=DEFAULT_DEEPSEEK_MODEL,
         model_prefixes=("deepseek-",),
-        model_env=("FLOWLENS_DEEPSEEK_MODEL",),
     ),
     PROVIDER_KIMI: ProviderConfig(
         name=PROVIDER_KIMI,
-        display_name="Kimi (Moonshot)",
+        display_name="Kimi",
         api_style=API_STYLE_OPENAI_COMPAT,
         # MOONSHOT_API_KEY is the vendor-official name; KIMI_API_KEY is a friendly alias.
         api_key_env=("MOONSHOT_API_KEY", "KIMI_API_KEY"),
         base_url="https://api.moonshot.cn/v1",
         default_model=DEFAULT_KIMI_MODEL,
         model_prefixes=("kimi-", "moonshot-"),
-        model_env=("FLOWLENS_KIMI_MODEL",),
     ),
     PROVIDER_QWEN: ProviderConfig(
         name=PROVIDER_QWEN,
-        display_name="通义千问 (Qwen / DashScope)",
+        display_name="Qwen",
         api_style=API_STYLE_OPENAI_COMPAT,
         api_key_env=("DASHSCOPE_API_KEY", "QWEN_API_KEY"),
         base_url="https://dashscope.aliyuncs.com/compatible-mode/v1",
@@ -127,9 +119,8 @@ PROVIDERS: dict[str, ProviderConfig] = {
         model_prefixes=(
             "qwen-max", "qwen-plus", "qwen-turbo", "qwen-long",
             "qwen-coder", "qwen-vl-", "qwen-audio-", "qwen-omni-",
-            "qwen3-", "qwen2.5-", "qwen2-", "qwq-", "qvq-",
+            "qwen3.", "qwen3-", "qwen2.5-", "qwen2-", "qwq-", "qvq-",
         ),
-        model_env=("FLOWLENS_QWEN_MODEL",),
     ),
 }
 
@@ -194,13 +185,8 @@ def _flowlens_auth_config() -> dict:
     return data if isinstance(data, dict) else {}
 
 
-def save_auth_secret(provider: str, method: str, secret: str) -> Path:
+def _write_flowlens_auth_config(data: dict) -> Path:
     FLOWLENS_DIR.mkdir(parents=True, exist_ok=True)
-    data = _flowlens_auth_config()
-    provider_block = dict(data.get(provider) or {})
-    key = "api_key" if method == METHOD_API_KEY else "auth_token"
-    provider_block[key] = secret.strip()
-    data[provider] = provider_block
     FLOWLENS_AUTH_FILE.write_text(
         json.dumps(data, ensure_ascii=False, indent=2),
         encoding="utf-8",
@@ -210,6 +196,37 @@ def save_auth_secret(provider: str, method: str, secret: str) -> Path:
     except OSError:
         pass
     return FLOWLENS_AUTH_FILE
+
+
+def save_auth_secret(provider: str, method: str, secret: str) -> Path:
+    data = _flowlens_auth_config()
+    provider_block = dict(data.get(provider) or {})
+    key = "api_key" if method == METHOD_API_KEY else "auth_token"
+    provider_block[key] = secret.strip()
+    data[provider] = provider_block
+    return _write_flowlens_auth_config(data)
+
+
+def save_default_model(
+    provider: str,
+    model: str,
+    *,
+    make_provider_default: bool = True,
+) -> Path:
+    provider = str(provider or "").strip().lower()
+    if provider_config(provider) is None:
+        raise ValueError(f"Unknown provider: {provider}")
+    model = str(model or "").strip()
+    if not model:
+        raise ValueError("Missing model name")
+
+    data = _flowlens_auth_config()
+    defaults = dict(data.get("defaults") or {})
+    defaults[f"{provider}_model"] = model
+    if make_provider_default:
+        defaults["provider"] = provider
+    data["defaults"] = defaults
+    return _write_flowlens_auth_config(data)
 
 
 def clear_auth_secret(provider: str, method: str) -> Path | None:
@@ -223,15 +240,7 @@ def clear_auth_secret(provider: str, method: str) -> Path | None:
         data[provider] = provider_block
     else:
         data.pop(provider, None)
-    FLOWLENS_AUTH_FILE.write_text(
-        json.dumps(data, ensure_ascii=False, indent=2),
-        encoding="utf-8",
-    )
-    try:
-        os.chmod(FLOWLENS_AUTH_FILE, 0o600)
-    except OSError:
-        pass
-    return FLOWLENS_AUTH_FILE
+    return _write_flowlens_auth_config(data)
 
 
 def _config_secret(provider: str, key: str) -> str:
@@ -315,11 +324,12 @@ def discover_credential(
     env_sources: list[tuple[str, str]] = []
     config_sources: list[tuple[str, str]] = []
     file_sources: list[tuple[str, str]] = []
+    flowlens_auth_source = str(FLOWLENS_AUTH_FILE.expanduser())
 
     if method == METHOD_API_KEY:
         for env_name in config.api_key_env:
             env_sources.append((env_name, os.environ.get(env_name, "")))
-        config_sources.append(("flowlens auth file", _config_secret(provider, "api_key")))
+        config_sources.append((flowlens_auth_source, _config_secret(provider, "api_key")))
         if provider == PROVIDER_OPENAI:
             file_sources.append((str(CODEX_AUTH_FILE), _codex_api_key()))
     elif method == METHOD_OAUTH:
@@ -327,7 +337,7 @@ def discover_credential(
             return None
         for env_name in config.auth_token_env:
             env_sources.append((env_name, os.environ.get(env_name, "")))
-        config_sources.append(("flowlens auth file", _config_secret(provider, "auth_token")))
+        config_sources.append((flowlens_auth_source, _config_secret(provider, "auth_token")))
         if provider == PROVIDER_OPENAI:
             file_sources.append((str(CODEX_AUTH_FILE), _codex_access_token()))
     else:
@@ -392,10 +402,6 @@ def available_provider_statuses() -> list[ProviderStatus]:
 
 
 def preferred_provider() -> str | None:
-    load_runtime_env()
-    explicit = str(os.environ.get("FLOWLENS_MODEL_PROVIDER", "")).strip().lower()
-    if explicit in CLOUD_PROVIDERS:
-        return explicit
     block = _flowlens_auth_config().get("defaults") or {}
     configured = str(block.get("provider") or "").strip().lower()
     if configured in CLOUD_PROVIDERS:
@@ -404,10 +410,6 @@ def preferred_provider() -> str | None:
 
 
 def preferred_auth_method() -> str | None:
-    load_runtime_env()
-    explicit = str(os.environ.get("FLOWLENS_AUTH_METHOD", "")).strip().lower()
-    if explicit in {METHOD_API_KEY, METHOD_OAUTH}:
-        return explicit
     block = _flowlens_auth_config().get("defaults") or {}
     configured = str(block.get("method") or "").strip().lower()
     if configured in {METHOD_API_KEY, METHOD_OAUTH}:
@@ -416,30 +418,15 @@ def preferred_auth_method() -> str | None:
 
 
 def default_model_for_provider(provider: str) -> str:
-    load_runtime_env()
     provider = str(provider or "").strip().lower()
     config = provider_config(provider)
     if config is None:
         return DEFAULT_ANTHROPIC_MODEL
 
-    for env_name in config.model_env:
-        explicit = str(os.environ.get(env_name, "")).strip()
-        if explicit:
-            return explicit
-
     defaults_block = _flowlens_auth_config().get("defaults") or {}
     configured = str(defaults_block.get(f"{provider}_model") or "").strip()
     if configured:
         return configured
-
-    if provider == PROVIDER_OPENAI and CODEX_CONFIG_FILE.exists():
-        try:
-            parsed = tomllib.loads(CODEX_CONFIG_FILE.read_text(encoding="utf-8"))
-        except Exception:
-            parsed = {}
-        model = str(parsed.get("model") or "").strip()
-        if model:
-            return model
 
     return config.default_model
 

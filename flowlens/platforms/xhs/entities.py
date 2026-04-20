@@ -103,6 +103,30 @@ def extract_key_points(text: str, limit: int = 5) -> list[str]:
     return _dedupe_keep_order([item[2] for item in scored])[:limit]
 
 
+def is_meaningful_note_content(text: str) -> bool:
+    """Reject XHS loading/status chrome that can appear before body hydration."""
+    lines = [
+        re.sub(r"\s+", " ", line).strip()
+        for line in str(text or "").splitlines()
+    ]
+    lines = [line for line in lines if line]
+    if not lines:
+        return False
+    placeholders = {
+        "刚刚", "加载中", "赞", "收藏", "评论", "分享", "发送", "取消",
+        "已关注", "关注", "- THE END -", "THE END",
+    }
+    meaningful = [
+        line for line in lines
+        if line not in placeholders
+        and not re.fullmatch(r"共\s*\d*\s*条评论", line)
+        and not re.fullmatch(r"\d+\s*(?:秒|分钟|小时|天)前|昨天|前天", line)
+    ]
+    if not meaningful:
+        return False
+    return len("\n".join(meaningful).strip()) >= 8
+
+
 def normalize_comment_key(username: str, text: str) -> str:
     user = re.sub(r"\s+", " ", username or "").strip().lower()
     content = re.sub(r"\s+", " ", text or "").strip()
@@ -342,6 +366,7 @@ class NoteEntity:
     price_mentions: list[str] = field(default_factory=list)
     cta_phrases: list[str] = field(default_factory=list)
     key_points: list[str] = field(default_factory=list)
+    media_key_points: list[str] = field(default_factory=list)
     source_keyword: str = ""
     source_context: str = ""
     card_likes: str = ""
@@ -349,10 +374,11 @@ class NoteEntity:
     extraction_level: str = "deep"
     requested_sections: tuple[str, ...] = ("content", "media", "engagement", "comments", "author")
     applied_capabilities: list[str] = field(default_factory=list)
+    extraction_debug: dict = field(default_factory=dict)
 
     @property
     def has_content(self) -> bool:
-        return bool(self.title) or bool(self.content)
+        return is_meaningful_note_content(self.content)
 
     @property
     def has_media(self) -> bool:
@@ -402,21 +428,23 @@ class NoteEntity:
         return Comment.merge_many(comments)
 
     def refresh_derived_fields(self) -> None:
-        text_chunks = [self.title, self.content, *self.hashtags]
-        text_chunks.extend(img.ocr_text for img in self.images if img.ocr_text)
+        body_chunks = [self.title, self.content, *self.hashtags]
+        media_chunks = [img.ocr_text for img in self.images if img.ocr_text]
         if self.video:
-            text_chunks.extend([
+            media_chunks.extend([
                 self.video.poster_ocr,
                 self.video.visual_summary,
                 self.video.transcript,
                 self.video.transcript_summary,
             ])
-            text_chunks.extend(self.video.frame_descriptions)
-        text_corpus = "\n".join(chunk for chunk in text_chunks if chunk)
+            media_chunks.extend(self.video.frame_descriptions)
+        text_corpus = "\n".join(chunk for chunk in body_chunks if chunk)
+        media_corpus = "\n".join(chunk for chunk in media_chunks if chunk)
         self.format_hints = infer_format_hints(self.title, text_corpus)
-        self.price_mentions = extract_price_mentions(text_corpus)
+        self.price_mentions = extract_price_mentions("\n".join([text_corpus, media_corpus]))
         self.cta_phrases = extract_cta_phrases(text_corpus)
         self.key_points = extract_key_points(text_corpus)
+        self.media_key_points = extract_key_points(media_corpus)
 
     @classmethod
     def from_dom_dict(cls, d: dict) -> NoteEntity:
@@ -452,7 +480,7 @@ class NoteEntity:
             author_avatar_url=d.get("author_avatar_url", ""),
             author_url=d.get("author_url", ""),
             title=d.get("title", ""),
-            content=d.get("content", ""),
+            content=d.get("content", "") if is_meaningful_note_content(d.get("content", "")) else "",
             hashtags=d.get("hashtags", []),
             date=d.get("date", ""),
             location=d.get("location", ""),
@@ -464,6 +492,7 @@ class NoteEntity:
             favorites=d.get("favorites", ""),
             comments_count=d.get("comments_count", ""),
             shares=d.get("shares", ""),
+            extraction_debug=d.get("extraction_debug", {}) if isinstance(d.get("extraction_debug"), dict) else {},
         )
         if note.note_id:
             note.url = f"https://www.xiaohongshu.com/explore/{note.note_id}"
@@ -496,6 +525,8 @@ class NoteEntity:
             "price_mentions": self.price_mentions[:8],
             "cta_phrases": self.cta_phrases,
             "key_points": self.key_points,
+            "media_key_points": self.media_key_points,
+            "content_source": self.extraction_debug.get("content_source", ""),
             "screenshot": self.screenshot_path,
             "completeness": self.completeness,
             "completeness_score": round(self.completeness_score, 3),
@@ -503,6 +534,8 @@ class NoteEntity:
             "images": [img.to_tool_dict() for img in self.images[:8]],
             "top_comments": [c.to_tool_dict() for c in self.hottest_comments(8)],
         }
+        if self.extraction_debug:
+            payload["extraction_debug"] = self.extraction_debug
         if self.video:
             payload["video"] = self.video.to_tool_dict()
         return payload

@@ -5,13 +5,21 @@ from __future__ import annotations
 import argparse
 import asyncio
 import json
+import os
 import re
 from datetime import datetime
 from pathlib import Path
 from urllib.parse import urlparse
 from urllib.request import urlopen, Request
 
-from .core.auth import PROVIDER_OPENAI, default_cloud_model, resolve_model_provider
+from .core.auth import (
+    PROVIDER_OPENAI,
+    available_provider_statuses,
+    default_cloud_model,
+    provider_config,
+    resolve_model_provider,
+    resolve_provider_auth,
+)
 from .core.bridge import ExtensionBridge, ensure_extension_connection
 from .perception.media import (
     BACKEND_OPENAI,
@@ -55,6 +63,19 @@ def _write_json(path: Path, payload: dict) -> None:
     path.write_text(json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8")
 
 
+def _print_model_start(model: str) -> None:
+    provider = resolve_model_provider(model)
+    if provider == "local":
+        print(f"  [model] Using model: {model} (provider=local)")
+        return
+
+    config = provider_config(provider)
+    provider_label = config.display_name if config else provider
+    credential = resolve_provider_auth(provider)
+    auth_source = credential.source if credential else "not configured"
+    print(f"  [model] Using model: {model} (provider={provider_label}, auth={auth_source})")
+
+
 def _site_media_for_model(model: str) -> MediaProcessor:
     normalized = str(model or default_cloud_model()).strip()
     if normalized == "ui-tars-local" or normalized.startswith("UI-TARS"):
@@ -80,6 +101,7 @@ async def _run_structured_agent_task(task: StructuredTask) -> dict:
     from .agent.loop import run_agent
 
     model = default_cloud_model()
+    _print_model_start(model)
     prefix = "creator_research" if task.kind.value == "creator_growth_breakdown" else "search"
     output_dir = _make_run_dir(prefix, task.slug())
     result = await run_agent(
@@ -124,8 +146,10 @@ def _agent_query_hint(request: str) -> str:
 def _xhs_agent_instructions(query_hint: str) -> str:
     return (
         "This is a Xiaohongshu research task. The dedicated browser window starts on Xiaohongshu. "
-        f"Begin by calling `xhs_topic_scan` with query `{query_hint}`. "
+        f"Begin by calling `xhs_topic_scan` with query `{query_hint}` and `include_media=false` unless the user explicitly asks to analyze images or videos. "
         "If that macro is unavailable, call `run_site_action(action='search_notes', query=...)` directly. "
+        "For tables that mention post body text, use `entity.content` only and label image OCR/vision/video evidence in separate columns; do not mix media descriptions into body summaries. "
+        "After collecting a representative sample, write the report instead of repeatedly opening more notes. "
         "Do not take a generic initial screenshot, do not analyze screenshots before searching, "
         "do not use standalone wait before the first search, and never search for `小红书网页版` unless the user explicitly asks for it. "
         "In the final report, embed the note screenshots returned in `entity.screenshot` with markdown image syntax, "
@@ -138,11 +162,13 @@ async def _run_freeform_agent_request(request: str) -> dict:
 
     task = _normalize_agent_request(request)
     model = default_cloud_model()
+    _print_model_start(model)
     output_dir = _make_run_dir("agent", task)
     result = await run_agent(
         task=task,
         model=model,
         run_dir=output_dir,
+        max_turns=int(os.environ.get("FLOWLENS_XHS_AGENT_MAX_TURNS", "18") or "18"),
         start_url="https://www.xiaohongshu.com/explore",
         extra_instructions=_xhs_agent_instructions(_agent_query_hint(request)),
     )
@@ -174,6 +200,7 @@ async def _run_xhs_extract(
     retries: int = 2,
 ) -> dict:
     model = default_cloud_model()
+    _print_model_start(model)
     output_dir = _make_run_dir(label, slug)
     bridge = ExtensionBridge()
     window_id: int | None = None
@@ -439,11 +466,7 @@ def _print_result(payload: dict) -> int:
 
 def _check_api_key() -> None:
     """Check that at least one LLM provider is configured."""
-    from .core.auth import provider_status, PROVIDER_ANTHROPIC, PROVIDER_OPENAI
-
-    anth = provider_status(PROVIDER_ANTHROPIC)
-    oai = provider_status(PROVIDER_OPENAI)
-    if not anth.available and not oai.available:
+    if not any(status.available for status in available_provider_statuses()):
         print("错误: 未配置 LLM API Key。请先运行:\n")
         print("  flowlens auth\n")
         raise SystemExit(1)

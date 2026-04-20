@@ -124,6 +124,32 @@ const ACTION_LABELS_EN = {
   extract_site_entity: 'Extract site entity',
 };
 
+const NOISY_ACTIONS = new Set([
+  'detect_state',
+  'get_tab_info',
+  'get_search_page_state',
+  'extract_search_cards',
+  'extract_note_content',
+  'extract_comments',
+  'click_at',
+  'click_note_by_id',
+  'click_note_link',
+  'submit_search_query',
+  'scroll_note',
+  'scroll_page',
+]);
+
+function shouldDisplayEntry(entry) {
+  const action = String(entry?.action || '').toLowerCase();
+  const phase = String(entry?.phase || '').toLowerCase();
+  const kind = String(entry?.kind || 'info').toLowerCase();
+  if (kind === 'error' || phase === 'start' || phase === 'turn' || phase === 'thinking') return true;
+  if (phase === 'tool' || phase === 'tool_result' || phase === 'tool_error') return true;
+  if (NOISY_ACTIONS.has(action)) return false;
+  if (kind === 'result' && String(entry?.message || '').trim() === 'OK') return false;
+  return true;
+}
+
 function escapeHtml(str) {
   const el = document.createElement('div');
   el.textContent = str || '';
@@ -278,8 +304,9 @@ function renderEntry(entry) {
 }
 
 function loadEntries(nextEntries) {
-  entries = Array.isArray(nextEntries) ? nextEntries.slice() : [];
-  const startEntry = entries.find((entry) => taskTextFromEntry(entry));
+  const rawEntries = Array.isArray(nextEntries) ? nextEntries : [];
+  entries = rawEntries.filter(shouldDisplayEntry);
+  const startEntry = rawEntries.find((entry) => taskTextFromEntry(entry));
   if (startEntry) updateTaskFromEntry(startEntry);
   updateFilterLabels();
   const previousScrollTop = feed.scrollTop;
@@ -300,9 +327,10 @@ function loadEntries(nextEntries) {
 }
 
 function addEntry(entry) {
-  removeEmpty();
   const wasXhs = isXhsContext();
   updateTaskFromEntry(entry);
+  if (!shouldDisplayEntry(entry)) return;
+  removeEmpty();
   entries.push(entry);
   if (wasXhs !== isXhsContext()) {
     loadEntries(entries);

@@ -2,6 +2,13 @@
 
 Loads optional local env files and a small set of shell exports so the
 agent can run without hard-coding machine-specific paths into modules.
+
+Hosted-model defaults are intentionally kept out of these files. Use
+``flowlens auth`` / ``~/.flowlens/auth.json`` for those settings so there is
+only one local source of truth.
+
+API credentials may still come from the current process environment or from
+standard shell exports, but they are not loaded from project ``.env`` files.
 """
 
 from __future__ import annotations
@@ -20,23 +27,7 @@ SHELL_EXPORT_FILES = (
     Path.home() / ".zshrc",
 )
 RUNTIME_KEYS = (
-    "ANTHROPIC_API_KEY",
-    "ANTHROPIC_AUTH_TOKEN",
-    "OPENAI_API_KEY",
-    "OPENAI_AUTH_TOKEN",
-    "DEEPSEEK_API_KEY",
-    "MOONSHOT_API_KEY",
-    "KIMI_API_KEY",
-    "DASHSCOPE_API_KEY",
-    "QWEN_API_KEY",
     "FLOWLENS_LLM_BACKEND",
-    "FLOWLENS_MODEL_PROVIDER",
-    "FLOWLENS_AUTH_METHOD",
-    "FLOWLENS_OPENAI_MODEL",
-    "FLOWLENS_ANTHROPIC_MODEL",
-    "FLOWLENS_DEEPSEEK_MODEL",
-    "FLOWLENS_KIMI_MODEL",
-    "FLOWLENS_QWEN_MODEL",
     "FLOWLENS_SITE_MEDIA_BACKEND",
     "FLOWLENS_SITE_MEDIA_MODEL",
     "FLOWLENS_SITE_MEDIA_WHISPER_MODEL",
@@ -54,6 +45,18 @@ RUNTIME_KEYS = (
     "FLOWLENS_OBSERVER_VISION_ENABLED",
     "FLOWLENS_OBSERVER_VISION_MODEL",
 )
+SHELL_CREDENTIAL_KEYS = (
+    "ANTHROPIC_API_KEY",
+    "ANTHROPIC_AUTH_TOKEN",
+    "OPENAI_API_KEY",
+    "OPENAI_AUTH_TOKEN",
+    "DEEPSEEK_API_KEY",
+    "MOONSHOT_API_KEY",
+    "KIMI_API_KEY",
+    "DASHSCOPE_API_KEY",
+    "QWEN_API_KEY",
+)
+SHELL_EXPORT_KEYS = (*RUNTIME_KEYS, *SHELL_CREDENTIAL_KEYS)
 
 _LOADED = False
 
@@ -81,9 +84,9 @@ def load_runtime_env() -> None:
 
     Precedence:
     1. Existing process env
-    2. `.env.local`
-    3. `.env`
-    4. Selected `export KEY=...` lines from shell config files
+    2. Non-auth keys from `.env.local`
+    3. Non-auth keys from `.env`
+    4. Selected non-default keys and API credentials from shell exports
     """
 
     global _LOADED
@@ -101,7 +104,7 @@ def load_runtime_env() -> None:
             if key in RUNTIME_KEYS and value and key not in os.environ:
                 os.environ[key] = value
 
-    for key in RUNTIME_KEYS:
+    for key in SHELL_EXPORT_KEYS:
         if os.environ.get(key):
             continue
         for shell_file in SHELL_EXPORT_FILES:

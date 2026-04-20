@@ -85,7 +85,7 @@ class TaskModelPolicy:
                 mode="cloud",
                 reasoning_backend=BACKEND_QWEN_CLOUD,
                 vision_backend=BACKEND_QWEN_CLOUD,
-                label="Qwen DashScope",
+                label="Qwen",
             )
         return cls(
             mode="cloud",

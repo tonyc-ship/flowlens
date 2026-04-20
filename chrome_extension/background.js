@@ -37,6 +37,14 @@ let watchMode = false;
 let watchStartTime = Date.now();
 let watchLog = [];
 const WATCH_LOG_MAX = 0; // 0 means keep the full task history for the overlay.
+const WATCH_AUTO_COMMANDS = new Set([
+  'navigate',
+  'go_back',
+  'create_background_window',
+  'create_watch_window',
+  'close_window',
+  'close_tab',
+]);
 
 function targetTabId() {
   return pinnedTabId || activeTabId;
@@ -213,6 +221,10 @@ function broadcastWatch(data) {
   broadcastSidePanel({ type: 'watch_event', data });
   broadcastOverlay({ type: 'watch_event', data });
   broadcastStatus();
+}
+
+function shouldAutoBroadcastCommand(action) {
+  return WATCH_AUTO_COMMANDS.has(String(action || ''));
 }
 
 function broadcastHighlight(mode, opts) {
@@ -416,7 +428,8 @@ function connect(port) {
     if (msg.type !== 'command') return;
 
     // ── Watch mode: broadcast incoming command ──
-    if (watchMode && msg.action !== 'watch_log' && msg.action !== 'capture_screenshot') {
+    const autoWatch = watchMode && shouldAutoBroadcastCommand(msg.action);
+    if (autoWatch) {
       const kind = categorizeAction(msg.action);
       broadcastWatch({
         kind,
@@ -433,7 +446,7 @@ function connect(port) {
       response = { id: msg.id, type: 'response', data: result };
 
       // ── Watch mode: broadcast result ──
-      if (watchMode && msg.action !== 'watch_log' && msg.action !== 'capture_screenshot') {
+      if (autoWatch) {
         broadcastWatch({
           kind: 'result',
           action: msg.action,

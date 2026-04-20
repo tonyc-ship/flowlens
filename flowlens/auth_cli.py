@@ -8,7 +8,6 @@ setup with arrow-key navigation.
 from __future__ import annotations
 
 import argparse
-import getpass
 import subprocess
 import sys
 
@@ -17,13 +16,29 @@ from .core.auth import (
     METHOD_API_KEY,
     METHOD_OAUTH,
     PROVIDER_ANTHROPIC,
+    PROVIDER_DEEPSEEK,
+    PROVIDER_KIMI,
     PROVIDER_OPENAI,
+    PROVIDER_QWEN,
     PROVIDERS,
     available_provider_statuses,
     clear_auth_secret,
+    default_model_for_provider,
     provider_config,
+    provider_status,
+    preferred_provider,
     save_auth_secret,
+    save_default_model,
 )
+
+
+MODEL_CHOICES: dict[str, tuple[str, ...]] = {
+    PROVIDER_ANTHROPIC: ("claude-sonnet-4-6",),
+    PROVIDER_OPENAI: ("gpt-5.4",),
+    PROVIDER_DEEPSEEK: ("deepseek-chat",),
+    PROVIDER_KIMI: ("kimi-k2.5",),
+    PROVIDER_QWEN: ("qwen3.6-plus", "qwen-vl-max-latest"),
+}
 
 
 # ---------------------------------------------------------------------------
@@ -95,6 +110,12 @@ def _clear_screen() -> None:
 
 def _status_banner() -> str:
     lines: list[str] = ["  Current credentials:\n"]
+    default_provider = preferred_provider()
+    if default_provider:
+        config = provider_config(default_provider)
+        name = config.display_name if config else default_provider
+        lines.append(f"  Default model: {default_model_for_provider(default_provider)} ({name})")
+        lines.append("")
     for s in available_provider_statuses():
         config = provider_config(s.provider)
         name = config.display_name if config else s.provider
@@ -116,13 +137,84 @@ def _status_banner() -> str:
 def _prompt_api_key(provider_label: str) -> str | None:
     _clear_screen()
     sys.stderr.write(f"\n  Paste your {provider_label} API key below.\n")
-    sys.stderr.write("  (input is hidden)\n\n")
+    sys.stderr.write("\n")
+    sys.stderr.write(f"  {provider_label} API Key: ")
     sys.stderr.flush()
     try:
-        key = getpass.getpass(f"  {provider_label} API Key: ")
+        key = _read_visible_line()
     except (EOFError, KeyboardInterrupt):
         return None
     return key.strip() or None
+
+
+def _prompt_default_model(provider_label: str, current_model: str) -> str | None:
+    _clear_screen()
+    sys.stderr.write(f"\n  Enter a custom default model for {provider_label}.\n")
+    if current_model:
+        sys.stderr.write(f"  Current: {current_model}\n")
+    sys.stderr.write("\n")
+    sys.stderr.write("  Model: ")
+    sys.stderr.flush()
+    try:
+        model = _read_visible_line()
+    except (EOFError, KeyboardInterrupt):
+        return None
+    return model.strip() or None
+
+
+def _model_options(provider: str) -> list[str]:
+    config = provider_config(provider)
+    choices = list(MODEL_CHOICES.get(provider, ()))
+    if config and config.default_model and config.default_model not in choices:
+        choices.insert(0, config.default_model)
+    return choices or ([config.default_model] if config and config.default_model else [])
+
+
+def _select_default_model(provider_label: str, provider: str) -> str | None:
+    current = default_model_for_provider(provider) if preferred_provider() == provider else ""
+    choices = _model_options(provider)
+    options = [f"{model}{' (current)' if model == current else ''}" for model in choices]
+    custom_index = len(options)
+    options.append("Enter custom model...")
+    back_index = len(options)
+    options.append("Back")
+
+    pick = _pick(f"Choose the default model for {provider_label}.", options)
+    if pick is None or pick == back_index:
+        return None
+    if pick == custom_index:
+        return _prompt_default_model(provider_label, current)
+    return choices[pick]
+
+
+def _read_visible_line() -> str:
+    """Read a visible terminal line, accepting either LF or CR as Enter."""
+    if not sys.stdin.isatty():
+        return sys.stdin.readline()
+
+    import os
+    import termios
+
+    fd = sys.stdin.fileno()
+    attrs = termios.tcgetattr(fd)
+    attrs[0] |= termios.ICRNL | termios.IXON
+    attrs[1] |= termios.OPOST
+    if hasattr(termios, "ONLCR"):
+        attrs[1] |= termios.ONLCR
+    attrs[3] |= termios.ICANON | termios.ECHO | termios.ECHOE | termios.ECHOK | termios.ISIG
+    if hasattr(termios, "IEXTEN"):
+        attrs[3] |= termios.IEXTEN
+    termios.tcsetattr(fd, termios.TCSANOW, attrs)
+
+    data = bytearray()
+    while True:
+        chunk = os.read(fd, 1)
+        if not chunk:
+            break
+        data.extend(chunk)
+        if chunk in (b"\n", b"\r"):
+            break
+    return data.decode(errors="replace")
 
 
 def _run_codex_oauth() -> bool:
@@ -152,6 +244,48 @@ def _run_codex_oauth() -> bool:
     return code == 0
 
 
+def _set_provider_api_key_interactive(label: str, provider: str) -> bool:
+    key = _prompt_api_key(label)
+    if not key:
+        return False
+    save_auth_secret(provider, METHOD_API_KEY, key)
+    _clear_screen()
+    sys.stderr.write(f"\n  ✓ {label} API Key saved.\n")
+    sys.stderr.flush()
+    _wait_enter()
+    return True
+
+
+def _offer_credential_setup_if_missing(label: str, provider: str) -> None:
+    if provider_status(provider).available:
+        _wait_enter()
+        return
+
+    options = [f"Set {label} API Key now"]
+    oauth_index = None
+    if provider == PROVIDER_OPENAI:
+        oauth_index = len(options)
+        options.append("Login with OpenAI OAuth now")
+    skip_index = len(options)
+    options.append("Skip")
+
+    pick = _pick(f"No credential is configured for {label}. Set one now?", options)
+    if pick is None or pick == skip_index:
+        return
+    if pick == 0:
+        _set_provider_api_key_interactive(label, provider)
+        return
+    if oauth_index is not None and pick == oauth_index:
+        ok = _run_codex_oauth()
+        _clear_screen()
+        if ok:
+            sys.stderr.write("\n  ✓ OpenAI OAuth login succeeded.\n")
+        else:
+            sys.stderr.write("\n  ✗ OpenAI OAuth login failed. Is `codex` installed?\n")
+        sys.stderr.flush()
+        _wait_enter()
+
+
 def _interactive() -> int:
     """Main interactive auth menu."""
     if not sys.stdin.isatty():
@@ -166,28 +300,46 @@ def _interactive() -> int:
 
     while True:
         banner = _status_banner()
-        options: list[str] = [f"Set {label} API Key" for label, _ in api_key_entries]
-        options.append("Login with OpenAI OAuth (opens browser, requires codex CLI)")
-        options.append("Clear a credential")
-        options.append("Exit")
+        options = [
+            "Set default model",
+            "Set API key",
+            "Login with OpenAI OAuth (opens browser, requires codex CLI)",
+            "Clear a credential",
+            "Exit",
+        ]
+        set_model_index = 0
+        set_api_key_index = 1
+        oauth_index = 2
+        clear_index = 3
+        exit_index = 4
 
         choice = _pick("What would you like to do?", options, show_status=banner)
 
-        if choice is None or choice == len(options) - 1:
+        if choice is None or choice == exit_index:
             _clear_screen()
             return 0
 
-        if choice < len(api_key_entries):
-            label, provider = api_key_entries[choice]
-            key = _prompt_api_key(label)
-            if key:
-                save_auth_secret(provider, METHOD_API_KEY, key)
-                _clear_screen()
-                sys.stderr.write(f"\n  ✓ {label} API Key saved.\n")
-                sys.stderr.flush()
-                _wait_enter()
+        if choice == set_model_index:
+            provider_labels = [label for label, _ in api_key_entries]
+            provider_pick = _pick("Which provider should be the default?", provider_labels)
+            if provider_pick is not None:
+                label, provider = api_key_entries[provider_pick]
+                model = _select_default_model(label, provider)
+                if model:
+                    save_default_model(provider, model)
+                    _clear_screen()
+                    sys.stderr.write(f"\n  ✓ Default model saved: {label} -> {model}\n")
+                    sys.stderr.flush()
+                    _offer_credential_setup_if_missing(label, provider)
 
-        elif choice == len(api_key_entries):
+        elif choice == set_api_key_index:
+            provider_labels = [label for label, _ in api_key_entries]
+            provider_pick = _pick("Which provider API key do you want to set?", provider_labels)
+            if provider_pick is not None:
+                label, provider = api_key_entries[provider_pick]
+                _set_provider_api_key_interactive(label, provider)
+
+        elif choice == oauth_index:
             ok = _run_codex_oauth()
             _clear_screen()
             if ok:
@@ -197,7 +349,7 @@ def _interactive() -> int:
             sys.stderr.flush()
             _wait_enter()
 
-        elif choice == len(api_key_entries) + 1:
+        elif choice == clear_index:
             creds: list[tuple[str, str, str] | str] = [
                 (f"{PROVIDERS[name].display_name} API Key", name, METHOD_API_KEY)
                 for name in CLOUD_PROVIDERS
@@ -236,7 +388,7 @@ def build_parser() -> argparse.ArgumentParser:
     )
     subparsers = parser.add_subparsers(dest="command")
 
-    subparsers.add_parser("status", help="Show discovered Anthropic / OpenAI credentials.")
+    subparsers.add_parser("status", help="Show discovered credentials and configured defaults.")
 
     provider_choices = list(CLOUD_PROVIDERS)
 
@@ -253,6 +405,20 @@ def build_parser() -> argparse.ArgumentParser:
         help="Credential value. If omitted, FlowLens reads from stdin.",
     )
 
+    model_parser = subparsers.add_parser("model", help="Set the default hosted model.")
+    model_parser.add_argument("provider", choices=provider_choices)
+    model_parser.add_argument(
+        "model",
+        nargs="?",
+        default="",
+        help="Model name. If omitted, FlowLens reads from stdin.",
+    )
+    model_parser.add_argument(
+        "--no-default-provider",
+        action="store_true",
+        help="Only set this provider's default model; do not make the provider the global default.",
+    )
+
     clear_parser = subparsers.add_parser("clear", help="Remove a stored credential from ~/.flowlens/auth.json.")
     clear_parser.add_argument("provider", choices=provider_choices)
     clear_parser.add_argument("method", choices=[METHOD_API_KEY, METHOD_OAUTH])
@@ -261,6 +427,12 @@ def build_parser() -> argparse.ArgumentParser:
 
 
 def _render_status() -> int:
+    default_provider = preferred_provider()
+    print("[defaults]")
+    print(f"provider={default_provider or ''}")
+    if default_provider:
+        print(f"model={default_model_for_provider(default_provider)}")
+    print("")
     for status in available_provider_statuses():
         print(f"[{status.provider}]")
         print(f"api_key_available={str(status.api_key_available).lower()}")
@@ -272,6 +444,7 @@ def _render_status() -> int:
         print(f"oauth_logged_in={str(status.oauth_logged_in).lower()}")
         if status.oauth_login_hint:
             print(f"oauth_login_hint={status.oauth_login_hint}")
+        print(f"default_model={default_model_for_provider(status.provider)}")
         print("")
     return 0
 
@@ -307,6 +480,18 @@ def _set_secret(provider: str, method: str, value: str) -> int:
     return 0
 
 
+def _set_default_model(provider: str, model: str, *, make_provider_default: bool = True) -> int:
+    value = model.strip() if model else sys.stdin.read().strip()
+    if not value:
+        raise SystemExit("Missing model name. Pass a model argument or pipe it through stdin.")
+    path = save_default_model(provider, value, make_provider_default=make_provider_default)
+    print(f"saved={path}")
+    print(f"provider={provider}")
+    print(f"model={value}")
+    print(f"default_provider={str(make_provider_default).lower()}")
+    return 0
+
+
 def main(argv: list[str] | None = None) -> int:
     raw = list(argv or [])
 
@@ -326,6 +511,12 @@ def main(argv: list[str] | None = None) -> int:
         return _run_login(args.provider, args.method)
     if args.command == "set":
         return _set_secret(args.provider, args.method, args.value)
+    if args.command == "model":
+        return _set_default_model(
+            args.provider,
+            args.model,
+            make_provider_default=not args.no_default_provider,
+        )
     if args.command == "clear":
         path = clear_auth_secret(args.provider, args.method)
         print(f"cleared={path or 'none'}")

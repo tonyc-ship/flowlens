@@ -52,6 +52,7 @@ class ModelRoutingTest(unittest.TestCase):
             "kimi-k2-0905-preview": PROVIDER_KIMI,
             "moonshot-v1-128k": PROVIDER_KIMI,
             "qwen-plus": PROVIDER_QWEN,
+            "qwen3.6-plus": PROVIDER_QWEN,
             "qwen-vl-max": PROVIDER_QWEN,
             # Local MLX aliases must win over the lowercase qwen- cloud prefix.
             "qwen-local": "local",

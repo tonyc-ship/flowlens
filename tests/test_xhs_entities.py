@@ -4,6 +4,7 @@ import unittest
 
 from flowlens.platforms.xhs.entities import (
     Comment,
+    ImageInfo,
     NoteEntity,
     NoteType,
     parse_count_text,
@@ -35,6 +36,34 @@ class XHSEntityTests(unittest.TestCase):
         self.assertIn("¥299", note.price_mentions)
         self.assertTrue(any("评论区见链接" in p for p in note.cta_phrases))
         self.assertTrue(any("卡式炉更适合新手" in p for p in note.key_points))
+
+        title_only = NoteEntity(title="只有标题")
+        title_only.requested_sections = ("content",)
+        self.assertFalse(title_only.completeness["content"])
+
+        loading_only = NoteEntity.from_dom_dict({
+            "title": "还在加载的笔记",
+            "content": "刚刚\n加载中",
+        })
+        loading_only.requested_sections = ("content",)
+        self.assertEqual(loading_only.content, "")
+        self.assertFalse(loading_only.completeness["content"])
+
+        media_note = NoteEntity(
+            title="图片海报",
+            content="建议参加赛道日活动。",
+            images=[ImageInfo(ocr_text="1. 全长1400米 左弯6个 右弯4个")],
+        )
+        media_note.refresh_derived_fields()
+        self.assertTrue(any("建议参加赛道日活动" in p for p in media_note.key_points))
+        self.assertTrue(any("全长1400米" in p for p in media_note.media_key_points))
+
+        debug_note = NoteEntity.from_dom_dict({
+            "title": "带调试信息",
+            "content": "正文",
+            "extraction_debug": {"content_source": "root_text_after_title"},
+        })
+        self.assertEqual(debug_note.to_tool_dict()["extraction_debug"]["content_source"], "root_text_after_title")
 
         # Dedup keeps the richer of two near-duplicate comments.
         a = Comment.from_dom_dict({"username": "露营控", "text": "这个卡式炉真的更适合新手",

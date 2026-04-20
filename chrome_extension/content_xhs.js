@@ -470,6 +470,83 @@ function firstVisibleText(selectors, root = document, options = {}) {
   return '';
 }
 
+function visibleTextMatch(selectors, root = document, options = {}) {
+  for (const sel of selectors) {
+    const nodes = $$(sel, root);
+    for (const el of nodes) {
+      if (!isVisibleElement(el)) continue;
+      if (options.excludeComments && isInCommentArea(el)) continue;
+      const value = normalizeNoteText(el.innerText || el.textContent || '');
+      if (value) {
+        return { selector: sel, text: value };
+      }
+    }
+  }
+  return { selector: '', text: '' };
+}
+
+function selectorDebug(selectors, root = document) {
+  return selectors.map((sel) => {
+    const nodes = $$(sel, root);
+    const visible = nodes.filter((el) => isVisibleElement(el) && !isInCommentArea(el));
+    return {
+      selector: sel,
+      count: nodes.length,
+      visible_count: visible.length,
+      first_text: normalizeNoteText(visible[0]?.innerText || visible[0]?.textContent || '').slice(0, 160),
+    };
+  });
+}
+
+function isLikelyNoteBodyStopLine(line) {
+  return (
+    /猜你想搜|说点什么/.test(line) ||
+    /^(?:共\s*\d*\s*条评论|展开|收起|THE END|- THE END -)$/i.test(line) ||
+    /^\d{4}-\d{1,2}-\d{1,2}(?:\s+\S+)?$/.test(line) ||
+    /^\d{1,2}-\d{1,2}(?:\s+\S+)?$/.test(line) ||
+    /^(?:刚刚|\d+\s*(?:秒|分钟|小时|天)前|昨天|前天|编辑于\s*.+)$/.test(line) ||
+    /^(?:加载中|赞|收藏|评论|分享|发送|取消)$/.test(line)
+  );
+}
+
+function isIgnorableNoteBodyLine(line) {
+  return /^(?:已关注|关注|作者|\.\.\.|…|#?广告|举报)$/.test(line);
+}
+
+function extractNoteContentFromRootText(root, title = '', author = '') {
+  const raw = normalizeNoteText(root?.innerText || root?.textContent || '');
+  if (!raw) return '';
+
+  const titleText = normalizeNoteText(title);
+  const authorText = normalizeNoteText(author);
+  const lines = raw
+    .split(/\n+/)
+    .map((line) => normalizeNoteText(line))
+    .filter(Boolean);
+  if (!lines.length) return '';
+
+  let start = -1;
+  if (titleText) {
+    start = lines.findIndex((line) => line === titleText || line.includes(titleText) || titleText.includes(line));
+  }
+  if (start < 0 && authorText) {
+    const authorIndex = lines.findIndex((line) => line === authorText);
+    if (authorIndex >= 0) start = authorIndex;
+  }
+  if (start < 0) return '';
+
+  const body = [];
+  for (const line of lines.slice(start + 1)) {
+    if (!line || line === titleText || line === authorText) continue;
+    if (isLikelyNoteBodyStopLine(line)) break;
+    if (isIgnorableNoteBodyLine(line)) continue;
+    body.push(line);
+  }
+
+  const cleaned = normalizeNoteText(body.join('\n'));
+  return cleaned.length >= 6 ? cleaned : '';
+}
+
 async function waitForVisibleNoteOverlay(timeoutMs = 1200) {
   const deadline = Date.now() + timeoutMs;
   while (Date.now() < deadline) {
@@ -481,33 +558,65 @@ async function waitForVisibleNoteOverlay(timeoutMs = 1200) {
 }
 
 async function waitForNoteContent(timeout = 8000) {
-  /** Wait for text or media elements to appear in DOM (XHS loads async). */
-  const textSelectors = [
-    '#detail-title', '.note-content .title', '.note-scroller .title',
-    '#detail-desc', '.note-content .desc', '.note-scroller .desc',
-  ];
-  const mediaSelectors = [
-    'video',
-    '.player-container',
-    '.video-player',
-    '.xg-video-container',
-    '.carousel-image img',
-    '.slide img',
-    '.swiper-slide img',
-  ];
+  /** Wait for the detail shell to settle; title/media often appear before body text. */
   const deadline = Date.now() + timeout;
+  const startedAt = Date.now();
+  const minShellSettleMs = 1400;
+  let shellSeenAt = 0;
+  let bestNote = null;
+  let attempts = 0;
+
   while (Date.now() < deadline) {
-    for (const sel of textSelectors) {
-      const el = document.querySelector(sel);
-      if (el && el.textContent.trim()) return el;
+    attempts += 1;
+    const note = extractNoteContent();
+    const hasContent = Boolean(normalizeNoteText(note.content));
+    const hasShell = Boolean(
+      note.note_id
+      || note.title
+      || note.author
+      || note.date
+      || note.likes
+      || note.comments_count
+      || (Array.isArray(note.image_urls) && note.image_urls.length)
+      || note.video_url
+      || note.poster_url
+    );
+
+    if (hasShell) {
+      bestNote = note;
+      if (!shellSeenAt) shellSeenAt = Date.now();
     }
-    for (const sel of mediaSelectors) {
-      const el = document.querySelector(sel);
-      if (el) return el;
+    if (hasContent) {
+      note.extraction_debug = {
+        ...(note.extraction_debug || {}),
+        wait_reason: 'content_ready',
+        wait_attempts: attempts,
+        wait_elapsed_ms: Date.now() - startedAt,
+      };
+      return note;
     }
-    await wait(500);
+    if (hasShell && Date.now() - shellSeenAt >= minShellSettleMs) {
+      note.extraction_debug = {
+        ...(note.extraction_debug || {}),
+        wait_reason: 'shell_settled_without_content',
+        wait_attempts: attempts,
+        wait_elapsed_ms: Date.now() - startedAt,
+      };
+      return note;
+    }
+
+    await wait(250);
   }
-  return null;
+
+  if (bestNote) {
+    bestNote.extraction_debug = {
+      ...(bestNote.extraction_debug || {}),
+      wait_reason: 'timeout_with_shell',
+      wait_attempts: attempts,
+      wait_elapsed_ms: Date.now() - startedAt,
+    };
+  }
+  return bestNote;
 }
 
 function extractNoteContent() {
@@ -539,7 +648,7 @@ function extractNoteContent() {
   ], root);
 
   // Content — different containers for different note types
-  note.content = firstVisibleText([
+  const contentSelectors = [
     '#detail-desc .note-text',
     '#detail-desc',
     '.note-content #detail-desc',
@@ -549,14 +658,30 @@ function extractNoteContent() {
     '.note-content .desc',
     '.note-scroller .desc',
     '.note-detail .desc',
-  ], root, { excludeComments: true });
+  ];
+  const contentMatch = visibleTextMatch(contentSelectors, root, { excludeComments: true });
+  note.content = contentMatch.text;
+  note.content_source = contentMatch.selector ? `selector:${contentMatch.selector}` : '';
 
   // If content has nested spans/elements, get the full text
   if (!note.content) {
     const descEl = $$('#detail-desc, .note-content .desc, .note-scroller .desc', root)
       .find(el => isVisibleElement(el) && !isInCommentArea(el));
-    if (descEl) note.content = normalizeNoteText(descEl.innerText || descEl.textContent || '');
+    if (descEl) {
+      note.content = normalizeNoteText(descEl.innerText || descEl.textContent || '');
+      note.content_source = 'desc_element_text';
+    }
   }
+  if (!note.content) {
+    note.content = extractNoteContentFromRootText(root, note.title, note.author);
+    if (note.content) note.content_source = 'root_text_after_title';
+  }
+  note.extraction_debug = {
+    content_source: note.content_source || 'empty',
+    root_selector: root.id ? `#${root.id}` : (root.className ? `.${String(root.className).trim().split(/\s+/).join('.')}` : root.tagName),
+    root_text_preview: normalizeNoteText(root.innerText || root.textContent || '').slice(0, 1200),
+    content_selector_debug: selectorDebug(contentSelectors, root),
+  };
 
   // Date
   note.date = firstVisibleText([
@@ -1208,8 +1333,7 @@ async function scrollInNote(pixels = 400) {
         url: window.location.href,
       };
     }
-    await waitForNoteContent(params.timeout || 8000);
-    const note = extractNoteContent();
+    const note = await waitForNoteContent(params.timeout || 8000) || extractNoteContent();
     const prev = window.__flowlensLastNoteId || '';
     if (note.note_id && prev && note.note_id === prev) {
       note._stale_warning = `This looks like the same note as the previous extract (note_id=${note.note_id}). The note modal may not have closed between clicks — use extract_page_data command=close_note, verify the modal is gone, then re-open the target card.`;

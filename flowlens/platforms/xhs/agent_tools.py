@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+import re
 from pathlib import Path
 
 from ...agent.tool import Tool, ToolContext
@@ -11,7 +12,7 @@ from ...core.bridge import ExtensionBridge, TabBridge
 from ...knowledge.loader import detect_site
 from ...perception.media import MediaProcessor
 from .capabilities import plan_for_level
-from .entities import NoteCard
+from .entities import NoteCard, NoteEntity, extract_key_points, is_meaningful_note_content
 from .processor import XHSSiteAdapter, rank_note_card
 
 
@@ -43,6 +44,11 @@ def _card_preview(card: dict) -> dict:
 
 def _summarize_note_entity(entity: dict) -> dict:
     video = entity.get("video") or {}
+    media_text = "\n".join(
+        str(image.get("ocr_text", ""))
+        for image in entity.get("images", [])
+        if isinstance(image, dict) and image.get("ocr_text")
+    )
     return {
         "note_id": entity.get("note_id", ""),
         "url": entity.get("url", ""),
@@ -57,6 +63,10 @@ def _summarize_note_entity(entity: dict) -> dict:
         "comments_count_value": entity.get("comments_count_value"),
         "hashtags": list(entity.get("hashtags", [])[:8]),
         "content_summary": _short_text(entity.get("content", ""), 420),
+        "content_source": entity.get("content_source", ""),
+        "content_key_points": list(entity.get("key_points", [])[:6]),
+        "media_ocr_key_points": list(entity.get("media_key_points", [])[:6])
+        or extract_key_points(media_text, limit=6),
         "key_points": list(entity.get("key_points", [])[:6]),
         "top_comments": list(entity.get("top_comments", [])[:3]),
         "cover_description": _short_text(entity.get("cover_description", ""), 220),
@@ -83,6 +93,84 @@ def _summarize_author_entity(entity: dict) -> dict:
         "screenshot": entity.get("screenshot", ""),
         "top_note_cards": [_card_preview(card) for card in entity.get("note_cards", [])[:6]],
     }
+
+
+def _is_note_ocr_stop_line(line: str) -> bool:
+    return bool(
+        re.search(r"(?:猜你想搜|说点什么)", line)
+        or re.search(r"^(?:共\s*\d*\s*条评论|展开|收起|-?\s*THE END\s*-?)$", line, re.I)
+        or re.search(r"^\d{4}-\d{1,2}-\d{1,2}(?:\s+\S+)?$", line)
+        or re.search(r"^\d{1,2}-\d{1,2}(?:\s+\S+)?$", line)
+        or re.search(r"^(?:刚刚|\d+\s*(?:秒|分钟|小时|天)前|昨天|前天|编辑于\s*.+)$", line)
+        or re.search(r"^(?:加载中|赞|收藏|评论|分享|发送|取消)$", line)
+    )
+
+
+def _content_from_note_ocr(ocr_text: str, *, title: str = "", author: str = "") -> str:
+    lines = [
+        re.sub(r"\s+", " ", line).strip()
+        for line in str(ocr_text or "").splitlines()
+    ]
+    lines = [line for line in lines if line]
+    if not lines:
+        return ""
+
+    title = re.sub(r"\s+", " ", title or "").strip()
+    author = re.sub(r"\s+", " ", author or "").strip()
+    start = -1
+    if title:
+        for idx, line in enumerate(lines):
+            if line == title or title in line or line in title:
+                start = idx
+                break
+    if start < 0 and author:
+        for idx, line in enumerate(lines):
+            if line == author:
+                start = idx
+                break
+    if start < 0:
+        return ""
+
+    body: list[str] = []
+    for line in lines[start + 1:]:
+        if line in {title, author}:
+            continue
+        if _is_note_ocr_stop_line(line):
+            break
+        if re.search(r"^(?:已关注|关注|作者|\.{2,}|…)$", line):
+            continue
+        body.append(line)
+
+    content = "\n".join(body).strip()
+    return content if is_meaningful_note_content(content) else ""
+
+
+def _fill_missing_note_content_from_screenshot(
+    note: NoteEntity,
+    screenshot_path: Path,
+    media: MediaProcessor,
+) -> None:
+    if note.content or not screenshot_path.exists():
+        return
+    try:
+        ocr_text = media.ocr_image(screenshot_path.read_bytes())
+    except Exception:
+        return
+    content = _content_from_note_ocr(
+        ocr_text,
+        title=note.title,
+        author=note.author_name,
+    )
+    if not content:
+        return
+    note.content = content
+    if "xhs.note.screenshot_ocr_content" not in note.applied_capabilities:
+        note.applied_capabilities.append("xhs.note.screenshot_ocr_content")
+    debug = dict(note.extraction_debug or {})
+    debug["content_source"] = "screenshot_ocr"
+    debug["screenshot_ocr_excerpt"] = content[:800]
+    note.extraction_debug = debug
+    note.refresh_derived_fields()
 
 
 def _payload_summary(payload: dict, *, artifact_path: str) -> dict:
@@ -210,7 +298,10 @@ class ExtractSiteEntityTool(Tool):
                 "level": {
                     "type": "string",
                     "enum": ["card", "lite", "deep"],
-                    "description": "Extraction depth. Use deep only when the extra cost is justified.",
+                    "description": (
+                        "Extraction depth. Use lite for body/comments/likes. "
+                        "Use deep only when the extra media cost is justified."
+                    ),
                     "default": "lite",
                 },
                 "max_comments": {
@@ -234,7 +325,10 @@ class ExtractSiteEntityTool(Tool):
                 },
                 "include_media": {
                     "type": "boolean",
-                    "description": "Override whether note extraction runs OCR / vision / transcription.",
+                    "description": (
+                        "Override whether note extraction runs OCR / vision / transcription. "
+                        "Set false unless image/video analysis is explicitly needed."
+                    ),
                 },
                 "include_notes": {
                     "type": "boolean",
@@ -303,6 +397,7 @@ class ExtractSiteEntityTool(Tool):
                 include_media=params.get("include_media"),
             )
             note.screenshot_path = Path(saved).name if saved else ""
+            _fill_missing_note_content_from_screenshot(note, screenshot_path, self._media)
             payload = {
                 "site": site_name,
                 "entity_type": entity_type,
@@ -380,7 +475,10 @@ class RunSiteActionTool(Tool):
                 "level": {
                     "type": "string",
                     "enum": ["card", "lite", "deep"],
-                    "description": "For read_note: extraction depth.",
+                    "description": (
+                        "For read_note: extraction depth. Use lite for body/comments/likes. "
+                        "Deep may run expensive image/video enrichment unless include_media=false."
+                    ),
                     "default": "lite",
                 },
                 "wait_seconds": {
@@ -414,7 +512,10 @@ class RunSiteActionTool(Tool):
                 },
                 "include_media": {
                     "type": "boolean",
-                    "description": "For read_note: override OCR / vision / transcription.",
+                    "description": (
+                        "For read_note: override OCR / vision / transcription. "
+                        "Set false unless image/video analysis is explicitly needed."
+                    ),
                 },
             },
             "required": ["action"],
@@ -482,6 +583,7 @@ class RunSiteActionTool(Tool):
             )
             saved = await self._bridge.save_screenshot(screenshot_path)
             note.screenshot_path = Path(saved).name if saved else ""
+            _fill_missing_note_content_from_screenshot(note, screenshot_path, self._media)
             if bool(params.get("close_after", False)):
                 try:
                     await adapter.close_note()
@@ -527,8 +629,9 @@ class XHSTopicScanTool(Tool):
         "Run a Xiaohongshu topic-scan macro on the CURRENT site. This is the "
         "preferred starting point for topic research because it reduces turn "
         "count: search -> collect cards -> rank relevance -> read a small sample "
-        "(default 2 deep + 4 lite) -> stop. Full extracted notes are written to "
-        "disk and the tool returns a compact summary."
+        "(default 2 deep + 4 lite) -> stop. Media vision is off by default to "
+        "keep costs low. Full extracted notes are written to disk and the tool "
+        "returns a compact summary."
     )
 
     @property
@@ -569,6 +672,15 @@ class XHSTopicScanTool(Tool):
                     "description": "Max images to enrich for deep image notes.",
                     "default": 4,
                 },
+                "include_media": {
+                    "type": "boolean",
+                    "description": (
+                        "Whether deep reads should run OCR/vision/video enrichment. "
+                        "Default false keeps topic scans cheap; set true only when "
+                        "the user asks to analyze image or video contents."
+                    ),
+                    "default": False,
+                },
                 "max_video_frames": {
                     "type": "integer",
                     "description": "Max video frames to analyze for deep video notes.",
@@ -602,6 +714,7 @@ class XHSTopicScanTool(Tool):
         wait_seconds = min(max(float(params.get("wait_seconds", 1.5) or 0), 0.0), 2.0)
         max_deep = max(0, int(params.get("max_deep_notes", 2)))
         max_lite = max(0, int(params.get("max_lite_notes", 4)))
+        include_media = bool(params.get("include_media", False))
         total_limit = max_deep + max_lite
 
         search = await adapter.search_notes(
@@ -642,13 +755,14 @@ class XHSTopicScanTool(Tool):
                     max_comments=comment_count,
                     max_images=int(params.get("max_images", 4)),
                     max_video_frames=int(params.get("max_video_frames", 4)),
-                    include_media=(level == "deep"),
+                    include_media=include_media and level == "deep",
                     open_wait_seconds=max(wait_seconds, 0),
                     close_after=False,
                 )
                 screenshot_path = ctx.next_screenshot_path(f"topic_scan_{idx+1}_{level}")
                 saved = await self._bridge.save_screenshot(screenshot_path)
                 note.screenshot_path = Path(saved).name if saved else ""
+                _fill_missing_note_content_from_screenshot(note, screenshot_path, self._media)
                 notes.append({
                     "scan_level": level,
                     "source_position": card.position,

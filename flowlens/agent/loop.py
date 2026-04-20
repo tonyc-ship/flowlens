@@ -254,7 +254,10 @@ def _dynamic_extra_instructions(task: str, site_name: str | None, page_state: st
     if _task_targets_xhs(task):
         parts.append(
             "For Xiaohongshu research tasks, start with `xhs_topic_scan(query=...)` "
-            "when it is available; otherwise navigate to Xiaohongshu and call "
+            "when it is available. Pass `include_media=false` unless the user explicitly "
+            "asks to analyze images or videos; screenshots are already saved as evidence. "
+            "After one representative topic scan plus a few targeted reads if needed, write "
+            "the final report instead of repeatedly searching/opening more notes. Otherwise navigate to Xiaohongshu and call "
             "`run_site_action(action='search_notes', query=...)`. Do not take a "
             "generic initial screenshot, do not analyze a screenshot before the "
             "first search, and never search for `小红书网页版` unless the user explicitly asks for that phrase."
@@ -274,7 +277,8 @@ def _dynamic_extra_instructions(task: str, site_name: str | None, page_state: st
     parts.append(
         "In the final Xiaohongshu report, embed each useful note screenshot using "
         "`![note title](screenshot_filename.png)`. Treat screenshots as primary evidence because direct "
-        "Xiaohongshu links are often blocked or rate-limited."
+        "Xiaohongshu links are often blocked or rate-limited. If you report post body text, use "
+        "`entity.content` only; put image OCR/vision/video evidence in a separate column or label it as media evidence."
     )
     return "\n".join(parts)
 
@@ -561,7 +565,7 @@ async def _agent_loop(
 
     log("start", f"Task: {task}")
     log("tools", f"Available: {[t.name for t in tools]}")
-    await watch("info", f"Task started: {task[:80]}", phase="start")
+    await watch("session", f"Task started: {task[:120]}", phase="start")
 
     while turn < max_turns:
         turn += 1
@@ -647,13 +651,12 @@ async def _agent_loop(
             if text.startswith("[Thinking] "):
                 thinking = text[len("[Thinking] "):]
                 thinking_texts.append(thinking)
-                await watch("info", thinking[:200], phase="thinking",
-                            reasoning=thinking[:500])
+                await watch("think", "Agent is planning the next step.", phase="thinking")
             else:
                 visible_texts.append(text)
                 final_text = text
-                await watch("info", text[:200], phase="thinking",
-                            reasoning=text[:500])
+                await watch("think", text[:240], phase="thinking",
+                            decision=text[:500])
 
         usage_entry: dict = {
             "input_tokens": response.input_tokens,
@@ -700,7 +703,7 @@ async def _agent_loop(
             tool_input = tu.input
 
             log("tool_call", f"{tool_name}({json.dumps(tool_input, ensure_ascii=False)[:200]})")
-            await watch("info", f"🔧 {tool_name}", phase="tool",
+            await watch("action", f"Calling {tool_name}", phase="tool",
                         action_name=tool_name,
                         detail=json.dumps(tool_input, ensure_ascii=False)[:200])
 
@@ -745,6 +748,13 @@ async def _agent_loop(
                         "duration_s": tool_duration,
                         "result_summary": _text_summary(result_content),
                     })
+                    await watch(
+                        "result",
+                        _text_summary(result_content)[:360],
+                        phase="tool_result",
+                        action_name=tool_name,
+                        duration=tool_duration,
+                    )
                 except Exception as e:
                     log("tool_error", f"{tool_name}: {e}")
                     result_content = [{"type": "text", "text": f"Error executing {tool_name}: {e}"}]
@@ -755,6 +765,12 @@ async def _agent_loop(
                         "input": tool_input,
                         "error": str(e),
                     })
+                    await watch(
+                        "error",
+                        f"{tool_name}: {e}",
+                        phase="tool_error",
+                        action_name=tool_name,
+                    )
 
             all_results.append(result_content)
 

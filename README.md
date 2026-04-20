@@ -21,16 +21,10 @@ pip install -e .
 
 ### 配置LLM
 
-可以选择Anthropic API Key、OpenAI API Key、或 OpenAI OAuth 登录：
+支持Anthropic, OpenAI, Kimi, Qwen：
 
 ```bash
 flowlens auth
-```
-
-也可以直接写 `.env.local`：
-
-```bash
-ANTHROPIC_API_KEY=sk-ant-...
 ```
 
 ### 加载 Chrome Extension

@@ -356,6 +356,32 @@ const WATCH_ACTION_LABELS_ZH = {
   extract_site_entity: '提取小红书页面信息',
 };
 
+const WATCH_NOISY_ACTIONS = new Set([
+  'detect_state',
+  'get_tab_info',
+  'get_search_page_state',
+  'extract_search_cards',
+  'extract_note_content',
+  'extract_comments',
+  'click_at',
+  'click_note_by_id',
+  'click_note_link',
+  'submit_search_query',
+  'scroll_note',
+  'scroll_page',
+]);
+
+function shouldDisplayWatchEntry(entry) {
+  const action = String(entry?.action || '').toLowerCase();
+  const phase = String(entry?.phase || '').toLowerCase();
+  const kind = String(entry?.kind || 'info').toLowerCase();
+  if (kind === 'error' || phase === 'start' || phase === 'turn' || phase === 'thinking') return true;
+  if (phase === 'tool' || phase === 'tool_result' || phase === 'tool_error') return true;
+  if (WATCH_NOISY_ACTIONS.has(action)) return false;
+  if (kind === 'result' && String(entry?.message || '').trim() === 'OK') return false;
+  return true;
+}
+
 function watchKindLabel(kind) {
   if (!isXhsWatchContext()) return String(kind || 'info').toUpperCase();
   return WATCH_KIND_LABELS_ZH[kind] || String(kind || '信息');
@@ -441,9 +467,10 @@ function updateWatchOverlayStatus(status) {
 function setWatchOverlayState(payload) {
   watchOverlayStartTime = payload?.startTime || Date.now();
   watchOverlayEntries = Array.isArray(payload?.entries)
-    ? payload.entries.slice()
+    ? payload.entries.filter(shouldDisplayWatchEntry)
     : [];
-  const startEntry = watchOverlayEntries.find((entry) => taskTextFromEntry(entry));
+  const startEntry = (Array.isArray(payload?.entries) ? payload.entries : [])
+    .find((entry) => taskTextFromEntry(entry));
   if (startEntry) updateWatchTaskFromEntry(startEntry);
   if (payload?.status) {
     updateWatchOverlayStatus(payload.status);
@@ -455,10 +482,11 @@ function setWatchOverlayState(payload) {
 
 function appendWatchOverlayEntry(entry) {
   if (!entry) return;
+  updateWatchTaskFromEntry(entry);
+  if (!shouldDisplayWatchEntry(entry)) return;
   if (entry.timestamp === undefined) {
     entry.timestamp = Math.max(0, (Date.now() - watchOverlayStartTime) / 1000);
   }
-  updateWatchTaskFromEntry(entry);
   watchOverlayEntries.push(entry);
   showWatchOverlay();
   renderWatchOverlay();
