@@ -382,17 +382,20 @@ function connect(port) {
     const sendConnected = (tabId, tabUrl) => {
       if (ws !== socket || ws.readyState !== WebSocket.OPEN) return;
       if (tabId) rememberTabUrl(tabId, tabUrl || '');
+      const manifest = chrome.runtime.getManifest();
       ws.send(JSON.stringify({
         type: 'event',
         event: 'connected',
         data: {
           tabId: activeTabId,
           url: tabUrl || '',
+          extension_version: manifest.version,
           capabilities: {
             watch_mode: true,
             create_watch_window: true,
             side_panel: true,
             protocol_version: 2,
+            extension_version: manifest.version,
           },
         }
       }));

@@ -14,6 +14,7 @@ from __future__ import annotations
 import asyncio
 import base64
 import json
+import os
 import subprocess
 import time
 import uuid
@@ -24,6 +25,15 @@ import websockets
 from websockets.asyncio.server import serve
 
 from .process_metrics import append_jsonl, system_resource_snapshot
+
+
+def expected_extension_version() -> str:
+    manifest_path = Path(__file__).resolve().parents[2] / "chrome_extension" / "manifest.json"
+    try:
+        manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+    except Exception:
+        return ""
+    return str(manifest.get("version") or "").strip()
 
 
 def _metric(snapshot: dict, *path: str) -> float | int | None:
@@ -132,6 +142,11 @@ class ExtensionBridge:
         self._keepalive_task = None
         self._watch_mode = False
         self._capabilities: dict[str, object] = {}
+        self._extension_version: str | None = None
+
+    @property
+    def extension_version(self) -> str | None:
+        return self._extension_version
 
     def on_log(self, callback):
         """Register a logging callback: callback(action, detail)"""
@@ -233,6 +248,7 @@ class ExtensionBridge:
         self._ws = ws
         self._connected.clear()
         self._capabilities = {}
+        self._extension_version = None
 
         # Start keepalive pings to prevent MV3 service worker from sleeping
         if self._keepalive_task:
@@ -251,6 +267,8 @@ class ExtensionBridge:
                             self._capabilities = caps
                         else:
                             self._capabilities = {}
+                        version = data.get("extension_version") or self._capabilities.get("extension_version")
+                        self._extension_version = str(version).strip() if version else None
                         self._connected.set()
                     self._log("event", f"{msg.get('event')}: {json.dumps(msg.get('data', {}))}")
                     continue
@@ -269,6 +287,7 @@ class ExtensionBridge:
                 self._ws = None
                 self._connected.clear()
                 self._capabilities = {}
+                self._extension_version = None
                 for msg_id, future in list(self._pending.items()):
                     if not future.done():
                         future.cancel()
@@ -578,6 +597,41 @@ class ExtensionBridge:
             self._log("reload_failed", "Extension did not reconnect after reload")
             raise
 
+    async def ensure_extension_current(self) -> None:
+        """Reload the extension when the connected runtime is stale.
+
+        The source tree manifest is the source of truth. Older extension
+        builds may not report their version; when auto reload is enabled we
+        try one reload, then continue with a warning if Chrome still reports an
+        unknown or stale version.
+        """
+        expected = expected_extension_version()
+        if not expected:
+            return
+        if self._ws is None or not self._connected.is_set():
+            return
+        actual = self._extension_version
+        if actual == expected:
+            return
+
+        detail = f"connected={actual or 'unknown'} expected={expected}"
+        if os.environ.get("FLOWLENS_EXTENSION_AUTO_RELOAD", "1").lower() in {"0", "false", "no"}:
+            self._log("extension_stale", f"{detail}; auto reload disabled")
+            return
+
+        self._log("extension_stale", f"{detail}; reloading extension")
+        try:
+            await self.reload_extension()
+        except Exception as exc:
+            self._log("extension_reload_failed", str(exc))
+            raise
+
+        refreshed = self._extension_version
+        if refreshed == expected:
+            self._log("extension_current", f"version={refreshed}")
+        else:
+            self._log("extension_stale", f"connected={refreshed or 'unknown'} expected={expected}")
+
     async def scroll_page(self, pixels: int = 600, *, tab_id: int | None = None) -> dict:
         """Scroll the page."""
         return await self.send_command("scroll_page", self._with_tab({"pixels": pixels}, tab_id))
@@ -730,6 +784,7 @@ async def ensure_extension_connection(
             require_watch=require_watch,
             warmup_active_tab=warmup_active_tab,
         )
+        await bridge.ensure_extension_current()
         return False
     except RuntimeError:
         bridge._log("waking_browser", f"Launching {chrome_app} for extension reconnect")  # noqa: SLF001
@@ -740,4 +795,5 @@ async def ensure_extension_connection(
         require_watch=require_watch,
         warmup_active_tab=warmup_active_tab,
     )
+    await bridge.ensure_extension_current()
     return True

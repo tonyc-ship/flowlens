@@ -53,7 +53,6 @@ class ModelRoutingTest(unittest.TestCase):
             "moonshot-v1-128k": PROVIDER_KIMI,
             "qwen-plus": PROVIDER_QWEN,
             "qwen3.6-plus": PROVIDER_QWEN,
-            "qwen-vl-max": PROVIDER_QWEN,
             # Local MLX aliases must win over the lowercase qwen- cloud prefix.
             "qwen-local": "local",
             "Qwen3.5-9B-MLX-4bit": "local",
@@ -111,7 +110,7 @@ class QwenBackendThinkingModeTest(unittest.TestCase):
             )
 
         backend = QwenBackend.__new__(QwenBackend)
-        backend.model = "qwen-vl-max-latest"
+        backend.model = "qwen3.6-plus"
         backend.client = SimpleNamespace(
             chat=SimpleNamespace(completions=SimpleNamespace(create=fake_create))
         )

@@ -1,7 +1,7 @@
 {
   "manifest_version": 3,
   "name": "XHS Research Agent",
-  "version": "0.2.0",
+  "version": "0.2.1",
   "description": "Chrome Extension + External Agent for XHS research",
   "icons": {
     "16": "icons/icon16.png",

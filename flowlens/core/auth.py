@@ -118,7 +118,7 @@ PROVIDERS: dict[str, ProviderConfig] = {
         # "Qwen..." and are handled as provider="local" before this lookup runs.
         model_prefixes=(
             "qwen-max", "qwen-plus", "qwen-turbo", "qwen-long",
-            "qwen-coder", "qwen-vl-", "qwen-audio-", "qwen-omni-",
+            "qwen-coder",
             "qwen3.", "qwen3-", "qwen2.5-", "qwen2-", "qwq-", "qvq-",
         ),
     ),

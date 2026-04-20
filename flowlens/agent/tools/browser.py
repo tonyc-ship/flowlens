@@ -401,9 +401,9 @@ class RunJavaScriptTool(Tool):
 class ExtractPageDataTool(Tool):
     """Delegates to the Chrome extension's site-specific extractors.
 
-    The extension has optimized extraction commands for known sites (e.g.
-    XHS search cards, note content, comments, profile info). This tool
-    lets the agent leverage those when available.
+    The extension has optimized extraction commands for known sites. This tool
+    lets the agent use those commands when a platform profile or site
+    knowledge says they are available.
     """
 
     def __init__(self, bridge: ExtensionBridge):
@@ -411,10 +411,10 @@ class ExtractPageDataTool(Tool):
 
     name = "extract_page_data"
     description = (
-        "Site-specific extraction on XHS. This is ONE tool — always call it as "
+        "Site-specific extraction through the browser extension. This is ONE tool — always call it as "
         "extract_page_data with a `command` string and a `params` object. "
-        "`submit_search_query`, `click_card`, `close_note` etc. are commands, "
-        "NOT separate top-level tools.\n"
+        "Adapter actions such as `submit_search_query`, `click_card`, and `close_note` are commands, "
+        "NOT separate top-level tools. Prefer higher-level site tools when available.\n"
         "Commands (format: command — description — params):\n"
         "submit_search_query — Low-level search helper; prefer run_site_action(search_notes) at planner level — {keyword}\n"
         "extract_search_cards — Get note cards from search results — {}\n"
@@ -424,7 +424,7 @@ class ExtractPageDataTool(Tool):
         "collect_carousel_images — Collect all image URLs from the OPEN note carousel — {max_images}\n"
         "extract_comments — Get comments from the open note — {max_comments}\n"
         "scroll_note — Scroll inside the open note modal — {pixels}\n"
-        "close_note — Close the note modal (ALWAYS use this to close; press_key Escape does NOT work for the XHS modal) — {}\n"
+        "close_note — Close the open note modal through the active site's adapter — {}\n"
         "extract_profile_info / extract_profile_notes / extract_search_tabs / get_search_page_state / click_search_tab — {}\n"
         "Closing + opening the next note must be: extract_page_data close_note → extract_page_data click_card {index: N} → extract_page_data extract_note_content."
     )

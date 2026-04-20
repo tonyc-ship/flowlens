@@ -61,18 +61,18 @@ class AuthCliPromptTest(unittest.TestCase):
                 mock.patch.dict("os.environ", {}, clear=True),
                 mock.patch("sys.stdout", stdout),
             ):
-                code = auth_main(["model", "qwen", "qwen-vl-test"])
+                code = auth_main(["model", "qwen", "qwen3.6-plus"])
                 data = json.loads(auth_file.read_text(encoding="utf-8"))
 
                 self.assertEqual(code, 0)
                 self.assertEqual(data["defaults"]["provider"], "qwen")
-                self.assertEqual(data["defaults"]["qwen_model"], "qwen-vl-test")
-                self.assertEqual(default_cloud_model(), "qwen-vl-test")
+                self.assertEqual(data["defaults"]["qwen_model"], "qwen3.6-plus")
+                self.assertEqual(default_cloud_model(), "qwen3.6-plus")
                 self.assertEqual(preferred_provider(), "qwen")
 
         output = stdout.getvalue()
         self.assertIn("provider=qwen", output)
-        self.assertIn("model=qwen-vl-test", output)
+        self.assertIn("model=qwen3.6-plus", output)
 
     def test_auth_json_default_is_not_overridden_by_env_provider(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
@@ -91,12 +91,12 @@ class AuthCliPromptTest(unittest.TestCase):
                 ),
                 mock.patch("sys.stdout", io.StringIO()),
             ):
-                code = auth_main(["model", "qwen", "qwen-vl-test"])
+                code = auth_main(["model", "qwen", "qwen3.6-plus"])
 
                 self.assertEqual(code, 0)
                 self.assertEqual(preferred_provider(), "qwen")
-                self.assertEqual(default_cloud_model(), "qwen-vl-test")
-                self.assertEqual(default_model_for_provider(PROVIDER_QWEN), "qwen-vl-test")
+                self.assertEqual(default_cloud_model(), "qwen3.6-plus")
+                self.assertEqual(default_model_for_provider(PROVIDER_QWEN), "qwen3.6-plus")
 
     def test_model_menu_marks_only_global_default_as_current(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:

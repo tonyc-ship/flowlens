@@ -216,6 +216,11 @@ def _payload_summary(payload: dict, *, artifact_path: str) -> dict:
             }
             for note in notes[:8]
         ]
+        if notes and payload.get("action") == "xhs_topic_scan":
+            summary["next_step_hint"] = (
+                "This topic scan already searched and opened/read sampled notes. "
+                "Write the final report unless a specific requested field is still missing."
+            )
 
     timing = payload.get("timing")
     if isinstance(timing, dict) and timing:
@@ -568,6 +573,9 @@ class RunSiteActionTool(Tool):
 
         if action == "read_note":
             level = str(params.get("level", "lite"))
+            include_media = params.get("include_media")
+            if include_media is None:
+                include_media = False
             screenshot_path = ctx.next_screenshot_path("note_detail")
             note = await adapter.read_note(
                 index=params.get("index"),
@@ -577,7 +585,7 @@ class RunSiteActionTool(Tool):
                 max_images=int(params.get("max_images", 6)),
                 max_video_frames=int(params.get("max_video_frames", 4)),
                 include_comments=params.get("include_comments"),
-                include_media=params.get("include_media"),
+                include_media=include_media,
                 open_wait_seconds=max(wait_seconds, 0),
                 close_after=False,
             )
@@ -599,7 +607,7 @@ class RunSiteActionTool(Tool):
                     max_images=int(params.get("max_images", 6)),
                     max_video_frames=int(params.get("max_video_frames", 4)),
                     include_comments=params.get("include_comments"),
-                    include_media=params.get("include_media"),
+                    include_media=include_media,
                 ).to_dict(),
                 "entity": note.to_tool_dict(),
                 "timing": adapter.timing.summary(),

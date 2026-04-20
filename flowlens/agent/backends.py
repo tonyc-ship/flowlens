@@ -729,22 +729,6 @@ class LocalBackend(Backend):
             "extract_note_content in one turn. Batching tool calls is much faster "
             "than one-per-turn.\n",
             "When done with the task, respond with text only (no tool_call blocks).\n",
-            "**CRITICAL RULES for XHS**:\n"
-            "1. Always take a screenshot at the start (call `screenshot` in the same "
-            "turn as `navigate`). Screenshots are saved to disk; call "
-            "`analyze_screenshot` if you need visual understanding.\n"
-            "2. Preferred XHS flow: use `run_site_action` for `search_notes`, `read_note`, "
-            "and `close_note`, and use `extract_site_entity(search_cards)` to inspect visible "
-            "cards before choosing which post to open.\n"
-            "3. Low-level fallback search: use `extract_page_data` with "
-            "`command=submit_search_query` only if `run_site_action(search_notes)` is unavailable. "
-            "Do NOT use type_text + press_key from the planner.\n"
-            "4. Fallback open a note: use `extract_page_data` with `command=click_card, params={index: N}`. "
-            "There is NO standalone `click_card` tool — it is a command inside extract_page_data.\n"
-            "5. Fallback close a note: use `extract_page_data` with `command=close_note`. "
-            "`press_key Escape` does NOT close the XHS modal — do not use it.\n"
-            "6. If `extract_note_content` returns `_stale_warning` or `no_note_modal_open`, "
-            "the previous close_note failed — call `close_note` again, verify, then reopen.\n",
             "### Tool Definitions\n",
         ]
         for tool in tools:
