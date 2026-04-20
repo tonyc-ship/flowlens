@@ -20,8 +20,10 @@
 const DEFAULT_PORT = 8765;
 let ws = null;
 let activeTabId = null;
+let activeTabUrl = '';
 let pinnedTabId = null;
 let pinnedWindowId = null;
+let pinnedTabUrl = '';
 let contentReady = new Map(); // tabId -> true
 let reconnectTimer = null;
 let wsPort = DEFAULT_PORT;
@@ -39,19 +41,49 @@ function targetTabId() {
   return pinnedTabId || activeTabId;
 }
 
+function targetTabUrl() {
+  return pinnedTabUrl || activeTabUrl || '';
+}
+
+function siteFromUrl(url) {
+  try {
+    const hostname = new URL(url).hostname;
+    if (/(^|\.)xiaohongshu\.com$/i.test(hostname)) return 'xiaohongshu';
+  } catch {}
+  return '';
+}
+
+function rememberTabUrl(tabId, url = '', windowId = null) {
+  if (!tabId) return;
+  activeTabId = tabId;
+  if (url) activeTabUrl = url;
+  if (pinnedTabId === tabId) {
+    if (url) pinnedTabUrl = url;
+    if (windowId != null) pinnedWindowId = windowId;
+  }
+}
+
+function rememberTab(tab) {
+  if (!tab?.id) return;
+  rememberTabUrl(tab.id, tab.url || '', tab.windowId);
+}
+
 function commandTabId(params = {}) {
   return params.tabId || targetTabId();
 }
 
-function pinTab(tabId, windowId = null) {
+function pinTab(tabId, windowId = null, url = '') {
   pinnedTabId = tabId || null;
   pinnedWindowId = windowId || null;
+  pinnedTabUrl = url || (tabId === activeTabId ? activeTabUrl : '') || '';
   if (tabId) activeTabId = tabId;
+  if (url) activeTabUrl = url;
 }
 
 function releasePinnedTab() {
   pinnedTabId = null;
   pinnedWindowId = null;
+  pinnedTabUrl = '';
 }
 
 function enqueueDebuggerTask(tabId, task) {
@@ -127,8 +159,12 @@ function statusSnapshot() {
     connected: ws?.readyState === WebSocket.OPEN,
     port: wsPort,
     activeTabId,
+    activeTabUrl,
     pinnedTabId,
     pinnedWindowId,
+    pinnedTabUrl,
+    targetUrl: targetTabUrl(),
+    targetSite: siteFromUrl(targetTabUrl()),
     watchMode,
     sidePanelOpen: sidePanelPorts.size > 0,
     sidePanelPortCount: sidePanelPorts.size,
@@ -244,7 +280,7 @@ async function prepareWatchModeOnCurrentTab(params = {}) {
   }
   if (!tab?.id) throw new Error('No active tab');
 
-  activeTabId = tab.id;
+  rememberTab(tab);
   if (tab.windowId) {
     try {
       await chrome.windows.update(tab.windowId, { focused: true });
@@ -252,10 +288,15 @@ async function prepareWatchModeOnCurrentTab(params = {}) {
   }
   if (params.url && tab.url !== params.url) {
     tab = await chrome.tabs.update(tab.id, { url: params.url });
+    rememberTabUrl(tab.id, params.url, tab.windowId);
     await waitForContentScript(tab.id, params.wait || 5000).catch(() => {});
   }
+  try {
+    tab = await chrome.tabs.get(tab.id);
+    rememberTab(tab);
+  } catch {}
   if (params.lock !== false) {
-    pinTab(tab.id, tab.windowId);
+    pinTab(tab.id, tab.windowId, tab.url || activeTabUrl);
   }
 
   watchMode = true;
@@ -327,7 +368,7 @@ function connect(port) {
     // workers may not have a "current window" context).
     const sendConnected = (tabId, tabUrl) => {
       if (ws !== socket || ws.readyState !== WebSocket.OPEN) return;
-      if (tabId) activeTabId = tabId;
+      if (tabId) rememberTabUrl(tabId, tabUrl || '');
       ws.send(JSON.stringify({
         type: 'event',
         event: 'connected',
@@ -1183,10 +1224,15 @@ async function handleCommand(msg) {
     case 'navigate': {
       const tabId = commandTabId(params);
       if (!tabId) throw new Error('No active tab');
-      await chrome.tabs.update(tabId, { url: params.url });
+      let tab = await chrome.tabs.update(tabId, { url: params.url });
+      rememberTabUrl(tabId, params.url || tab?.url || '', tab?.windowId || null);
       // Wait for page load + content script injection
       await waitForContentScript(tabId, params.wait || 5000);
-      return { ok: true, url: params.url };
+      try {
+        tab = await chrome.tabs.get(tabId);
+        rememberTab(tab);
+      } catch {}
+      return { ok: true, url: tab?.url || params.url };
     }
 
     case 'go_back': {
@@ -1203,6 +1249,7 @@ async function handleCommand(msg) {
       await new Promise(r => setTimeout(r, params.wait || 1500));
       await waitForContentScript(tabId, 3000);
       const tab = await chrome.tabs.get(tabId);
+      rememberTab(tab);
       return { ok: true, url: tab.url || '', title: tab.title || '' };
     }
 
@@ -1213,11 +1260,16 @@ async function handleCommand(msg) {
     case 'get_tab_info': {
       const tabId = commandTabId(params);
       const tab = await chrome.tabs.get(tabId);
+      rememberTab(tab);
       return { url: tab.url, title: tab.title, tabId };
     }
 
     case 'set_active_tab': {
       activeTabId = params.tabId;
+      try {
+        const tab = await chrome.tabs.get(activeTabId);
+        rememberTab(tab);
+      } catch {}
       return { ok: true, tabId: activeTabId };
     }
 
@@ -1225,7 +1277,8 @@ async function handleCommand(msg) {
       const tabId = params.tabId || activeTabId;
       if (!tabId) throw new Error('No active tab to lock');
       const tab = await chrome.tabs.get(tabId);
-      pinTab(tab.id, tab.windowId);
+      rememberTab(tab);
+      pinTab(tab.id, tab.windowId, tab.url || activeTabUrl);
       return { ok: true, tabId: pinnedTabId, windowId: pinnedWindowId };
     }
 
@@ -1236,8 +1289,11 @@ async function handleCommand(msg) {
 
     case 'create_tab': {
       const tab = await chrome.tabs.create({ url: params.url, active: true });
-      activeTabId = tab.id;
+      rememberTabUrl(tab.id, tab.url || params.url || '', tab.windowId);
       await waitForContentScript(activeTabId, params.wait || 5000);
+      try {
+        rememberTab(await chrome.tabs.get(tab.id));
+      } catch {}
       return { ok: true, tabId: tab.id };
     }
 
@@ -1255,9 +1311,9 @@ async function handleCommand(msg) {
       if (params.top != null) createOpts.top = params.top;
       const win = await chrome.windows.create(createOpts);
       const tab = win.tabs[0];
-      activeTabId = tab.id;
+      rememberTabUrl(tab.id, tab.url || params.url || '', win.id);
       if (params.lock !== false) {
-        pinTab(tab.id, win.id);
+        pinTab(tab.id, win.id, tab.url || params.url || activeTabUrl);
       }
       return { ok: true, windowId: win.id, tabId: tab.id, locked: params.lock !== false };
     }
@@ -1318,6 +1374,10 @@ async function handleCommand(msg) {
 
     case 'close_tab': {
       if (!params.tabId) throw new Error('close_tab requires tabId');
+      if (activeTabId === params.tabId) {
+        activeTabId = null;
+        activeTabUrl = '';
+      }
       if (pinnedTabId === params.tabId) {
         releasePinnedTab();
       }
@@ -1601,12 +1661,28 @@ chrome.runtime.onConnect.addListener((port) => {
 chrome.tabs.onActivated.addListener(({ tabId }) => {
   if (pinnedTabId && pinnedTabId !== tabId) return;
   activeTabId = tabId;
-  broadcastStatus();
+  chrome.tabs.get(tabId).then((tab) => {
+    rememberTab(tab);
+    broadcastStatus();
+  }).catch(() => broadcastStatus());
+});
+
+chrome.tabs.onUpdated.addListener((tabId, changeInfo, tab) => {
+  if (tabId !== activeTabId && tabId !== pinnedTabId) return;
+  if (changeInfo.url || tab?.url) {
+    rememberTabUrl(tabId, changeInfo.url || tab?.url || '', tab?.windowId || null);
+  }
+  if (changeInfo.url || changeInfo.status === 'complete') {
+    broadcastStatus();
+  }
 });
 
 chrome.tabs.onRemoved.addListener((tabId) => {
   contentReady.delete(tabId);
-  if (activeTabId === tabId) activeTabId = null;
+  if (activeTabId === tabId) {
+    activeTabId = null;
+    activeTabUrl = '';
+  }
   if (pinnedTabId === tabId) {
     releasePinnedTab();
   }
@@ -1617,6 +1693,9 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
   // Content script ready signal
   if (msg.type === 'content_ready' && sender.tab) {
     contentReady.set(sender.tab.id, true);
+    if (sender.tab.id === activeTabId || sender.tab.id === pinnedTabId) {
+      rememberTabUrl(sender.tab.id, msg.url || sender.tab.url || '', sender.tab.windowId);
+    }
     console.log(`[BG] Content script ready on tab ${sender.tab.id}: ${msg.url}`);
     if (watchMode && sender.tab.id === targetTabId()) {
       try { chrome.tabs.sendMessage(sender.tab.id, currentWatchState()); } catch {}

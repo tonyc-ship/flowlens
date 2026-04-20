@@ -220,12 +220,12 @@ function ensureWatchOverlay() {
       <span class="dot" id="cvWatchDot"></span>
       <div class="grow">
         <div class="title">FlowLens Agent Status</div>
-        <div class="subtitle" id="cvWatchStatus">Waiting for agent activity...</div>
+        <div class="subtitle" id="cvWatchStatus">${escapeWatchHtml(watchLocaleText('Waiting for agent activity...', '等待 Agent 步骤...'))}</div>
       </div>
       <button class="toggle" id="cvWatchToggle" title="Collapse">−</button>
     </div>
     <div class="feed" id="cvWatchFeed">
-      <div class="empty">Waiting for agent activity...</div>
+      <div class="empty">${escapeWatchHtml(watchLocaleText('Waiting for agent activity...', '等待 Agent 步骤...'))}</div>
     </div>
   `;
   watchOverlayShadow.appendChild(panel);
@@ -306,6 +306,10 @@ function isXhsWatchContext() {
   return /(^|\.)xiaohongshu\.com$/i.test(window.location.hostname);
 }
 
+function watchLocaleText(en, zh) {
+  return isXhsWatchContext() ? zh : en;
+}
+
 const WATCH_KIND_LABELS_ZH = {
   think: '思考',
   command: '指令',
@@ -384,7 +388,7 @@ function taskTextFromEntry(entry) {
 function updateWatchTaskFromEntry(entry) {
   const taskText = taskTextFromEntry(entry);
   if (taskText) {
-    watchOverlayTaskText = `问题：${taskText}`;
+    watchOverlayTaskText = watchLocaleText(`Task: ${taskText}`, `问题：${taskText}`);
     if (watchOverlayStatusText) {
       watchOverlayStatusText.textContent = watchOverlayTaskText;
     }
@@ -394,7 +398,7 @@ function updateWatchTaskFromEntry(entry) {
 function renderWatchOverlay() {
   ensureWatchOverlay();
   if (!watchOverlayEntries.length) {
-    watchOverlayFeed.innerHTML = '<div class="empty">Waiting for agent activity...</div>';
+    watchOverlayFeed.innerHTML = `<div class="empty">${escapeWatchHtml(watchLocaleText('Waiting for agent activity...', '等待 Agent 步骤...'))}</div>`;
     return;
   }
 
@@ -410,7 +414,7 @@ function renderWatchOverlay() {
           <span class="entry-time">${watchOverlayTime(entry.timestamp)}</span>
         </div>
         <div class="entry-action">${escapeWatchHtml(action)}</div>
-        <div class="entry-message">${escapeWatchHtml(message || 'No details yet.')}</div>
+        <div class="entry-message">${escapeWatchHtml(message || watchLocaleText('No details yet.', '暂无详情。'))}</div>
       </div>
     `;
   }).join('');
@@ -425,7 +429,9 @@ function updateWatchOverlayStatus(status) {
   ensureWatchOverlay();
   const active = !!status?.watchMode;
   watchOverlayDot.classList.toggle('on', active);
-  watchOverlayStatusText.textContent = watchOverlayTaskText || (active ? '任务运行中' : '任务空闲');
+  watchOverlayStatusText.textContent = watchOverlayTaskText || (active
+    ? watchLocaleText('Task running', '任务运行中')
+    : watchLocaleText('Task idle', '任务空闲'));
   if (active) {
     showWatchOverlay();
   } else if (!watchOverlayEntries.length) {
@@ -1086,6 +1092,66 @@ function getVisibleNoteOverlay() {
   return null;
 }
 
+function isVisibleElement(el) {
+  if (!el) return false;
+  const rect = el.getBoundingClientRect();
+  const style = window.getComputedStyle(el);
+  return (
+    rect.width > 0 &&
+    rect.height > 0 &&
+    style.display !== 'none' &&
+    style.visibility !== 'hidden' &&
+    style.opacity !== '0'
+  );
+}
+
+function getNoteExtractionRoot() {
+  const overlay = getVisibleNoteOverlay();
+  if (overlay) return overlay;
+  const candidates = [
+    '#noteContainer',
+    '.note-detail-mask',
+    '.note-detail-modal',
+    '.note-detail',
+    '.note-scroller',
+    '.note-content',
+  ];
+  for (const selector of candidates) {
+    const el = document.querySelector(selector);
+    if (isVisibleElement(el)) return el;
+  }
+  return document;
+}
+
+function isInCommentArea(el) {
+  return !!el?.closest?.(
+    '.comments-container, .comment-list, .comment-item, .comment-inner, ' +
+    '.comment-wrapper, .parent-comment, .reply-item, .sub-comment-item, ' +
+    '.child-comment-item, .reply-comment-item, [class*="comment"]'
+  );
+}
+
+function normalizeNoteText(value) {
+  return String(value || '')
+    .replace(/\u00a0/g, ' ')
+    .replace(/[ \t]+\n/g, '\n')
+    .replace(/\n{3,}/g, '\n\n')
+    .trim();
+}
+
+function firstVisibleText(selectors, root = document, options = {}) {
+  for (const sel of selectors) {
+    const nodes = $$(sel, root);
+    for (const el of nodes) {
+      if (!isVisibleElement(el)) continue;
+      if (options.excludeComments && isInCommentArea(el)) continue;
+      const value = normalizeNoteText(el.innerText || el.textContent || '');
+      if (value) return value;
+    }
+  }
+  return '';
+}
+
 async function waitForVisibleNoteOverlay(timeoutMs = 1200) {
   const deadline = Date.now() + timeoutMs;
   while (Date.now() < deadline) {
@@ -1128,100 +1194,105 @@ async function waitForNoteContent(timeout = 8000) {
 
 function extractNoteContent() {
   const note = {};
+  const root = getNoteExtractionRoot();
   note.type = detectNoteType();
   note.url = window.location.href;
   note.note_id =
     extractNoteIdFromUrl(window.location.href)
+    || root.querySelector?.('[data-note-id]')?.dataset?.noteId
     || document.querySelector('[data-note-id]')?.dataset?.noteId
     || '';
 
   // Title — multiple fallbacks for image-text vs video notes
-  note.title = firstText([
+  note.title = firstVisibleText([
     '#detail-title',
     '.note-content .title',
     '.note-scroller .title',
     '.note-detail .title',
     'h1',
-  ]);
+  ], root, { excludeComments: true });
 
   // Author
-  note.author = firstText([
+  note.author = firstVisibleText([
     '.author-container .username',
     '.author-wrapper .username',
     '.info .username',
     '.user-name',
-  ]);
+  ], root);
 
   // Content — different containers for different note types
-  note.content = firstText([
+  note.content = firstVisibleText([
     '#detail-desc .note-text',
     '#detail-desc',
+    '.note-content #detail-desc',
+    '.note-scroller #detail-desc',
+    '.note-content .note-text',
+    '.note-scroller .note-text',
     '.note-content .desc',
     '.note-scroller .desc',
-    '.note-scroller .content',
-    '.note-text .content',
     '.note-detail .desc',
-  ]);
+  ], root, { excludeComments: true });
 
   // If content has nested spans/elements, get the full text
   if (!note.content) {
-    const descEl = document.querySelector('#detail-desc, .note-content .desc');
-    if (descEl) note.content = descEl.innerText.trim();
+    const descEl = $$('#detail-desc, .note-content .desc, .note-scroller .desc', root)
+      .find(el => isVisibleElement(el) && !isInCommentArea(el));
+    if (descEl) note.content = normalizeNoteText(descEl.innerText || descEl.textContent || '');
   }
 
   // Date
-  note.date = firstText([
+  note.date = firstVisibleText([
     '.note-content .date',
     '.bottom-container .date',
     '.note-scroller .date',
     '.date',
-  ]);
+  ], root, { excludeComments: true });
 
   // Engagement metrics
-  note.likes = firstText([
+  note.likes = firstVisibleText([
     '.like-wrapper .count',
     '.engage-bar .like .count',
     '[data-type="like"] .count',
     '.engage-bar-style .like-wrapper .count',
-  ]);
+  ], root);
 
-  note.favorites = firstText([
+  note.favorites = firstVisibleText([
     '.collect-wrapper .count',
     '.engage-bar .collect .count',
     '[data-type="collect"] .count',
-  ]);
+  ], root);
 
-  note.comments_count = firstText([
+  note.comments_count = firstVisibleText([
     '.chat-wrapper .count',
     '.engage-bar .chat .count',
     '[data-type="chat"] .count',
-  ]);
+  ], root);
 
-  note.shares = firstText([
+  note.shares = firstVisibleText([
     '.share-wrapper .count',
     '.engage-bar .share .count',
-  ]);
+  ], root);
 
   // Author profile link
-  const authorLink = document.querySelector(
+  const authorLink = root.querySelector?.(
     '.author-container a[href*="/user/"], .info a[href*="/user/profile/"]'
   );
   note.author_url = authorLink ? authorLink.href : '';
-  note.ip_location = firstText([
+  note.ip_location = firstVisibleText([
     '.note-content .ip-location',
     '.publish-info .ip-location',
     '.ip-location',
     '.note-ip-location',
-  ]);
-  note.location = firstText([
+  ], root, { excludeComments: true });
+  note.location = firstVisibleText([
     '.note-content .location',
     '.publish-info .location',
     '.location-info',
     '.note-location',
-  ]);
+  ], root, { excludeComments: true });
 
   // Hashtags
-  note.hashtags = $$('.hash-tag a, a[href*="/page/topics/"], .note-content .tag, #detail-desc a.tag')
+  note.hashtags = $$('.hash-tag a, a[href*="/page/topics/"], .note-content .tag, #detail-desc a.tag', root)
     .map(el => text(el))
     .filter(Boolean);
 
@@ -1229,12 +1300,13 @@ function extractNoteContent() {
   if (note.type === 'image') {
     const imgs = $$(
       '.carousel-image img, .slide img, .swiper-slide img, ' +
-      '.note-slider img, .note-detail img.note-image'
+      '.note-slider img, .note-detail img.note-image',
+      root,
     );
     note.image_urls = imgs.map(img => img.src || img.dataset?.src || '').filter(Boolean);
 
     // Image indicator (e.g. "3/7")
-    const indicator = document.querySelector(
+    const indicator = root.querySelector?.(
       '.indicator, .carousel-indicator, .slide-indicator, .image-index'
     );
     if (indicator) {
@@ -1243,7 +1315,7 @@ function extractNoteContent() {
     }
   } else {
     // Video note — get video poster/thumbnail
-    const video = document.querySelector('video');
+    const video = root.querySelector?.('video') || document.querySelector('video');
     const videoCandidates = collectVideoCandidates(video);
     const preferred = videoCandidates.find(c => c.kind !== 'blob') || videoCandidates[0] || null;
 
@@ -1263,6 +1335,7 @@ function extractNoteContent() {
 // ── Comment Extraction (with dedup) ────────────────────────────
 
 function extractComments(options = {}) {
+  const root = getNoteExtractionRoot();
   const rootSelectors = [
     '.comment-item',
     '.parent-comment',
@@ -1327,7 +1400,7 @@ function extractComments(options = {}) {
     };
   }
 
-  const items = $$(rootSelectors).filter(item => !item.parentElement?.closest(rootSelectors));
+  const items = $$(rootSelectors, root).filter(item => !item.parentElement?.closest(rootSelectors));
   const seen = new Set();
   let comments = [];
 
