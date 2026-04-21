@@ -28,8 +28,13 @@ def dynamic_extra_instructions(task: str, site_name: str | None, page_state: str
     if task_matches(task):
         parts.append(
             "For Xiaohongshu research tasks, start with `xhs_topic_scan(query=...)` "
-            "when it is available. Pass `include_media=false` unless the user explicitly "
-            "asks to analyze images or videos; screenshots are already saved as evidence. "
+            "when it is available. Decide `include_media` yourself based on the task: "
+            "set it to true when understanding the image or video content itself is needed "
+            "to answer the user (e.g. summarizing what a video shows, reading text baked into images, "
+            "comparing visuals across notes); leave it false when note titles, body text, and comments "
+            "are enough. Note that `include_media=true` adds image OCR, image vision, video ASR and "
+            "video frame sampling, so it costs extra time — use it when the task truly needs it. "
+            "Screenshots of each note are saved as evidence either way. "
             "After one representative topic scan plus a few targeted reads if needed, write "
             "the final report instead of repeatedly searching/opening more notes. Otherwise navigate to Xiaohongshu and call "
             "`run_site_action(action='search_notes', query=...)`. Do not take a "
@@ -48,6 +53,21 @@ def dynamic_extra_instructions(task: str, site_name: str | None, page_state: str
             "For topic research, search first, inspect the visible cards, and then open the most relevant notes "
             "one by one with `run_site_action(action='read_note', ...)`."
         )
+    parts.append(
+        "Each card in Xiaohongshu tool results comes with `note_id`, `title`, and an "
+        "`already_analyzed` flag. Before opening a note, check whether its `note_id` is "
+        "already marked `already_analyzed: true` or appears in the `already_analyzed_notes` "
+        "list — if it does, reuse the prior result instead of re-opening. Target notes by "
+        "`note_id` rather than `index` when a note_id is available; indexes shift across "
+        "searches but note_ids are stable. `run_site_action(read_note)` will also "
+        "server-side short-circuit (skipped=true) when the note_id was already extracted at "
+        "the same or deeper level this run — respect that instead of passing force=true."
+    )
+    parts.append(
+        "Tool responses include an `artifact_file` local-disk path for audit / reporting. "
+        "This is NOT a URL — do not call `navigate(file://...)` or `fetch(...)` on it. The "
+        "summary fields in the same response already contain what you need to reason over."
+    )
     parts.append(
         "In the final Xiaohongshu report, embed each useful note screenshot using "
         "`![note title](screenshot_filename.png)`. Treat screenshots as primary evidence because direct "

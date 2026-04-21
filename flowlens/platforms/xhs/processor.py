@@ -543,6 +543,10 @@ class XHSSiteAdapter:
         note.requested_sections = plan.requested_sections
         note.applied_capabilities = ["xhs.note.open_basic"]
 
+        note_tag = f"{note.note_id or note.title or 'note'} [{plan.level.value}]"
+        self._log("note_extract_start", note_tag)
+        t0_note = time.time()
+
         comments_task = None
         media_task = None
 
@@ -566,6 +570,7 @@ class XHSSiteAdapter:
             await media_task
 
         note.refresh_derived_fields()
+        self._log("note_extract_end", note_tag, time.time() - t0_note)
         return note
 
     async def read_note(
@@ -785,13 +790,52 @@ class XHSSiteAdapter:
         note.images = unique_urls[:max_images]
         note.image_count = len(note.images or []) or dom_count
 
+    async def _retry_hydrate_video(self, note: NoteEntity) -> VideoInfo | None:
+        """Re-query the note DOM once if video src hasn't hydrated yet.
+
+        XHS note-detail hydrates the ``<video>`` element's src shortly after the
+        modal opens. If the first DOM snapshot ran before hydration completed the
+        video URL is empty; a brief wait + re-extract usually succeeds.
+        """
+        for attempt in range(2):
+            await asyncio.sleep(1.0 + 0.8 * attempt)
+            try:
+                raw = await self.ext_bridge.send_command("extract_note_content")
+            except Exception as exc:
+                self._log("video_hydrate_retry_error", f"attempt={attempt + 1}: {exc}")
+                continue
+            if raw.get("error"):
+                continue
+            refreshed = NoteEntity.from_dom_dict(raw.get("note", {}))
+            if refreshed.video and refreshed.video.best_download_url():
+                self._log(
+                    "video_hydrate_retry_ok",
+                    f"{note.note_id or '-'} attempt={attempt + 1}",
+                )
+                return refreshed.video
+        self._log(
+            "video_hydrate_retry_failed",
+            note.note_id or note.title or "-",
+        )
+        return None
+
     async def _process_video(self, note: NoteEntity, plan: NoteExtractionPlan) -> None:
         if note.video is None:
             note.video = VideoInfo()
 
         video = note.video
+        note_tag = note.note_id or note.title or "video"
         poster_url = video.poster_url or (note.images[0].url if note.images else "")
         downloadable_url = video.best_download_url()
+
+        if not downloadable_url and plan.use_media:
+            hydrated = await self._retry_hydrate_video(note)
+            if hydrated is not None:
+                note.video = hydrated
+                video = note.video
+                poster_url = video.poster_url or (note.images[0].url if note.images else "")
+                downloadable_url = video.best_download_url()
+
         video.resolved_url = downloadable_url or video.best_source_url()
         video.stream_type = self._infer_video_stream_type(video.resolved_url)
         referer = note.url or XHS_REFERER
@@ -799,7 +843,12 @@ class XHSSiteAdapter:
 
         if not downloadable_url:
             video.download_error = "no_downloadable_video_url"
+            self._log(
+                "video_url_missing",
+                f"{note_tag} source={video.best_source_url() or '-'}",
+            )
         elif self.config.cache_video_locally and video.stream_type in {"mp4", "mov", "m4v"}:
+            self._log("video_download_start", note_tag)
             t0 = time.time()
             suffix = f".{video.stream_type}" if video.stream_type else ".mp4"
             local_path = await asyncio.to_thread(
@@ -808,16 +857,25 @@ class XHSSiteAdapter:
                 referer,
                 suffix,
             )
-            self.timing.record("video_download", time.time() - t0)
+            elapsed = time.time() - t0
+            self.timing.record("video_download", elapsed)
+            self._log(
+                "video_download_end" if local_path else "video_download_failed",
+                note_tag,
+                elapsed,
+            )
             if local_path:
                 video.download_path = local_path
                 processing_source = local_path
 
         poster_bytes = None
         if poster_url:
+            self._log("poster_download_start", note_tag)
             t0 = time.time()
             poster_bytes = await asyncio.to_thread(self.media.download_image, poster_url, referer)
-            self.timing.record("poster_download", time.time() - t0)
+            elapsed = time.time() - t0
+            self.timing.record("poster_download", elapsed)
+            self._log("poster_download_end", note_tag, elapsed)
             if isinstance(poster_bytes, bytes) and poster_bytes:
                 saved = self._save_named_bytes(note.note_id or "video", "poster", poster_bytes)
                 if note.images:
@@ -826,6 +884,7 @@ class XHSSiteAdapter:
         async def poster_vision() -> None:
             if not poster_bytes or not plan.use_image_vision or not self.config.use_vision:
                 return
+            self._log("poster_vision_start", note_tag)
             t0_local = time.time()
             video.poster_description = await asyncio.to_thread(
                 self.media.describe_image,
@@ -834,7 +893,9 @@ class XHSSiteAdapter:
                 self.config.video_poster_max_tokens,
             )
             note.cover_description = video.poster_description
-            self.timing.record("vision_poster", time.time() - t0_local)
+            elapsed = time.time() - t0_local
+            self.timing.record("vision_poster", elapsed)
+            self._log("poster_vision_end", note_tag, elapsed)
 
         async def poster_ocr() -> None:
             if note.images and note.images[0].ocr_text and not video.poster_ocr:
@@ -842,49 +903,88 @@ class XHSSiteAdapter:
                 return
             if not poster_bytes or not self.config.use_ocr or video.poster_ocr:
                 return
+            self._log("poster_ocr_start", note_tag)
             t0_local = time.time()
             video.poster_ocr = await asyncio.to_thread(self.media.ocr_image, poster_bytes)
-            self.timing.record("ocr_poster", time.time() - t0_local)
+            elapsed = time.time() - t0_local
+            self.timing.record("ocr_poster", elapsed)
+            self._log("poster_ocr_end", note_tag, elapsed)
 
         async def transcribe() -> None:
             if not processing_source or not plan.use_video_transcript or not self.config.use_whisper:
                 return
+            self._log("transcribe_start", note_tag)
             t0_local = time.time()
-            transcript = await self.media.transcribe_video(
-                processing_source,
-                "zh",
-                referer=referer if str(processing_source).startswith("http") else "",
-                max_audio_seconds=self.config.max_transcription_seconds,
-                timeout_s=self.config.transcription_timeout_s,
-            )
-            self.timing.record("whisper_transcribe", time.time() - t0_local)
+            try:
+                transcript = await self.media.transcribe_video(
+                    processing_source,
+                    "zh",
+                    referer=referer if str(processing_source).startswith("http") else "",
+                    max_audio_seconds=self.config.max_transcription_seconds,
+                    timeout_s=self.config.transcription_timeout_s,
+                )
+            except Exception as exc:
+                elapsed = time.time() - t0_local
+                self.timing.record("whisper_transcribe", elapsed)
+                self._log("transcribe_failed", f"{note_tag}: {exc}", elapsed)
+                if not video.download_error:
+                    video.download_error = f"transcribe_error: {type(exc).__name__}"
+                return
+            elapsed = time.time() - t0_local
+            self.timing.record("whisper_transcribe", elapsed)
+            self._log("transcribe_end", f"{note_tag} ({len(transcript)} chars)", elapsed)
             if transcript.strip():
                 video.transcript = transcript
+                self._log("transcript_summary_start", note_tag)
                 t0_summary = time.time()
-                video.transcript_summary = await asyncio.to_thread(
-                    self.media.call_text,
-                    self.config.transcript_summary_prompt.format(
-                        title=note.title or "未命名视频",
-                        transcript=transcript[:3000],
-                    ),
-                    self.config.transcript_summary_max_tokens,
-                )
-                self.timing.record("llm_transcript_summary", time.time() - t0_summary)
+                try:
+                    video.transcript_summary = await asyncio.to_thread(
+                        self.media.call_text,
+                        self.config.transcript_summary_prompt.format(
+                            title=note.title or "未命名视频",
+                            transcript=transcript[:3000],
+                        ),
+                        self.config.transcript_summary_max_tokens,
+                    )
+                except Exception as exc:
+                    elapsed_s = time.time() - t0_summary
+                    self.timing.record("llm_transcript_summary", elapsed_s)
+                    self._log(
+                        "transcript_summary_failed",
+                        f"{note_tag}: {type(exc).__name__}: {exc}",
+                        elapsed_s,
+                    )
+                    if not video.download_error:
+                        video.download_error = f"transcript_summary_error: {type(exc).__name__}"
+                else:
+                    elapsed_s = time.time() - t0_summary
+                    self.timing.record("llm_transcript_summary", elapsed_s)
+                    self._log("transcript_summary_end", note_tag, elapsed_s)
             elif not video.download_error:
                 video.download_error = "empty_transcript"
 
         async def frame_understanding() -> None:
             if not processing_source or not plan.use_video_frames or not self.config.use_vision:
                 return
+            num_frames = min(self.config.max_video_frame_samples, plan.max_video_frames)
+            self._log("frames_extract_start", f"{note_tag} ({num_frames} frames)")
             t0_local = time.time()
-            frame_paths = await self.media.extract_video_frames(
-                processing_source,
-                referer=referer if str(processing_source).startswith("http") else "",
-                max_seconds=self.config.max_video_frame_seconds,
-                num_frames=min(self.config.max_video_frame_samples, plan.max_video_frames),
-                timeout_s=self.config.transcription_timeout_s,
-            )
-            self.timing.record("video_frame_extract", time.time() - t0_local)
+            try:
+                frame_paths = await self.media.extract_video_frames(
+                    processing_source,
+                    referer=referer if str(processing_source).startswith("http") else "",
+                    max_seconds=self.config.max_video_frame_seconds,
+                    num_frames=num_frames,
+                    timeout_s=self.config.transcription_timeout_s,
+                )
+            except Exception as exc:
+                elapsed = time.time() - t0_local
+                self.timing.record("video_frame_extract", elapsed)
+                self._log("frames_extract_failed", f"{note_tag}: {exc}", elapsed)
+                return
+            elapsed = time.time() - t0_local
+            self.timing.record("video_frame_extract", elapsed)
+            self._log("frames_extract_end", f"{note_tag} ({len(frame_paths)} frames)", elapsed)
             if not frame_paths:
                 return
 
@@ -898,6 +998,7 @@ class XHSSiteAdapter:
                         frame_bytes = await asyncio.to_thread(Path(frame_path).read_bytes)
                     except Exception:
                         return
+                    self._log("frame_vision_start", f"{note_tag} frame {index + 1}")
                     t0_frame = time.time()
                     description = await asyncio.to_thread(
                         self.media.describe_image,
@@ -908,7 +1009,9 @@ class XHSSiteAdapter:
                         ),
                         self.config.video_frame_max_tokens,
                     )
-                    self.timing.record("vision_video_frame", time.time() - t0_frame)
+                    elapsed_f = time.time() - t0_frame
+                    self.timing.record("vision_video_frame", elapsed_f)
+                    self._log("frame_vision_end", f"{note_tag} frame {index + 1}", elapsed_f)
                     if description:
                         frame_descriptions.append(description)
 
@@ -918,21 +1021,38 @@ class XHSSiteAdapter:
             ], return_exceptions=True)
             video.frame_descriptions = frame_descriptions
             if frame_descriptions:
+                self._log("visual_summary_start", note_tag)
                 t0_summary = time.time()
-                video.visual_summary = await asyncio.to_thread(
-                    self.media.call_text,
-                    self.config.video_visual_summary_prompt.format(
-                        title=note.title or "未命名视频",
-                        poster=video.poster_description or video.poster_ocr or "无",
-                        frames="\n".join(
-                            f"{idx + 1}. {desc}"
-                            for idx, desc in enumerate(frame_descriptions)
+                try:
+                    video.visual_summary = await asyncio.to_thread(
+                        self.media.call_text,
+                        self.config.video_visual_summary_prompt.format(
+                            title=note.title or "未命名视频",
+                            poster=video.poster_description or video.poster_ocr or "无",
+                            frames="\n".join(
+                                f"{idx + 1}. {desc}"
+                                for idx, desc in enumerate(frame_descriptions)
+                            ),
                         ),
-                    ),
-                    self.config.video_visual_summary_max_tokens,
-                )
-                self.timing.record("llm_video_visual_summary", time.time() - t0_summary)
+                        self.config.video_visual_summary_max_tokens,
+                    )
+                except Exception as exc:
+                    elapsed_vs = time.time() - t0_summary
+                    self.timing.record("llm_video_visual_summary", elapsed_vs)
+                    self._log(
+                        "visual_summary_failed",
+                        f"{note_tag}: {type(exc).__name__}: {exc}",
+                        elapsed_vs,
+                    )
+                    if not video.download_error:
+                        video.download_error = f"visual_summary_error: {type(exc).__name__}"
+                else:
+                    elapsed_vs = time.time() - t0_summary
+                    self.timing.record("llm_video_visual_summary", elapsed_vs)
+                    self._log("visual_summary_end", note_tag, elapsed_vs)
 
+        self._log("video_process_start", note_tag)
+        t0_video = time.time()
         await asyncio.gather(
             poster_vision(),
             poster_ocr(),
@@ -940,6 +1060,7 @@ class XHSSiteAdapter:
             frame_understanding(),
             return_exceptions=True,
         )
+        self._log("video_process_end", note_tag, time.time() - t0_video)
 
     def _save_image_bytes(self, note_id: str, index: int, payload: bytes) -> str:
         media_type = self.media.detect_media_type(payload)

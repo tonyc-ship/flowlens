@@ -5,6 +5,7 @@ from __future__ import annotations
 import asyncio
 import json
 import re
+import time
 from pathlib import Path
 
 from ...agent.tool import Tool, ToolContext
@@ -14,6 +15,36 @@ from ...perception.media import MediaProcessor
 from .capabilities import plan_for_level
 from .entities import NoteCard, NoteEntity, extract_key_points, is_meaningful_note_content
 from .processor import XHSSiteAdapter, rank_note_card
+
+
+def _make_xhs_progress_logger(ctx: ToolContext):
+    """Emit long-running stage progress both to stdout and a JSONL file.
+
+    The XHS macros run entirely inside a single agent tool call, so the agent
+    loop sees silence between ``tool_call`` and ``tool_result``. This logger
+    gives the human (and anyone tailing ``stage_progress.jsonl``) a live
+    heartbeat of which media stage is active.
+    """
+    progress_path = ctx.run_dir / "stage_progress.jsonl"
+
+    def log(action: str, detail: str = "", duration: float | None = None) -> None:
+        entry = {
+            "timestamp": time.time(),
+            "action": action,
+            "detail": detail,
+        }
+        if duration is not None:
+            entry["duration_s"] = round(float(duration), 2)
+        try:
+            with open(progress_path, "a", encoding="utf-8") as f:
+                f.write(json.dumps(entry, ensure_ascii=False) + "\n")
+        except Exception:
+            pass
+        suffix = f" ({duration:.1f}s)" if duration is not None else ""
+        detail_str = f": {detail}" if detail else ""
+        print(f"  [xhs] {action}{detail_str}{suffix}", flush=True)
+
+    return log
 
 
 def _short_text(text: str, max_chars: int = 320) -> str:
@@ -29,9 +60,10 @@ def _write_payload_artifact(ctx: ToolContext, label: str, payload: dict) -> str:
     return str(path.relative_to(ctx.run_dir))
 
 
-def _card_preview(card: dict) -> dict:
-    return {
-        "note_id": card.get("note_id", ""),
+def _card_preview(card: dict, processed_notes: dict | None = None) -> dict:
+    note_id = card.get("note_id", "")
+    preview = {
+        "note_id": note_id,
         "title": card.get("title", ""),
         "author": card.get("author", ""),
         "likes": card.get("likes", ""),
@@ -40,6 +72,11 @@ def _card_preview(card: dict) -> dict:
         "position": card.get("position"),
         "link": card.get("link", ""),
     }
+    if note_id and processed_notes and note_id in processed_notes:
+        info = processed_notes[note_id]
+        preview["already_analyzed"] = True
+        preview["prior_artifact"] = info.get("artifact", "")
+    return preview
 
 
 def _summarize_note_entity(entity: dict) -> dict:
@@ -174,10 +211,11 @@ def _fill_missing_note_content_from_screenshot(
     note.refresh_derived_fields()
 
 
-def _payload_summary(payload: dict, *, artifact_path: str) -> dict:
+def _payload_summary(payload: dict, *, artifact_path: str, processed_notes: dict | None = None) -> dict:
     summary = {
         "site": payload.get("site", ""),
-        "full_result_path": artifact_path,
+        "artifact_file": artifact_path,
+        "artifact_file_note": "Local disk path relative to run_dir. NOT a URL. Do not navigate() or fetch() it; the full payload is already summarized in this response.",
     }
     if "action" in payload:
         summary["action"] = payload.get("action")
@@ -197,7 +235,7 @@ def _payload_summary(payload: dict, *, artifact_path: str) -> dict:
     cards = payload.get("cards")
     if isinstance(cards, list):
         summary["count"] = payload.get("count", len(cards))
-        summary["top_cards"] = [_card_preview(card) for card in cards[:5]]
+        summary["top_cards"] = [_card_preview(card, processed_notes) for card in cards[:5]]
 
     entity = payload.get("entity")
     if isinstance(entity, dict):
@@ -240,12 +278,12 @@ def _payload_summary(payload: dict, *, artifact_path: str) -> dict:
             "count": search.get("count"),
             "state": search.get("state"),
             "reason": search.get("reason", ""),
-            "top_cards": [_card_preview(card) for card in search.get("cards", [])[:5]],
+            "top_cards": [_card_preview(card, processed_notes) for card in search.get("cards", [])[:5]],
         }
 
     selected = payload.get("selected_cards")
     if isinstance(selected, list):
-        summary["selected_cards"] = [_card_preview(card) for card in selected[:6]]
+        summary["selected_cards"] = [_card_preview(card, processed_notes) for card in selected[:6]]
 
     result = payload.get("result")
     if isinstance(result, dict):
@@ -255,12 +293,102 @@ def _payload_summary(payload: dict, *, artifact_path: str) -> dict:
             if key in {"ok", "state", "url", "note_id", "title", "message", "error"}
         }
 
+    if processed_notes:
+        summary["already_analyzed_notes"] = [
+            {
+                "note_id": nid,
+                "title": info.get("title", ""),
+                "artifact": info.get("artifact", ""),
+            }
+            for nid, info in list(processed_notes.items())[-20:]
+        ]
+
     return summary
+
+
+_LEVEL_ORDER = {"card": 0, "lite": 1, "deep": 2}
+
+
+def _level_rank(level: str) -> int:
+    return _LEVEL_ORDER.get(str(level or "").strip().lower(), -1)
+
+
+def _dedup_short_circuit(
+    ctx: ToolContext,
+    *,
+    note_id: str,
+    requested_level: str,
+    force: bool,
+) -> str | None:
+    """Return a short-circuit tool response when the note was already analyzed.
+
+    Called before opening/extracting a note. If the note_id is already in
+    ``ctx.processed_notes`` at a level greater-than-or-equal to the requested
+    level, and the caller did not pass ``force=true``, we refuse to re-extract
+    and point the agent at the prior artifact instead. Lite->deep upgrades are
+    still allowed because a prior lite extraction lacks media.
+    """
+    if force or not note_id:
+        return None
+    processed = getattr(ctx, "processed_notes", None) or {}
+    info = processed.get(str(note_id).strip())
+    if not isinstance(info, dict):
+        return None
+    prior_level = info.get("level") or ""
+    if _level_rank(prior_level) < _level_rank(requested_level):
+        return None
+    return json.dumps(
+        {
+            "site": "xiaohongshu",
+            "ok": True,
+            "skipped": True,
+            "reason": "already_analyzed",
+            "note_id": note_id,
+            "title": info.get("title", ""),
+            "prior_level": prior_level,
+            "requested_level": requested_level,
+            "prior_artifact": info.get("artifact", ""),
+            "artifact_file_note": (
+                "This note_id was already extracted at the same or deeper level. "
+                "Reuse the prior artifact instead of re-opening. "
+                "Pass force=true if a fresh re-extraction is genuinely needed."
+            ),
+        },
+        ensure_ascii=False,
+        indent=2,
+    )
+
+
+def _record_processed_note(ctx: ToolContext, note: NoteEntity, artifact: str) -> None:
+    """Remember a note as already analyzed so future tool results can flag it."""
+    note_id = str(getattr(note, "note_id", "") or "").strip()
+    if not note_id:
+        return
+    new_level = str(getattr(note, "extraction_level", "") or "")
+    prior = ctx.processed_notes.get(note_id) or {}
+    if prior and _level_rank(prior.get("level", "")) > _level_rank(new_level):
+        prior["artifact"] = artifact
+        ctx.processed_notes[note_id] = prior
+        return
+    ctx.processed_notes[note_id] = {
+        "title": str(getattr(note, "title", "") or "").strip()
+        or prior.get("title", ""),
+        "artifact": artifact,
+        "level": new_level,
+    }
 
 
 def _emit_payload(ctx: ToolContext, label: str, payload: dict) -> str:
     artifact = _write_payload_artifact(ctx, label, payload)
-    return json.dumps(_payload_summary(payload, artifact_path=artifact), ensure_ascii=False, indent=2)
+    return json.dumps(
+        _payload_summary(
+            payload,
+            artifact_path=artifact,
+            processed_notes=getattr(ctx, "processed_notes", None),
+        ),
+        ensure_ascii=False,
+        indent=2,
+    )
 
 
 class ExtractSiteEntityTool(Tool):
@@ -366,6 +494,7 @@ class ExtractSiteEntityTool(Tool):
             ext_bridge=self._ext_bridge,
             media=self._media,
             run_dir=ctx.run_dir,
+            log_fn=_make_xhs_progress_logger(ctx),
         )
 
         entity_type = params["entity_type"]
@@ -426,7 +555,17 @@ class ExtractSiteEntityTool(Tool):
                 "timing": adapter.timing.summary(),
             }
             note_label = f"xhs_note_{note.note_id or level}"
-            return _emit_payload(ctx, note_label, payload)
+            artifact_rel = _write_payload_artifact(ctx, note_label, payload)
+            _record_processed_note(ctx, note, artifact_rel)
+            return json.dumps(
+                _payload_summary(
+                    payload,
+                    artifact_path=artifact_rel,
+                    processed_notes=ctx.processed_notes,
+                ),
+                ensure_ascii=False,
+                indent=2,
+            )
 
         return f"Unsupported entity_type: {entity_type}"
 
@@ -455,7 +594,13 @@ class RunSiteActionTool(Tool):
         "- open_note: open a card by index or note_id\n"
         "- read_note: open a note and extract normalized info in one call (full entity is written to disk)\n"
         "- close_note: close the open note modal\n"
-        "Prefer read_note over manually chaining click_card + wait + extract_site_entity(note)."
+        "Prefer read_note over manually chaining click_card + wait + extract_site_entity(note). "
+        "Prefer targeting notes by `note_id` (stable) over `index` (position-dependent and can change between searches). "
+        "Every card in tool results includes `note_id`, `title`, and an `already_analyzed` flag; "
+        "skip notes already marked `already_analyzed: true` unless you need a fresh re-extraction. "
+        "read_note will short-circuit with skipped=true when the note_id was already extracted at "
+        "the same or deeper level earlier in this run; pass force=true only when a re-extraction "
+        "is actually needed."
     )
 
     @property
@@ -529,6 +674,15 @@ class RunSiteActionTool(Tool):
                         "Set false unless image/video analysis is explicitly needed."
                     ),
                 },
+                "force": {
+                    "type": "boolean",
+                    "description": (
+                        "For read_note: bypass the already_analyzed short-circuit and "
+                        "re-open the note even if it was extracted at the same/deeper "
+                        "level earlier in this run. Default false."
+                    ),
+                    "default": False,
+                },
             },
             "required": ["action"],
         }
@@ -583,6 +737,14 @@ class RunSiteActionTool(Tool):
             include_media = params.get("include_media")
             if include_media is None:
                 include_media = False
+            short_circuit = _dedup_short_circuit(
+                ctx,
+                note_id=str(params.get("note_id", "")).strip(),
+                requested_level=level,
+                force=bool(params.get("force", False)),
+            )
+            if short_circuit is not None:
+                return short_circuit
             screenshot_path = ctx.next_screenshot_path("note_detail")
             note = await adapter.read_note(
                 index=params.get("index"),
@@ -620,7 +782,17 @@ class RunSiteActionTool(Tool):
                 "timing": adapter.timing.summary(),
             }
             note_label = f"xhs_read_note_{note.note_id or level}"
-            return _emit_payload(ctx, note_label, payload)
+            artifact_rel = _write_payload_artifact(ctx, note_label, payload)
+            _record_processed_note(ctx, note, artifact_rel)
+            return json.dumps(
+                _payload_summary(
+                    payload,
+                    artifact_path=artifact_rel,
+                    processed_notes=ctx.processed_notes,
+                ),
+                ensure_ascii=False,
+                indent=2,
+            )
 
         return f"Unsupported action: {action}"
 
@@ -759,9 +931,18 @@ class XHSTopicScanTool(Tool):
             if len(selected_cards) >= total_limit:
                 break
 
+        progress_log = _make_xhs_progress_logger(ctx)
+        progress_log(
+            "topic_scan_plan",
+            f"query='{query}' deep={max_deep} lite={max_lite} media={include_media} selected={len(selected_cards)}",
+        )
         notes: list[dict] = []
         for idx, card in enumerate(selected_cards):
             level = "deep" if idx < max_deep else "lite"
+            progress_log(
+                "topic_scan_note_start",
+                f"{idx + 1}/{len(selected_cards)} {level} note_id={card.note_id or '-'} title={(card.title or '')[:40]}",
+            )
             comment_count = int(params.get("deep_comment_count", 10)) if level == "deep" else int(params.get("lite_comment_count", 4))
             try:
                 note = await adapter.read_note(
@@ -784,6 +965,11 @@ class XHSTopicScanTool(Tool):
                     "source_position": card.position,
                     "entity": note.to_tool_dict(),
                 })
+                _record_processed_note(
+                    ctx,
+                    note,
+                    f"topic_scan:{query} #{idx + 1} [{level}]",
+                )
             except Exception as exc:
                 notes.append({
                     "scan_level": level,
@@ -800,6 +986,7 @@ class XHSTopicScanTool(Tool):
                     await adapter.close_note()
                 except Exception:
                     pass
+                progress_log("topic_scan_note_end", f"{idx + 1}/{len(selected_cards)}")
                 if wait_seconds > 0:
                     await asyncio.sleep(min(wait_seconds, 2.0))
 
@@ -832,6 +1019,7 @@ def _make_xhs_adapter(
         ext_bridge=ext_bridge,
         media=media,
         run_dir=ctx.run_dir,
+        log_fn=_make_xhs_progress_logger(ctx),
     )
 
 

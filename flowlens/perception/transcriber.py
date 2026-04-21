@@ -78,10 +78,21 @@ class WhisperTranscriber:
         source: str,
         referer: str = "",
         user_agent: str = "Mozilla/5.0",
+        stall_timeout_s: float = 30.0,
     ) -> list[str]:
-        """Build ffmpeg input args for local files or remote media URLs."""
+        """Build ffmpeg input args for local files or remote media URLs.
+
+        ``stall_timeout_s`` bounds how long ffmpeg will wait on a stalled
+        HTTP(S) socket before aborting. It guards against CDN connections
+        that stay ESTABLISHED but stop delivering bytes.
+        """
         args: list[str] = []
         if source.startswith(("https://", "http://")):
+            if stall_timeout_s and stall_timeout_s > 0:
+                us = str(int(stall_timeout_s * 1_000_000))
+                # rw_timeout is the generic libav socket read/write timeout;
+                # HTTP also honours `-timeout` for initial connect/read.
+                args.extend(["-rw_timeout", us, "-timeout", us])
             headers: list[str] = []
             if referer:
                 headers.append(f"Referer: {referer}")

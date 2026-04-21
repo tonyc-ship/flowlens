@@ -20,6 +20,7 @@ class ToolContext:
     screenshot_counter: int = 0
     screenshot_max_dim: int = 0  # 0 = no downscaling
     artifact_counter: int = 0
+    processed_notes: dict = field(default_factory=dict)
 
     def next_screenshot_path(self, label: str = "screenshot") -> Path:
         self.screenshot_counter += 1
