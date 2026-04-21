@@ -133,6 +133,19 @@ def task_runs_root() -> Path:
     return root.resolve(strict=False)
 
 
+def flowlens_state_root() -> Path:
+    """Return the writable local state directory shared across FlowLens CLIs."""
+
+    load_runtime_env()
+
+    configured = str(os.environ.get("FLOWLENS_APP_DATA_DIR", "") or "").strip()
+    root = Path(configured).expanduser() if configured else (Path.home() / ".flowlens")
+    if not root.is_absolute():
+        root = PROJECT_ROOT / root
+    root.mkdir(parents=True, exist_ok=True)
+    return root.resolve(strict=False)
+
+
 def find_whisper_cli(explicit: str | None = None) -> Path | None:
     """Resolve the local whisper-cli binary."""
 

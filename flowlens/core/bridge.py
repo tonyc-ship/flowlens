@@ -16,6 +16,7 @@ import base64
 import json
 import os
 import subprocess
+import sys
 import time
 import uuid
 from datetime import datetime
@@ -25,6 +26,17 @@ import websockets
 from websockets.asyncio.server import serve
 
 from .process_metrics import append_jsonl, system_resource_snapshot
+from .runtime import flowlens_state_root
+
+try:
+    import fcntl
+except ImportError:  # pragma: no cover - Windows fallback handled below.
+    fcntl = None
+
+try:
+    import msvcrt
+except ImportError:  # pragma: no cover - POSIX path handled above.
+    msvcrt = None
 
 
 def expected_extension_version() -> str:
@@ -56,6 +68,133 @@ def _snapshot_delta(before: dict, after: dict, *path: str) -> float | int | None
     if abs(delta - round(delta)) < 1e-9:
         return int(round(delta))
     return round(delta, 2)
+
+
+def _lock_file(file_obj) -> None:
+    if fcntl is not None:
+        fcntl.flock(file_obj.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
+        return
+    if msvcrt is not None:  # pragma: no cover - exercised only on Windows.
+        file_obj.seek(0, os.SEEK_END)
+        if file_obj.tell() == 0:
+            file_obj.write(" ")
+            file_obj.flush()
+        file_obj.seek(0)
+        try:
+            msvcrt.locking(file_obj.fileno(), msvcrt.LK_NBLCK, 1)
+        except OSError as exc:
+            raise BlockingIOError(str(exc)) from exc
+
+
+def _unlock_file(file_obj) -> None:
+    if fcntl is not None:
+        fcntl.flock(file_obj.fileno(), fcntl.LOCK_UN)
+        return
+    if msvcrt is not None:  # pragma: no cover - exercised only on Windows.
+        file_obj.seek(0)
+        msvcrt.locking(file_obj.fileno(), msvcrt.LK_UNLCK, 1)
+
+
+def _bridge_lock_path(port: int) -> Path:
+    return flowlens_state_root() / "state" / f"bridge_{port}.lock"
+
+
+def _read_lock_metadata(path: Path) -> dict[str, object]:
+    try:
+        raw = path.read_text(encoding="utf-8").strip()
+    except FileNotFoundError:
+        return {}
+    except Exception:
+        return {}
+
+    if not raw:
+        return {}
+    try:
+        parsed = json.loads(raw)
+    except Exception:
+        return {"raw": raw[:400]}
+    return parsed if isinstance(parsed, dict) else {}
+
+
+class BridgeAlreadyRunningError(RuntimeError):
+    """Raised when another live FlowLens process already owns the bridge."""
+
+    def __init__(self, *, port: int, lock_path: Path, owner: dict[str, object] | None = None):
+        self.port = port
+        self.lock_path = lock_path
+        self.owner = owner or {}
+
+        details: list[str] = []
+        pid = self.owner.get("pid")
+        started_at = self.owner.get("started_at")
+        cwd = self.owner.get("cwd")
+        if pid:
+            details.append(f"pid={pid}")
+        if started_at:
+            details.append(f"started_at={started_at}")
+        if cwd:
+            details.append(f"cwd={cwd}")
+
+        summary = ", ".join(details)
+        message = (
+            f"Another FlowLens task is already running and owns the browser bridge on port {port}."
+        )
+        if summary:
+            message += f" Existing owner: {summary}."
+        message += " Wait for the running task to finish before starting another one."
+        super().__init__(message)
+
+
+_IN_PROCESS_BRIDGE_OWNERS: dict[int, dict[str, object]] = {}
+
+
+class _BridgeInstanceLock:
+    """Process-scoped singleton guard for the extension bridge port."""
+
+    def __init__(self, port: int):
+        self.port = port
+        self.path = _bridge_lock_path(port)
+        self._file = None
+
+    def acquire(self) -> dict[str, object]:
+        self.path.parent.mkdir(parents=True, exist_ok=True)
+        file_obj = self.path.open("a+", encoding="utf-8")
+        try:
+            _lock_file(file_obj)
+        except BlockingIOError:
+            owner = _read_lock_metadata(self.path)
+            file_obj.close()
+            raise BridgeAlreadyRunningError(port=self.port, lock_path=self.path, owner=owner)
+
+        self._file = file_obj
+        metadata = {
+            "pid": os.getpid(),
+            "port": self.port,
+            "started_at": datetime.now().isoformat(timespec="seconds"),
+            "cwd": os.getcwd(),
+            "argv": sys.argv,
+        }
+        self._file.seek(0)
+        self._file.truncate()
+        self._file.write(json.dumps(metadata, ensure_ascii=False, indent=2))
+        self._file.flush()
+        try:
+            os.fsync(self._file.fileno())
+        except OSError:
+            pass
+        return metadata
+
+    def release(self) -> None:
+        if self._file is None:
+            return
+        try:
+            _unlock_file(self._file)
+        except OSError:
+            pass
+        try:
+            self._file.close()
+        finally:
+            self._file = None
 
 
 class TabBridge:
@@ -143,6 +282,7 @@ class ExtensionBridge:
         self._watch_mode = False
         self._capabilities: dict[str, object] = {}
         self._extension_version: str | None = None
+        self._instance_lock = _BridgeInstanceLock(port)
 
     @property
     def extension_version(self) -> str | None:
@@ -160,11 +300,32 @@ class ExtensionBridge:
 
     async def start(self):
         """Start the WebSocket server and wait for extension to connect."""
-        self._server = await serve(
-            self._handle_connection,
-            "localhost",
-            self.port,
-        )
+        existing_owner = _IN_PROCESS_BRIDGE_OWNERS.get(self.port)
+        if existing_owner is not None:
+            raise BridgeAlreadyRunningError(
+                port=self.port,
+                lock_path=_bridge_lock_path(self.port),
+                owner=existing_owner,
+            )
+
+        owner = self._instance_lock.acquire()
+        _IN_PROCESS_BRIDGE_OWNERS[self.port] = owner
+        try:
+            self._server = await serve(
+                self._handle_connection,
+                "localhost",
+                self.port,
+            )
+        except OSError as exc:
+            _IN_PROCESS_BRIDGE_OWNERS.pop(self.port, None)
+            self._instance_lock.release()
+            message = str(exc)
+            if "address already in use" in message.lower():
+                raise RuntimeError(
+                    f"Browser bridge port {self.port} is already in use by another process. "
+                    "If this is another FlowLens task, wait for it to finish first."
+                ) from exc
+            raise
         self._log("server_started", f"Listening on ws://localhost:{self.port}")
 
     async def wait_for_connection(
@@ -758,11 +919,17 @@ class ExtensionBridge:
 
     async def stop(self):
         """Stop the WebSocket server."""
-        if self._keepalive_task:
-            self._keepalive_task.cancel()
-        if self._server:
-            self._server.close()
-            await self._server.wait_closed()
+        try:
+            if self._keepalive_task:
+                self._keepalive_task.cancel()
+                self._keepalive_task = None
+            if self._server:
+                self._server.close()
+                await self._server.wait_closed()
+                self._server = None
+        finally:
+            _IN_PROCESS_BRIDGE_OWNERS.pop(self.port, None)
+            self._instance_lock.release()
 
 
 async def ensure_extension_connection(

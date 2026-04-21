@@ -6,6 +6,7 @@ import argparse
 import asyncio
 
 from ..core.auth import default_cloud_model
+from ..core.bridge import BridgeAlreadyRunningError
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -60,14 +61,21 @@ def main(argv: list[str] | None = None) -> int:
 
     from .loop import run_agent
 
-    result = asyncio.run(
-        run_agent(
-            task=args.task,
-            max_turns=args.max_turns,
-            model=model,
-            run_dir=args.run_dir,
+    try:
+        result = asyncio.run(
+            run_agent(
+                task=args.task,
+                max_turns=args.max_turns,
+                model=model,
+                run_dir=args.run_dir,
+            )
         )
-    )
+    except KeyboardInterrupt:
+        print("\nCancelled.")
+        return 130
+    except BridgeAlreadyRunningError as exc:
+        print(f"\nError: {exc}\n")
+        return 1
 
     print(f"\n{'='*60}")
     print(f"Agent completed in {result['turns']} turns")

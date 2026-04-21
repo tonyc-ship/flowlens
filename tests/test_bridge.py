@@ -1,9 +1,11 @@
 """ExtensionBridge tests — connection bootstrap + per-tab routing."""
 
+import os
+import tempfile
 import unittest
 from unittest import IsolatedAsyncioTestCase, mock
 
-from flowlens.core.bridge import ExtensionBridge, ensure_extension_connection
+from flowlens.core.bridge import BridgeAlreadyRunningError, ExtensionBridge, ensure_extension_connection
 
 
 class EnsureExtensionConnectionTest(IsolatedAsyncioTestCase):
@@ -39,3 +41,36 @@ class TabBridgeTest(IsolatedAsyncioTestCase):
             result = await tab.find_chat_input(["textarea"])
         mocked.assert_awaited_once_with(["textarea"], tab_id=321)
         self.assertEqual(result, {"found": True})
+
+
+class BridgeSingleInstanceTest(IsolatedAsyncioTestCase):
+    async def test_second_bridge_on_same_port_raises_clear_error(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp, mock.patch.dict(
+            os.environ,
+            {"FLOWLENS_APP_DATA_DIR": tmp},
+            clear=False,
+        ):
+            first = ExtensionBridge(port=9877)
+            second = ExtensionBridge(port=9877)
+            await first.start()
+            try:
+                with self.assertRaises(BridgeAlreadyRunningError) as ctx:
+                    await second.start()
+                self.assertEqual(ctx.exception.port, 9877)
+                self.assertEqual(ctx.exception.owner.get("pid"), os.getpid())
+            finally:
+                await first.stop()
+
+    async def test_stop_releases_single_instance_lock(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp, mock.patch.dict(
+            os.environ,
+            {"FLOWLENS_APP_DATA_DIR": tmp},
+            clear=False,
+        ):
+            first = ExtensionBridge(port=9878)
+            await first.start()
+            await first.stop()
+
+            second = ExtensionBridge(port=9878)
+            await second.start()
+            await second.stop()

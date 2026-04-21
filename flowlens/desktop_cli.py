@@ -17,6 +17,7 @@ from pathlib import Path
 
 from .agent.loop import run_agent
 from .core.auth import default_cloud_model
+from .core.bridge import BridgeAlreadyRunningError
 from .core.runtime import task_runs_root
 from .perception.policy import TaskModelPolicy
 from .reasoning.tasks import (
@@ -213,9 +214,16 @@ def main(argv: list[str] | None = None) -> int:
             print(json.dumps(asdict(request), ensure_ascii=False, indent=2))
             return 0
 
-        result = asyncio.run(
-            _run_request(request, output_root=str(Path(args.output_root)), port=args.port)
-        )
+        try:
+            result = asyncio.run(
+                _run_request(request, output_root=str(Path(args.output_root)), port=args.port)
+            )
+        except KeyboardInterrupt:
+            print(json.dumps({"error": "cancelled"}, ensure_ascii=False))
+            return 130
+        except BridgeAlreadyRunningError as exc:
+            print(json.dumps({"error": str(exc)}, ensure_ascii=False))
+            return 1
         print(json.dumps(result, ensure_ascii=False, indent=2))
         return 0
 

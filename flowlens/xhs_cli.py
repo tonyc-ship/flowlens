@@ -20,7 +20,7 @@ from .core.auth import (
     resolve_model_provider,
     resolve_provider_auth,
 )
-from .core.bridge import ExtensionBridge, ensure_extension_connection
+from .core.bridge import BridgeAlreadyRunningError, ExtensionBridge, ensure_extension_connection
 from .core.runtime import task_runs_root
 from .perception.media import (
     BACKEND_OPENAI,
@@ -476,6 +476,11 @@ def _check_api_key() -> None:
 def _handle_error(exc: Exception) -> int:
     """Print a friendly Chinese error message for common failures."""
     msg = str(exc)
+    if isinstance(exc, BridgeAlreadyRunningError):
+        print("\n错误: 已有另一个 FlowLens 任务正在运行。\n")
+        print(f"{msg}\n")
+        print("当前浏览器扩展 bridge 只支持单任务占用，请等待当前任务结束后再启动新的任务。\n")
+        return 1
     if "extension" in msg.lower() or "websocket" in msg.lower() or "connection" in msg.lower():
         print("\n错误: 无法连接 Chrome Extension。\n")
         print("请确认:")
