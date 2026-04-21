@@ -1,0 +1,20 @@
+{
+  "accounts": [
+    {
+      "name": "账号A",
+      "storage_path": "~/.xhs-accounts/账号A/storage.json",
+      "last_used_at": "2026-03-27T10:00:00Z",
+      "session_expires_at": "2026-04-03T10:00:00Z",
+      "added_at": "2026-03-01T00:00:00Z",
+      "active": true
+    },
+    {
+      "name": "账号B",
+      "storage_path": "~/.xhs-accounts/账号B/storage.json",
+      "last_used_at": null,
+      "session_expires_at": null,
+      "added_at": "2026-03-20T00:00:00Z",
+      "active": false
+    }
+  ]
+}

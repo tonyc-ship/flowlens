@@ -1,0 +1,3 @@
+[submodule "tools/info-card-generator"]
+	path = tools/info-card-generator
+	url = https://github.com/manwithshit/info-card-generator.git
