@@ -36,7 +36,7 @@ function checkmark(passed, msg) {
 
 async function runDeploymentChecklist() {
   let allPassed = true
-  const baseDir = '/Users/chenqinghua/Desktop/Auto-Redbook-Skills/mcp/explore'
+  const baseDir = path.dirname(new URL(import.meta.url).pathname)
 
   title('部署前检查清单')
 
