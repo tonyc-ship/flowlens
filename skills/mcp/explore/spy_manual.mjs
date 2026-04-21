@@ -14,11 +14,14 @@ import { fileURLToPath } from 'url'
 const __dirname = path.dirname(fileURLToPath(import.meta.url))
 
 // ── 加载 session ────────────────────────────────────────────────────────────
+// 用法: SESSION_ACCOUNT=账号名 node spy_manual.mjs
+const accountName = process.env.SESSION_ACCOUNT || 'default'
 const SESSION_PATH = path.join(
-  process.env.HOME, '.xhs-accounts', 'backup_20260404', 'storage.json'
+  process.env.HOME, '.xhs-accounts', accountName, 'storage.json'
 )
 if (!fs.existsSync(SESSION_PATH)) {
   console.error('❌ 找不到 session:', SESSION_PATH)
+  console.error('   请设置环境变量 SESSION_ACCOUNT=<账号名> 或创建 ~/.xhs-accounts/default/storage.json')
   process.exit(1)
 }
 
