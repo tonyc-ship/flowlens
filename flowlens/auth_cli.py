@@ -16,7 +16,6 @@ from .core.auth import (
     METHOD_API_KEY,
     METHOD_OAUTH,
     PROVIDER_ANTHROPIC,
-    PROVIDER_DEEPSEEK,
     PROVIDER_KIMI,
     PROVIDER_OPENAI,
     PROVIDER_QWEN,
@@ -35,7 +34,6 @@ from .core.auth import (
 MODEL_CHOICES: dict[str, tuple[str, ...]] = {
     PROVIDER_ANTHROPIC: ("claude-sonnet-4-6",),
     PROVIDER_OPENAI: ("gpt-5.4",),
-    PROVIDER_DEEPSEEK: ("deepseek-chat",),
     PROVIDER_KIMI: ("kimi-k2.5",),
     PROVIDER_QWEN: ("qwen3.6-plus",),
 }

@@ -282,11 +282,9 @@ Supported keys:
 ```bash
 ANTHROPIC_API_KEY=...
 OPENAI_API_KEY=...
-DEEPSEEK_API_KEY=...               # DeepSeek (api.deepseek.com, OpenAI-compatible)
 MOONSHOT_API_KEY=...               # Kimi / Moonshot AI (api.moonshot.cn)
 DASHSCOPE_API_KEY=...              # Qwen API key
-FLOWLENS_LLM_BACKEND=...           # "sonnet" (default), "openai", "deepseek", "kimi", "qwen", or "qwen-local"
-FLOWLENS_DEEPSEEK_MODEL=...        # e.g. deepseek-chat, deepseek-reasoner
+FLOWLENS_LLM_BACKEND=...           # "sonnet" (default), "openai", "kimi", "qwen", or "qwen-local"
 FLOWLENS_KIMI_MODEL=...            # e.g. kimi-k2-0905-preview, moonshot-v1-128k
 FLOWLENS_QWEN_MODEL=...            # e.g. qwen3.6-plus
 FLOWLENS_WHISPER_CLI=...

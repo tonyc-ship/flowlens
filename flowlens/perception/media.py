@@ -32,7 +32,6 @@ import anthropic
 from ..core.auth import (
     METHOD_API_KEY,
     PROVIDER_ANTHROPIC,
-    PROVIDER_DEEPSEEK,
     PROVIDER_KIMI,
     PROVIDER_OPENAI,
     PROVIDER_QWEN,
@@ -48,7 +47,6 @@ logger = logging.getLogger(__name__)
 DEFAULT_MODEL = "claude-sonnet-4-6"
 BACKEND_SONNET = "sonnet"
 BACKEND_OPENAI = "openai"
-BACKEND_DEEPSEEK = "deepseek"
 BACKEND_KIMI = "kimi"
 BACKEND_QWEN_CLOUD = "qwen"
 BACKEND_QWEN_LOCAL = "qwen-local"
@@ -62,8 +60,6 @@ def _resolve_backend(explicit: str | None = None) -> str:
     val = val.strip().lower()
     if val in (BACKEND_OPENAI, "gpt", "openai"):
         return BACKEND_OPENAI
-    if val in (BACKEND_DEEPSEEK, "deepseek"):
-        return BACKEND_DEEPSEEK
     if val in (BACKEND_KIMI, "moonshot", "kimi"):
         return BACKEND_KIMI
     if val in (BACKEND_QWEN_CLOUD, "dashscope"):
@@ -97,8 +93,6 @@ class MediaProcessor:
         model_provider = resolve_model_provider(model) if model else ""
         if inferred_backend == BACKEND_SONNET and model_provider == PROVIDER_OPENAI:
             inferred_backend = BACKEND_OPENAI
-        elif inferred_backend == BACKEND_SONNET and model_provider == PROVIDER_DEEPSEEK:
-            inferred_backend = BACKEND_DEEPSEEK
         elif inferred_backend == BACKEND_SONNET and model_provider == PROVIDER_KIMI:
             inferred_backend = BACKEND_KIMI
         elif inferred_backend == BACKEND_SONNET and model_provider == PROVIDER_QWEN:
@@ -112,9 +106,6 @@ class MediaProcessor:
         if inferred_backend == BACKEND_OPENAI:
             if not model or model == DEFAULT_MODEL or resolve_model_provider(model) != PROVIDER_OPENAI:
                 model = default_model_for_provider(PROVIDER_OPENAI)
-        elif inferred_backend == BACKEND_DEEPSEEK:
-            if not model or model == DEFAULT_MODEL or resolve_model_provider(model) != PROVIDER_DEEPSEEK:
-                model = default_model_for_provider(PROVIDER_DEEPSEEK)
         elif inferred_backend == BACKEND_KIMI:
             if not model or model == DEFAULT_MODEL or resolve_model_provider(model) != PROVIDER_KIMI:
                 model = default_model_for_provider(PROVIDER_KIMI)
@@ -169,7 +160,6 @@ class MediaProcessor:
             from openai import OpenAI
 
             provider = {
-                BACKEND_DEEPSEEK: PROVIDER_DEEPSEEK,
                 BACKEND_KIMI: PROVIDER_KIMI,
                 BACKEND_QWEN_CLOUD: PROVIDER_QWEN,
             }.get(self.backend)
@@ -248,7 +238,7 @@ class MediaProcessor:
                 max_output_tokens=max_tokens,
             )
             result = resp.output_text
-        elif self.backend in {BACKEND_DEEPSEEK, BACKEND_KIMI, BACKEND_QWEN_CLOUD}:
+        elif self.backend in {BACKEND_KIMI, BACKEND_QWEN_CLOUD}:
             request = {
                 "model": self.config.model,
                 "messages": [{"role": "user", "content": prompt}],
@@ -332,8 +322,6 @@ class MediaProcessor:
                 request["extra_body"] = extra_body
             resp = self.openai_compat_client.chat.completions.create(**request)
             result = self._chat_message_text(resp.choices[0].message)
-        elif self.backend == BACKEND_DEEPSEEK:
-            result = "Vision analysis not available for the DeepSeek media backend."
         else:
             resp = self.client.messages.create(
                 model=self.config.model,

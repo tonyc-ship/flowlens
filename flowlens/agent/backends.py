@@ -16,7 +16,6 @@ from ..core.auth import (
     API_STYLE_OPENAI_COMPAT,
     METHOD_API_KEY,
     PROVIDER_ANTHROPIC,
-    PROVIDER_DEEPSEEK,
     PROVIDER_KIMI,
     PROVIDER_OPENAI,
     PROVIDER_QWEN,
@@ -418,7 +417,7 @@ class OpenAIBackend(Backend):
 class OpenAICompatibleBackend(Backend):
     """Backend for any OpenAI-compatible ``/v1/chat/completions`` endpoint.
 
-    Used by Chinese hosted vendors (DeepSeek, Moonshot/Kimi, Alibaba Qwen /
+    Used by Chinese hosted vendors (Moonshot/Kimi, Alibaba Qwen /
     DashScope) which all expose OpenAI-compatible APIs with function calling.
 
     Subclasses preset the provider's ``base_url`` and default model so adding a
@@ -663,12 +662,6 @@ class OpenAICompatibleBackend(Backend):
                 "content": _summarize_result_blocks_for_history(result_blocks),
             })
         return {"role": "user", "content": content}
-
-
-class DeepSeekBackend(OpenAICompatibleBackend):
-    """DeepSeek (https://api.deepseek.com) — deepseek-chat / deepseek-reasoner."""
-
-    PROVIDER = PROVIDER_DEEPSEEK
 
 
 class KimiBackend(OpenAICompatibleBackend):
@@ -996,7 +989,6 @@ class LocalBackend(Backend):
 
 
 _OPENAI_COMPAT_BACKENDS: dict[str, type[OpenAICompatibleBackend]] = {
-    PROVIDER_DEEPSEEK: DeepSeekBackend,
     PROVIDER_KIMI: KimiBackend,
     PROVIDER_QWEN: QwenBackend,
 }

@@ -99,7 +99,7 @@ def _backend_to_model(backend: str) -> str:
         return "qwen-local"
     if backend == "ui-tars-local":
         return "ui-tars-local"
-    if backend in {"anthropic", "openai", "deepseek", "kimi", "qwen"}:
+    if backend in {"anthropic", "openai", "kimi", "qwen"}:
         return default_cloud_model(provider=backend)
     return default_cloud_model()
 
@@ -196,7 +196,7 @@ def main(argv: list[str] | None = None) -> int:
         "--llm-backend",
         choices=[
             "sonnet", "anthropic", "openai",
-            "deepseek", "kimi", "qwen",
+            "kimi", "qwen",
             "qwen-local", "ui-tars-local",
         ],
         default="sonnet",

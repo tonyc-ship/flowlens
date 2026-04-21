@@ -29,12 +29,12 @@ def main(argv: list[str] | None = None) -> int:
         "--backend",
         choices=[
             "anthropic", "openai",
-            "deepseek", "kimi", "qwen",
+            "kimi", "qwen",
             "qwen-local", "ui-tars-local",
         ],
         default=None,
         help=(
-            "LLM backend override. Hosted: anthropic, openai, deepseek, kimi, qwen. "
+            "LLM backend override. Hosted: anthropic, openai, kimi, qwen. "
             "Local MLX: qwen-local, ui-tars-local."
         ),
     )
@@ -53,7 +53,7 @@ def main(argv: list[str] | None = None) -> int:
         model = "qwen-local"
     elif args.backend == "ui-tars-local":
         model = "ui-tars-local"
-    elif args.backend in {"anthropic", "openai", "deepseek", "kimi", "qwen"}:
+    elif args.backend in {"anthropic", "openai", "kimi", "qwen"}:
         model = default_cloud_model(provider=args.backend)
     else:
         model = default_cloud_model()

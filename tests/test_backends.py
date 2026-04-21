@@ -1,7 +1,7 @@
 """Backend + provider registry tests.
 
 Covers the contract shared by all backends:
-  - Provider routing by model-name prefix (Anthropic, OpenAI, DeepSeek, Kimi,
+  - Provider routing by model-name prefix (Anthropic, OpenAI, Kimi,
     Qwen cloud, and local MLX).
   - create_backend dispatches to the right class with the right base_url and
     emits a helpful error when the API key is missing.
@@ -18,14 +18,12 @@ from unittest import mock
 
 from flowlens.core.auth import (
     PROVIDER_ANTHROPIC,
-    PROVIDER_DEEPSEEK,
     PROVIDER_KIMI,
     PROVIDER_OPENAI,
     PROVIDER_QWEN,
     resolve_model_provider,
 )
 from flowlens.agent.backends import (
-    DeepSeekBackend,
     KimiBackend,
     LocalBackend,
     QwenBackend,
@@ -35,7 +33,6 @@ from flowlens.agent.backends import (
 
 
 STUB_ENV = {
-    "DEEPSEEK_API_KEY": "sk-fake-ds",
     "MOONSHOT_API_KEY": "sk-fake-mk",
     "DASHSCOPE_API_KEY": "sk-fake-ds2",
 }
@@ -47,8 +44,6 @@ class ModelRoutingTest(unittest.TestCase):
             "claude-sonnet-4-6": PROVIDER_ANTHROPIC,
             "gpt-5": PROVIDER_OPENAI,
             "o3-mini": PROVIDER_OPENAI,
-            "deepseek-chat": PROVIDER_DEEPSEEK,
-            "deepseek-reasoner": PROVIDER_DEEPSEEK,
             "kimi-k2-0905-preview": PROVIDER_KIMI,
             "moonshot-v1-128k": PROVIDER_KIMI,
             "qwen-plus": PROVIDER_QWEN,
@@ -65,14 +60,11 @@ class ModelRoutingTest(unittest.TestCase):
 class BackendFactoryTest(unittest.TestCase):
     def test_create_backend_dispatches_cn_providers_with_base_url(self) -> None:
         with mock.patch.dict(os.environ, STUB_ENV, clear=False):
-            ds = create_backend("deepseek-chat")
             kimi = create_backend("kimi-k2-0905-preview")
             qwen = create_backend("qwen-plus")
 
-        self.assertIsInstance(ds, DeepSeekBackend)
         self.assertIsInstance(kimi, KimiBackend)
         self.assertIsInstance(qwen, QwenBackend)
-        self.assertIn("api.deepseek.com", str(ds.client.base_url))
         self.assertIn("api.moonshot.cn", str(kimi.client.base_url))
         self.assertIn("dashscope.aliyuncs.com", str(qwen.client.base_url))
 
@@ -80,9 +72,9 @@ class BackendFactoryTest(unittest.TestCase):
         with mock.patch.dict(os.environ, {}, clear=True), \
              mock.patch("flowlens.agent.backends.resolve_provider_auth", return_value=None):
             with self.assertRaises(RuntimeError) as ctx:
-                create_backend("deepseek-chat")
-        self.assertIn("DeepSeek", str(ctx.exception))
-        self.assertIn("DEEPSEEK_API_KEY", str(ctx.exception))
+                create_backend("kimi-k2-0905-preview")
+        self.assertIn("Kimi", str(ctx.exception))
+        self.assertIn("MOONSHOT_API_KEY", str(ctx.exception))
 
 
 class QwenBackendThinkingModeTest(unittest.TestCase):

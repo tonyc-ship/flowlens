@@ -8,7 +8,6 @@ import unittest
 
 from flowlens.perception.policy import (
     BACKEND_CLOUD,
-    BACKEND_DEEPSEEK,
     BACKEND_KIMI,
     BACKEND_LOCAL,
     BACKEND_OPENAI,
@@ -29,7 +28,6 @@ class TaskModelPolicyTest(unittest.TestCase):
             "openai": BACKEND_OPENAI,
             "gpt-5": BACKEND_OPENAI,
             # Chinese vendors — bare vendor name routes to the cloud backend.
-            "deepseek": BACKEND_DEEPSEEK,
             "kimi": BACKEND_KIMI,
             "moonshot": BACKEND_KIMI,
             "qwen": BACKEND_QWEN_CLOUD,
@@ -50,11 +48,6 @@ class TaskModelPolicyTest(unittest.TestCase):
             policy = TaskModelPolicy.from_choice(alias)
             self.assertEqual(policy.reasoning_backend, expected)
             self.assertEqual(policy.vision_backend, expected)
-
-        # DeepSeek is text-only and falls back to Sonnet for vision.
-        policy = TaskModelPolicy.from_choice("deepseek")
-        self.assertEqual(policy.reasoning_backend, BACKEND_DEEPSEEK)
-        self.assertEqual(policy.vision_backend, BACKEND_CLOUD)
 
         # Kimi and cloud Qwen are multimodal, so their vision backend stays aligned.
         for alias, reasoning in [

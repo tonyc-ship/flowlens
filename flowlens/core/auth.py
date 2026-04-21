@@ -22,7 +22,6 @@ from .runtime import load_runtime_env
 
 PROVIDER_ANTHROPIC = "anthropic"
 PROVIDER_OPENAI = "openai"
-PROVIDER_DEEPSEEK = "deepseek"
 PROVIDER_KIMI = "kimi"
 PROVIDER_QWEN = "qwen"
 
@@ -40,7 +39,6 @@ CODEX_AUTH_FILE = Path.home() / ".codex" / "auth.json"
 
 DEFAULT_ANTHROPIC_MODEL = "claude-sonnet-4-6"
 DEFAULT_OPENAI_MODEL = "gpt-5.4"
-DEFAULT_DEEPSEEK_MODEL = "deepseek-chat"            # rolling alias → latest DeepSeek (V3.x, text-only)
 DEFAULT_KIMI_MODEL = "kimi-k2.5"                    # Kimi K2.5: native multimodal (text + image + video)
 DEFAULT_QWEN_MODEL = "qwen3.6-plus"                # Qwen3.6-Plus: current hosted Qwen default (multimodal)
 
@@ -88,15 +86,6 @@ PROVIDERS: dict[str, ProviderConfig] = {
         model_prefixes=("gpt-", "gpt5", "o1", "o3", "o4"),
         supports_oauth=True,
     ),
-    PROVIDER_DEEPSEEK: ProviderConfig(
-        name=PROVIDER_DEEPSEEK,
-        display_name="DeepSeek",
-        api_style=API_STYLE_OPENAI_COMPAT,
-        api_key_env=("DEEPSEEK_API_KEY",),
-        base_url="https://api.deepseek.com/v1",
-        default_model=DEFAULT_DEEPSEEK_MODEL,
-        model_prefixes=("deepseek-",),
-    ),
     PROVIDER_KIMI: ProviderConfig(
         name=PROVIDER_KIMI,
         display_name="Kimi",
@@ -128,7 +117,6 @@ PROVIDERS: dict[str, ProviderConfig] = {
 CLOUD_PROVIDERS: tuple[str, ...] = (
     PROVIDER_ANTHROPIC,
     PROVIDER_OPENAI,
-    PROVIDER_DEEPSEEK,
     PROVIDER_KIMI,
     PROVIDER_QWEN,
 )
