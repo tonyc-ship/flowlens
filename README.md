@@ -27,13 +27,26 @@ pip install -e .
 flowlens auth
 ```
 
-### 加载 Chrome Extension
+### 加载 Chrome 扩展
 
-1. 打开 `chrome://extensions/`
-2. 打开右上角 **开发者模式**
-3. 点击 **加载已解压的扩展程序**，选择本地`flowlens/chrome_extension/` 目录
+**前置条件：** 在 Chrome 里登录好小红书账号，FlowLens 复用这个登录态，不会另开无痕窗口。
 
-Extension 会在运行命令时自动连接，不需要手动操作。如果遇到连接超时，确认 Chrome 已打开且 extension 已启用。
+**加载步骤：**
+
+1. Chrome 地址栏输入 `chrome://extensions/` 回车
+2. 页面右上角打开 **开发者模式**（蓝色开关）
+3. 点击 **加载已解压的扩展程序**
+4. 在文件选择对话框里，找到并选中 `flowlens/chrome_extension` 这个文件夹（不是 zip，是整个文件夹）
+5. 扩展卡片出现后，确认状态是**已启用**（蓝色开关）
+
+**验证连接：**
+
+运行任意 `flowlens` 命令时，Python 会先在本地启动一个 WebSocket 服务器，扩展检测到后自动连接，无需在弹窗里手动操作。
+
+如果命令卡在 `Waiting for extension...` 超过 10 秒：
+- 确认 Chrome 已经打开（扩展只在 Chrome 运行时才能连接）
+- 在 `chrome://extensions/` 检查扩展是否已启用
+- 点一下扩展图标，弹窗里会显示当前连接状态和端口号，确认端口与终端输出一致
 
 ### 运行命令
 
@@ -159,13 +172,6 @@ You can check observer data in:
 Browser task run directories also accumulate per-screenshot resource snapshots in
 `screenshot_resource_log.jsonl`.
 
-
-## Load The Chrome Extension
-
-1. Open `chrome://extensions/`
-2. Enable `Developer mode`
-3. Click `Load unpacked`
-4. Select `chrome_extension/`
 
 ## Package Layout
 

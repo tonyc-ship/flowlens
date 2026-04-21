@@ -247,17 +247,26 @@ class AnthropicBackend(Backend):
 
 
 class OpenAIBackend(Backend):
-    """Backend using the OpenAI Responses API with function tools."""
+    """Backend using the OpenAI Responses API, with Chat Completions fallback for custom endpoints."""
 
     def __init__(self, model: str | None = None):
+        import os
         from openai import OpenAI
+        from ..core.runtime import load_runtime_env
+        load_runtime_env()
 
         self.model = model or default_model_for_provider(PROVIDER_OPENAI)
         credential = resolve_provider_auth(PROVIDER_OPENAI)
         kwargs = {}
         if credential is not None:
             kwargs["api_key"] = credential.secret
+        base_url = os.environ.get("OPENAI_BASE_URL", "").strip()
+        if base_url:
+            kwargs["base_url"] = base_url
         self.client = OpenAI(**kwargs)
+        # Use Chat Completions when a custom endpoint is set (e.g. DashScope);
+        # keep Responses API for real OpenAI endpoints.
+        self._use_chat_completions = bool(base_url)
         self._previous_response_id: str | None = None
         self._consumed_message_count = 0
 
@@ -307,6 +316,133 @@ class OpenAIBackend(Backend):
 
         return []
 
+    def _convert_messages(self, system: str, messages: list[dict]) -> list[dict]:
+        """Convert agent loop messages to Chat Completions format."""
+        result: list[dict] = [{"role": "system", "content": system}]
+        for msg in messages:
+            role = str(msg.get("role") or "user")
+            content = msg.get("content")
+            if role == "assistant":
+                if isinstance(content, list):
+                    text_parts = []
+                    tool_calls = []
+                    for item in content:
+                        if not isinstance(item, dict):
+                            continue
+                        if item.get("type") == "text":
+                            text_parts.append(str(item.get("text", "")))
+                        elif item.get("type") == "tool_use":
+                            tool_calls.append({
+                                "id": item.get("id", str(uuid.uuid4())),
+                                "type": "function",
+                                "function": {
+                                    "name": item.get("name", ""),
+                                    "arguments": json.dumps(item.get("input", {})),
+                                },
+                            })
+                    if not text_parts and not tool_calls:
+                        continue
+                    msg_out: dict = {"role": "assistant"}
+                    if text_parts:
+                        msg_out["content"] = "\n".join(text_parts)
+                    if tool_calls:
+                        msg_out["tool_calls"] = tool_calls
+                    result.append(msg_out)
+                else:
+                    result.append({"role": "assistant", "content": str(content or "")})
+            elif role == "user":
+                if isinstance(content, list):
+                    tool_results = [
+                        item for item in content
+                        if isinstance(item, dict) and item.get("type") == "function_call_output"
+                    ]
+                    if tool_results:
+                        for tr in tool_results:
+                            result.append({
+                                "role": "tool",
+                                "tool_call_id": tr.get("call_id", ""),
+                                "content": str(tr.get("output", "")),
+                            })
+                    else:
+                        text = "\n".join(
+                            str(item.get("text", "")).strip()
+                            for item in content
+                            if isinstance(item, dict) and item.get("type") == "text"
+                        ).strip()
+                        if text:
+                            result.append({"role": "user", "content": text})
+                else:
+                    text = str(content or "").strip()
+                    if text:
+                        result.append({"role": "user", "content": text})
+        return result
+
+    def _create_message_chat_completions(
+        self,
+        *,
+        system: str,
+        messages: list[dict],
+        tools: list[dict],
+        max_tokens: int,
+    ) -> LLMResponse:
+        converted = self._convert_messages(system, messages)
+        cc_tools = [
+            {
+                "type": "function",
+                "function": {
+                    "name": t["name"],
+                    "description": t.get("description", ""),
+                    "parameters": t.get("input_schema") or {"type": "object", "properties": {}},
+                },
+            }
+            for t in tools
+        ]
+        request: dict = {
+            "model": self.model,
+            "messages": converted,
+            "max_tokens": max_tokens,
+        }
+        if cc_tools:
+            request["tools"] = cc_tools
+        base_url = str(getattr(self.client, "base_url", "") or "")
+        if "dashscope" in base_url or "aliyuncs" in base_url:
+            request["extra_body"] = {"enable_thinking": False}
+
+        response = self.client.chat.completions.create(**request)
+        msg = response.choices[0].message
+        text_blocks: list[str] = []
+        tool_calls: list[ToolCall] = []
+        assistant_content: list[dict] = []
+        if msg.content:
+            text_blocks.append(msg.content)
+            assistant_content.append({"type": "text", "text": _truncate_assistant_text(msg.content)})
+        for tc in getattr(msg, "tool_calls", None) or []:
+            raw_args = tc.function.arguments or "{}"
+            try:
+                parsed = json.loads(raw_args)
+            except json.JSONDecodeError:
+                parsed = {}
+            tool_calls.append(ToolCall(
+                id=tc.id,
+                name=tc.function.name,
+                input=parsed if isinstance(parsed, dict) else {},
+            ))
+            assistant_content.append({
+                "type": "tool_use",
+                "id": tc.id,
+                "name": tc.function.name,
+                "input": parsed if isinstance(parsed, dict) else {},
+            })
+        usage = getattr(response, "usage", None)
+        return LLMResponse(
+            text_blocks=text_blocks,
+            tool_calls=tool_calls,
+            stop_reason="tool_use" if tool_calls else "end_turn",
+            input_tokens=int(getattr(usage, "prompt_tokens", 0) or 0),
+            output_tokens=int(getattr(usage, "completion_tokens", 0) or 0),
+            raw={"assistant_content": assistant_content, "response": response},
+        )
+
     def create_message(
         self,
         *,
@@ -315,6 +451,11 @@ class OpenAIBackend(Backend):
         tools: list[dict],
         max_tokens: int = 8192,
     ) -> LLMResponse:
+        if self._use_chat_completions:
+            return self._create_message_chat_completions(
+                system=system, messages=messages, tools=tools, max_tokens=max_tokens,
+            )
+
         new_messages = messages[self._consumed_message_count :]
         input_items: list[dict] = []
         for message in new_messages:

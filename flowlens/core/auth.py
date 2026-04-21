@@ -441,6 +441,12 @@ def resolve_model_provider(model: str | None) -> str:
             if lowered.startswith(prefix):
                 return pkey
 
+    # qwen-vl-* models (e.g. qwen-vl-max-2025-08-13) are not in PROVIDER_QWEN
+    # prefixes. Route them to PROVIDER_OPENAI so they use OPENAI_API_KEY /
+    # OPENAI_BASE_URL which Auto-Redbook-Skills maps from MIDSCENE_MODEL_* vars.
+    if lowered.startswith("qwen") and normalized != "qwen-local" and not normalized.startswith("Qwen"):
+        return PROVIDER_OPENAI
+
     preferred = preferred_provider()
     if preferred:
         return preferred

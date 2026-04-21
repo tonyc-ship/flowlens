@@ -327,6 +327,20 @@ def _render_note_markdown(note, downloaded_images: list[tuple[int, str]]) -> str
         lines.append(f"[原文链接]({note.url})")
         lines.append("")
 
+    if getattr(note, "cover_description", ""):
+        lines.append("## 封面/主图理解")
+        lines.append("")
+        lines.append(note.cover_description)
+        lines.append("")
+
+    if getattr(note, "key_points", None):
+        lines.append("## 关键信息")
+        lines.append("")
+        for item in note.key_points:
+            if str(item or "").strip():
+                lines.append(f"- {item}")
+        lines.append("")
+
     lines.append("---")
     lines.append("")
 
@@ -350,6 +364,64 @@ def _render_note_markdown(note, downloaded_images: list[tuple[int, str]]) -> str
             lines.append(f'<img src="images/{filename}" width="280" alt="图片 {idx}"> ')
         lines.append("")
 
+    if note.images:
+        image_notes = []
+        for img in note.images:
+            if getattr(img, "ocr_text", ""):
+                image_notes.append(("OCR", img.index, img.ocr_text))
+            if getattr(img, "vision_description", ""):
+                image_notes.append(("视觉", img.index, img.vision_description))
+        if image_notes:
+            lines.append("---")
+            lines.append("")
+            lines.append("## 图片增强结果")
+            lines.append("")
+            for kind, index, text in image_notes:
+                lines.append(f"### 图片 {index + 1} {kind}")
+                lines.append("")
+                lines.append(text)
+                lines.append("")
+
+    if note.video:
+        video = note.video
+        if (
+            getattr(video, "transcript_summary", "")
+            or getattr(video, "visual_summary", "")
+            or getattr(video, "poster_ocr", "")
+            or getattr(video, "poster_description", "")
+        ):
+            lines.append("---")
+            lines.append("")
+            lines.append("## 视频增强结果")
+            lines.append("")
+            if getattr(video, "poster_description", ""):
+                lines.append("### 封面视觉")
+                lines.append("")
+                lines.append(video.poster_description)
+                lines.append("")
+            if getattr(video, "poster_ocr", ""):
+                lines.append("### 封面 OCR")
+                lines.append("")
+                lines.append(video.poster_ocr)
+                lines.append("")
+            if getattr(video, "transcript_summary", ""):
+                lines.append("### 转录摘要")
+                lines.append("")
+                lines.append(video.transcript_summary)
+                lines.append("")
+            if getattr(video, "visual_summary", ""):
+                lines.append("### 视频视觉摘要")
+                lines.append("")
+                lines.append(video.visual_summary)
+                lines.append("")
+            if getattr(video, "frame_descriptions", None):
+                lines.append("### 关键帧描述")
+                lines.append("")
+                for item in video.frame_descriptions:
+                    if str(item or "").strip():
+                        lines.append(f"- {item}")
+                lines.append("")
+
     # Comments
     if note.comments:
         lines.append("---")
@@ -372,9 +444,82 @@ def _render_note_markdown(note, downloaded_images: list[tuple[int, str]]) -> str
     return "\n".join(lines)
 
 
-async def _run_note_extract(note_url: str) -> dict:
+def _render_cards_markdown(query: str, cards: list) -> str:
+    lines = [f"# 搜索卡片：{query}", ""]
+    if not cards:
+        lines.append("没有抽取到可用卡片。")
+        return "\n".join(lines)
+
+    lines.append(f"共抽取 {len(cards)} 张卡片。")
+    lines.append("")
+    for idx, card in enumerate(cards, 1):
+        title = getattr(card, "title", "") or "(untitled)"
+        author = getattr(card, "author_name", "") or getattr(card, "author", "") or ""
+        likes = getattr(card, "likes", "") or ""
+        card_type = getattr(card, "note_type", "") or getattr(card, "type", "") or ""
+        link = getattr(card, "url", "") or getattr(card, "link", "") or ""
+        lines.append(f"## {idx}. {title}")
+        lines.append("")
+        meta = []
+        if author:
+            meta.append(f"作者 {author}")
+        if likes:
+            meta.append(f"点赞 {likes}")
+        if card_type:
+            meta.append(f"类型 {card_type}")
+        if meta:
+            lines.append(" | ".join(meta))
+            lines.append("")
+        if link:
+            lines.append(f"[原文链接]({link})")
+            lines.append("")
+    return "\n".join(lines)
+
+
+async def _run_cards_extract(query: str, *, tab_label: str | None = None) -> dict:
     async def extractor(tab, adapter, output_dir: Path) -> dict:
-        note = await adapter.extract_note(level="lite", max_comments=10, include_comments=True, include_media=False)
+        search = await adapter.search_notes(query, tab_label=tab_label, wait_seconds=3.0)
+        cards = search.get("cards", [])
+        screenshot_path = output_dir / "search_results.png"
+        saved = await tab.save_screenshot(screenshot_path)
+        markdown = _render_cards_markdown(
+            query,
+            [type("Card", (), card) for card in cards],
+        )
+        md_path = output_dir / "cards.md"
+        md_path.write_text(markdown, encoding="utf-8")
+        return {
+            "task": {"kind": "xhs_cards", "title": query, "site": "xiaohongshu"},
+            "result_file": str(output_dir / "result.json"),
+            "cards_md": str(md_path),
+            "screenshot": str(screenshot_path if saved else ""),
+            "search": search,
+            "timing": adapter.timing.summary(),
+        }
+
+    target = "https://www.xiaohongshu.com/explore"
+    return await _run_xhs_extract(label="cards", target_url=target, slug=query, extractor=extractor)
+
+
+async def _run_note_extract(
+    note_url: str,
+    *,
+    level: str = "lite",
+    max_comments: int = 10,
+    max_images: int = 6,
+    max_video_frames: int = 4,
+    include_comments: bool | None = None,
+    include_media: bool | None = None,
+) -> dict:
+    async def extractor(tab, adapter, output_dir: Path) -> dict:
+        note = await adapter.extract_note(
+            level=level,
+            max_comments=max_comments,
+            max_images=max_images,
+            max_video_frames=max_video_frames,
+            include_comments=include_comments,
+            include_media=include_media,
+        )
         screenshot_path = output_dir / "note_detail.png"
         saved = await tab.save_screenshot(screenshot_path)
         note.screenshot_path = Path(saved).name if saved else ""
@@ -394,6 +539,7 @@ async def _run_note_extract(note_url: str) -> dict:
             "result_file": str(output_dir / "result.json"),
             "note_md": str(md_path),
             "screenshot": str(screenshot_path),
+            "level": level,
             "entity": note.to_tool_dict(),
             "timing": adapter.timing.summary(),
         }
@@ -401,9 +547,9 @@ async def _run_note_extract(note_url: str) -> dict:
     return await _run_xhs_extract(label="note", target_url=note_url, slug=note_url, extractor=extractor)
 
 
-async def _run_creator_extract(profile_url: str) -> dict:
+async def _run_creator_extract(profile_url: str, *, include_notes: bool = True, max_notes: int = 20) -> dict:
     async def extractor(tab, adapter, output_dir: Path) -> dict:
-        author = await adapter.extract_author_profile(include_notes=True)
+        author = await adapter.extract_author_profile(include_notes=include_notes, max_notes=max_notes)
         screenshot_path = output_dir / "creator_profile.png"
         saved = await tab.save_screenshot(screenshot_path)
         author.screenshot_path = Path(saved).name if saved else ""
@@ -427,11 +573,69 @@ def build_parser() -> argparse.ArgumentParser:
     search = subparsers.add_parser("search", help="Run the existing Xiaohongshu topic research report.")
     search.add_argument("request", help='Research topic, for example "调研露营装备".')
 
+    cards = subparsers.add_parser("cards", help="Search a topic and extract visible Xiaohongshu result cards only.")
+    cards.add_argument("request", help='Search keyword, for example "英国求职".')
+    cards.add_argument(
+        "--tab",
+        choices=["全部", "图文", "视频", "用户", "all", "image", "video", "user"],
+        default=None,
+        help="Optional search tab.",
+    )
+
     note = subparsers.add_parser("note", help="Extract a structured note entity from a Xiaohongshu note URL.")
     note.add_argument("url", help="Xiaohongshu note URL, for example https://www.xiaohongshu.com/explore/...")
+    note.add_argument(
+        "--level",
+        choices=["card", "lite", "deep"],
+        default="lite",
+        help="Extraction depth. deep will enable OCR / vision / transcription when applicable.",
+    )
+    note.add_argument("--max-comments", type=int, default=10, help="Max comments to sample.")
+    note.add_argument("--max-images", type=int, default=6, help="Max images to enrich for image notes.")
+    note.add_argument("--max-video-frames", type=int, default=4, help="Max frames to analyze for video notes.")
+    note.add_argument(
+        "--include-comments",
+        dest="include_comments",
+        action="store_true",
+        default=None,
+        help="Force-enable comment extraction.",
+    )
+    note.add_argument(
+        "--no-comments",
+        dest="include_comments",
+        action="store_false",
+        help="Force-disable comment extraction.",
+    )
+    note.add_argument(
+        "--include-media",
+        dest="include_media",
+        action="store_true",
+        default=None,
+        help="Force-enable OCR / vision / transcription.",
+    )
+    note.add_argument(
+        "--no-media",
+        dest="include_media",
+        action="store_false",
+        help="Force-disable OCR / vision / transcription.",
+    )
 
     author = subparsers.add_parser("author", help="Extract an author profile and visible note cards.")
     author.add_argument("url", help="Xiaohongshu author profile URL.")
+    author.add_argument(
+        "--include-notes",
+        dest="include_notes",
+        action="store_true",
+        default=True,
+        help="Also extract visible note cards from the profile.",
+    )
+    author.add_argument(
+        "--no-notes",
+        dest="include_notes",
+        action="store_false",
+        help="Only extract the author profile itself.",
+    )
+    author.add_argument("--max-notes", type=int, default=20, help="Max visible note cards to collect from profile.")
 
     agent = subparsers.add_parser("agent", help="Run a free-form custom Xiaohongshu agent task.")
     agent.add_argument("request", help='Custom request, for example "找最近高互动的露营清单帖子".')
@@ -458,6 +662,8 @@ def _print_result(payload: dict) -> int:
         print(f"报告: {payload['report_md']}")
     if payload.get("note_md"):
         print(f"笔记: {payload['note_md']}")
+    if payload.get("cards_md"):
+        print(f"卡片: {payload['cards_md']}")
     if payload.get("result_file"):
         print(f"结果JSON: {payload['result_file']}")
     if payload.get("screenshot"):
@@ -510,18 +716,38 @@ def main(argv: list[str] | None = None) -> int:
             payload = asyncio.run(_run_structured_agent_task(task))
             return _print_result(payload)
 
+        if args.command == "cards":
+            payload = asyncio.run(_run_cards_extract(_clean_topic(args.request), tab_label=args.tab))
+            return _print_result(payload)
+
         if args.command == "note":
             url = _clean_url(args.url)
             if not NOTE_URL_RE.search(url):
                 parser.error("请提供小红书笔记链接，例如 https://www.xiaohongshu.com/explore/...")
-            payload = asyncio.run(_run_note_extract(url))
+            payload = asyncio.run(
+                _run_note_extract(
+                    url,
+                    level=args.level,
+                    max_comments=args.max_comments,
+                    max_images=args.max_images,
+                    max_video_frames=args.max_video_frames,
+                    include_comments=args.include_comments,
+                    include_media=args.include_media,
+                )
+            )
             return _print_result(payload)
 
         if args.command == "author":
             url = _clean_url(args.url)
             if not PROFILE_URL_RE.search(url):
                 parser.error("请提供小红书作者主页链接，例如 https://www.xiaohongshu.com/user/profile/...")
-            payload = asyncio.run(_run_creator_extract(url))
+            payload = asyncio.run(
+                _run_creator_extract(
+                    url,
+                    include_notes=args.include_notes,
+                    max_notes=args.max_notes,
+                )
+            )
             return _print_result(payload)
 
         if args.command == "agent":

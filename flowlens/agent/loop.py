@@ -38,6 +38,7 @@ from ..perception.media import (
 )
 from ..perception.local_llm import DEFAULT_LOCAL_IMAGE_MAX_DIM, LocalLLM
 from .backends import create_backend
+from ..core.reporting import generate_agent_html_report
 from .tool import Tool, ToolContext
 from .tools.browser import make_browser_tools
 from .tools.site import make_site_tools
@@ -847,6 +848,23 @@ async def _agent_loop(
     report_path = run_dir / "report.md"
     report_path.write_text(final_text, encoding="utf-8")
     log("report", f"Saved to {report_path}")
+
+    try:
+        html = generate_agent_html_report(
+            task=task,
+            model=model,
+            run_dir=run_dir,
+            final_text=final_text,
+            site_results=site_results,
+            total_duration_s=total_duration,
+            turns=turn,
+            screenshots=screenshots,
+        )
+        html_path = run_dir / "report.html"
+        html_path.write_text(html, encoding="utf-8")
+        log("report", f"HTML saved to {html_path}")
+    except Exception as e:
+        log("report_error", f"HTML report failed: {e}")
 
     # Save detailed reasoning log
     reasoning_log_path = run_dir / "reasoning_log.jsonl"
