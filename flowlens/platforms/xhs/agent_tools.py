@@ -55,9 +55,21 @@ def _short_text(text: str, max_chars: int = 320) -> str:
 
 
 def _write_payload_artifact(ctx: ToolContext, label: str, payload: dict) -> str:
-    path = ctx.next_artifact_path(label, suffix=".json", subdir="site_results")
-    path.write_text(json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8")
-    return str(path.relative_to(ctx.run_dir))
+    summary = str(
+        payload.get("summary")
+        or payload.get("message")
+        or payload.get("action")
+        or payload.get("entity_type")
+        or label
+    )
+    return ctx.write_json_artifact(
+        label,
+        payload,
+        subdir="site_results",
+        artifact_kind="site_result",
+        summary=summary,
+        metadata={"site": "xiaohongshu"},
+    )
 
 
 def _card_preview(card: dict, processed_notes: dict | None = None) -> dict:

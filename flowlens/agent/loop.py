@@ -38,9 +38,11 @@ from ..perception.media import (
 )
 from ..perception.local_llm import DEFAULT_LOCAL_IMAGE_MAX_DIM, LocalLLM
 from .backends import create_backend
+from .run_state import RunState
 from .tool import Tool, ToolContext
 from .tools.browser import make_browser_tools
 from .tools.site import make_site_tools
+from .tools.state import make_state_tools
 from .tools.vision import AnalyzeScreenshotTool, OcrScreenshotTool
 from ..platforms.agent_profiles import (
     active_tool_names as profile_active_tool_names,
@@ -88,6 +90,11 @@ You MUST use `return` to get a value back. For example: \
 `return document.title` or `return (function() { ... })()`.
 - **Take a screenshot of every important page state** — especially note/article \
 detail views. These screenshots will be included in the final report.
+- For complex multi-step work, use `update_task_plan` to keep a concise checklist current.
+- Earlier findings are persisted outside the live chat history. Use `read_run_state` \
+or `read_saved_artifact` when you need to revisit older evidence instead of guessing from memory.
+- Before writing the final report for a multi-source task, ground the report against \
+the persisted run state instead of relying only on recent chat memory.
 
 ## Thinking out loud
 
@@ -172,6 +179,7 @@ def _compact_memory_entries(entries: list[str], max_chars: int) -> str:
 
 def _prepare_messages_for_context(
     messages: list[dict],
+    run_state: RunState | None,
     memory_entries: list[str],
     *,
     keep_recent_messages: int | None = None,
@@ -186,8 +194,18 @@ def _prepare_messages_for_context(
     if len(messages) <= keep_recent + 2:
         return messages
 
+    sections: list[str] = []
+    if run_state is not None:
+        state_block = run_state.context_block(max_chars=max(1200, memory_chars // 2))
+        if state_block:
+            sections.append("Structured run state from earlier turns:\n\n" + state_block)
     memory = _compact_memory_entries(memory_entries, memory_chars)
-    if not memory:
+    if memory:
+        sections.append(
+            "Condensed event memory from earlier turns. Older raw tool messages were compacted "
+            "to keep context small:\n\n" + memory
+        )
+    if not sections:
         return messages
 
     recent = list(messages[-keep_recent:])
@@ -198,11 +216,7 @@ def _prepare_messages_for_context(
         messages[0],
         {
             "role": "user",
-            "content": (
-                "Working memory from earlier turns. Older raw tool messages were compacted "
-                "to keep context small; use this memory plus recent messages.\n\n"
-                f"{memory}"
-            ),
+            "content": "\n\n".join(sections),
         },
         *recent,
     ]
@@ -213,6 +227,19 @@ def _log_excerpt(text: str, max_len: int = 200) -> str:
     if len(text) <= max_len:
         return text
     return text[:max_len] + "... [truncated]"
+
+
+def _build_report_grounding_request(run_state: RunState) -> str:
+    digest = run_state.report_grounding_context(max_chars=5000)
+    return (
+        "Before finalizing your report, ground it against the persisted run state. "
+        "First inspect the saved state using `read_run_state(section='plan')` and "
+        "`read_run_state(section='evidence')`. If one of the saved artifact paths "
+        "looks important, use `read_saved_artifact(path='...')` to pull the full saved content. "
+        "Do not reopen the website unless the saved state is clearly insufficient.\n\n"
+        "Saved run-state digest:\n\n"
+        f"{digest}"
+    )
 
 
 def _make_media_for_model(model: str) -> MediaProcessor:
@@ -322,7 +349,7 @@ def _select_active_tools(
     if not active_names:
         return tools
 
-    selected = [tool for tool in tools if tool.name in active_names]
+    selected = [tool for tool in tools if tool.name in active_names or tool.always_available]
     return selected or tools
 
 
@@ -466,7 +493,8 @@ async def _agent_loop(
     parent_bridge: ExtensionBridge | None = None,
     agent_window_id: int | None = None,
 ) -> dict:
-    ctx = ToolContext(run_dir=run_dir)
+    run_state = RunState(run_dir=run_dir, task=task, model=model)
+    ctx = ToolContext(run_dir=run_dir, run_state=run_state)
 
     # Downscale screenshots for local models (768px max dim → ~3s per image)
     is_local = (
@@ -485,6 +513,7 @@ async def _agent_loop(
 
     # Build tools — extract_page_data needs the ExtensionBridge for send_command
     tools: list[Tool] = make_browser_tools(bridge, ext_bridge=ext_bridge)
+    tools.extend(make_state_tools())
     if media:
         tools.append(AnalyzeScreenshotTool(media=media))
         tools.append(OcrScreenshotTool(media=media))
@@ -525,6 +554,9 @@ async def _agent_loop(
     turn = 0
     final_text = ""
     context_memory: list[str] = []
+    report_grounding_requested = False
+    report_grounding_observed = False
+    last_state_read_turn = 0
 
     # ── Detailed reasoning log ──────────────────────────────────
     reasoning_log: list[dict] = []
@@ -617,7 +649,7 @@ async def _agent_loop(
         request_messages = (
             messages
             if hasattr(backend, "_previous_response_id")
-            else _prepare_messages_for_context(messages, context_memory)
+            else _prepare_messages_for_context(messages, run_state, context_memory)
         )
         try:
             response = backend.create_message(
@@ -691,12 +723,41 @@ async def _agent_loop(
             "stop_reason": response.stop_reason,
             "usage": usage_entry,
         })
+        run_state.note_assistant_turn(
+            turn=turn,
+            text="\n".join(visible_texts or text_blocks),
+            tool_calls=[
+                {"name": tu.name, "input": tu.input}
+                for tu in tool_use_blocks
+            ] if tool_use_blocks else [],
+        )
 
         if not tool_use_blocks:
             if visible_texts:
                 final_text = "\n".join(visible_texts)
+            if (
+                run_state.has_structured_state()
+                and final_text
+                and not report_grounding_requested
+                and (turn - last_state_read_turn) > 1
+            ):
+                report_grounding_requested = True
+                grounding_request = _build_report_grounding_request(run_state)
+                messages.append({"role": "user", "content": grounding_request})
+                log("grounding", "Requesting a run-state grounding pass before final report")
+                log_entry({
+                    "type": "report_grounding_requested",
+                    "turn": turn,
+                    "used_state_tools": report_grounding_observed,
+                })
+                await watch("info", "Grounding final report against saved run state.", phase="grounding")
+                continue
             log("done", f"Task complete after {turn} turns")
-            log_entry({"type": "task_complete", "turn": turn})
+            log_entry({
+                "type": "task_complete",
+                "turn": turn,
+                "grounded_with_state_tools": report_grounding_observed,
+            })
             break
 
         # Execute tools and collect results
@@ -705,8 +766,14 @@ async def _agent_loop(
         for tu in tool_use_blocks:
             tool_name = tu.name
             tool_input = tu.input
+            ctx.turn = turn
+            ctx.active_tool_name = tool_name
 
             log("tool_call", f"{tool_name}({json.dumps(tool_input, ensure_ascii=False)[:200]})")
+            run_state.note_tool_call(turn=turn, tool_name=tool_name, tool_input=tool_input)
+            if tool_name in {"read_run_state", "read_saved_artifact"}:
+                report_grounding_observed = True
+                last_state_read_turn = turn
             await watch("action", f"Calling {tool_name}", phase="tool",
                         action_name=tool_name,
                         detail=json.dumps(tool_input, ensure_ascii=False)[:200])
@@ -743,6 +810,14 @@ async def _agent_loop(
                         img_str = str(img)
                         if img_str not in screenshots:
                             screenshots.append(img_str)
+                        ctx.register_artifact(
+                            img,
+                            label=img.stem,
+                            artifact_kind="image",
+                            summary=f"Screenshot captured by {tool_name}",
+                            metadata={"category": "screenshot"},
+                            source_tool=tool_name,
+                        )
 
                     log_entry({
                         "type": "tool_result",
@@ -759,6 +834,13 @@ async def _agent_loop(
                     )
                     if len(context_memory) > 80:
                         context_memory = context_memory[-80:]
+                    run_state.note_tool_result(
+                        turn=turn,
+                        tool_name=tool_name,
+                        tool_input=tool_input,
+                        result_summary=_text_summary(result_content, max_len=900),
+                        duration_s=tool_duration,
+                    )
                     await watch(
                         "result",
                         _text_summary(result_content)[:360],
@@ -782,8 +864,11 @@ async def _agent_loop(
                         phase="tool_error",
                         action_name=tool_name,
                     )
+                finally:
+                    ctx.active_tool_name = ""
 
             all_results.append(result_content)
+            ctx.active_tool_name = ""
 
         # Format tool results in backend-specific format and append
         messages.append(backend.format_tool_results(tool_use_blocks, all_results))
@@ -802,15 +887,17 @@ async def _agent_loop(
             "content": (
                 "You've reached the maximum number of turns. Based on everything "
                 "you've gathered so far, please write your comprehensive final report "
-                "now. Include all findings, screenshots (using ![desc](filename.jpg) "
-                "syntax), and analysis."
+                "now. Ground the report against the saved run state summary below. "
+                "Include all findings, screenshots (using ![desc](filename.jpg) "
+                "syntax), and analysis.\n\n"
+                f"{run_state.report_grounding_context(max_chars=5000)}"
             ),
         })
         try:
             request_messages = (
                 messages
                 if hasattr(backend, "_previous_response_id")
-                else _prepare_messages_for_context(messages, context_memory)
+                else _prepare_messages_for_context(messages, run_state, context_memory)
             )
             summary_resp = backend.create_message(
                 system=system_prompt,
@@ -841,6 +928,7 @@ async def _agent_loop(
     # Collect site result artifacts before rendering the final markdown so we can
     # add reliable local screenshot evidence even when the model omits it.
     site_results = _collect_site_results(run_dir)
+    final_text = run_state.render_markdown_appendix(final_text)
     final_text = append_report_extras(final_text, site_results)
 
     # Save final report
@@ -863,6 +951,7 @@ async def _agent_loop(
         "total_duration_s": total_duration,
         "screenshots": screenshots,
         "run_dir": str(run_dir),
+        "run_state_dir": str(run_state.state_dir),
         "timestamp": datetime.now().isoformat(),
         "reasoning_log_file": "reasoning_log.jsonl",
         "resource_log_file": "resource_log.jsonl",
@@ -881,6 +970,7 @@ async def _agent_loop(
         "screenshots": screenshots,
         "turns": turn,
         "run_dir": str(run_dir),
+        "run_state_dir": str(run_state.state_dir),
         "reasoning_log": str(reasoning_log_path),
         "total_duration_s": total_duration,
         "site_results": site_results,

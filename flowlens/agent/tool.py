@@ -7,9 +7,14 @@ Each tool exposes:
 
 from __future__ import annotations
 
+import json
 from abc import ABC, abstractmethod
 from dataclasses import dataclass, field
 from pathlib import Path
+from typing import TYPE_CHECKING
+
+if TYPE_CHECKING:
+    from .run_state import RunState
 
 
 @dataclass
@@ -17,10 +22,13 @@ class ToolContext:
     """Shared runtime state available to every tool invocation."""
 
     run_dir: Path
+    run_state: RunState | None = None
     screenshot_counter: int = 0
     screenshot_max_dim: int = 0  # 0 = no downscaling
     artifact_counter: int = 0
     processed_notes: dict = field(default_factory=dict)
+    turn: int = 0
+    active_tool_name: str = ""
 
     def next_screenshot_path(self, label: str = "screenshot") -> Path:
         self.screenshot_counter += 1
@@ -42,9 +50,61 @@ class ToolContext:
         directory.mkdir(parents=True, exist_ok=True)
         return directory / f"{self.artifact_counter:03d}_{safe_label}{suffix}"
 
+    def register_artifact(
+        self,
+        path: Path,
+        *,
+        label: str = "",
+        artifact_kind: str = "",
+        summary: str = "",
+        metadata: dict | None = None,
+        payload=None,
+        source_tool: str = "",
+    ) -> str:
+        rel = str(path.relative_to(self.run_dir))
+        if self.run_state is not None:
+            self.run_state.record_artifact(
+                rel,
+                label=label,
+                artifact_kind=artifact_kind,
+                source_tool=source_tool or self.active_tool_name,
+                turn=self.turn or None,
+                summary=summary,
+                payload=payload,
+                metadata=metadata or {},
+            )
+        return rel
+
+    def write_json_artifact(
+        self,
+        label: str,
+        payload: dict,
+        *,
+        subdir: str = "artifacts",
+        source_tool: str = "",
+        artifact_kind: str = "json",
+        summary: str = "",
+        metadata: dict | None = None,
+    ) -> str:
+        path = self.next_artifact_path(label, suffix=".json", subdir=subdir)
+        path.write_text(json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8")
+        return self.register_artifact(
+            path,
+            label=label,
+            artifact_kind=artifact_kind,
+            summary=summary,
+            metadata=metadata,
+            payload=payload,
+            source_tool=source_tool,
+        )
+
 
 class Tool(ABC):
     """Base class for agent tools."""
+
+    @property
+    def always_available(self) -> bool:
+        return False
 
     @property
     @abstractmethod
