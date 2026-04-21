@@ -1,0 +1,259 @@
+import { chromium } from 'playwright'
+import { getValidSession, getSessionError, markAccountUsed, cookieStringToStorageState } from './auth.js'
+import { filterPosts, scorePost } from './viral-filter.js'
+
+const SEARCH_URL = 'https://www.xiaohongshu.com/search_result?keyword='
+
+// 将页面相对时间转为 YYYY-MM-DD，基准为当天
+// "X天前"精确转换，"X个月前"按 30天/月估算，"刚刚"/"X小时前"返回今天
+export function parseRelativeDate(text) {
+  if (!text) return new Date().toISOString().slice(0, 10)
+  const now = Date.now()
+  const m = text.match(/(\d+)\s*(天|周|个月|月|年)前/)
+  if (!m) return new Date(now).toISOString().slice(0, 10)
+  const [, num, unit] = m
+  const n = parseInt(num)
+  const msMap = { 天: 86400000, 周: 604800000, 个月: 2592000000, 月: 2592000000, 年: 31536000000 }
+  return new Date(now - n * (msMap[unit] || 86400000)).toISOString().slice(0, 10)
+}
+
+function randomDelay(minMs = 2000, maxMs = 5000) {
+  return new Promise(r => setTimeout(r, minMs + Math.random() * (maxMs - minMs)))
+}
+
+async function needsCaptcha(page) {
+  try {
+    const url = page.url()
+    console.error(`[DEBUG] 当前 URL: ${url}`)
+    
+    // 检查 URL 是否包含验证相关路径
+    if (/verify|captcha|security-check|website-login/.test(url)) {
+      console.error(`[WARN] URL 包含验证特征: ${url.slice(0, 80)}`)
+      return true
+    }
+    
+    const found = await page.$('[class*="captcha"],[class*="verify"],[class*="security"],[id*="captcha"],[id*="verify"]')
+    if (found) {
+      console.error(`[WARN] 页面中找到验证码元素`)
+      return true
+    }
+    
+    const text = await page.evaluate(() => document.body?.innerText || '')
+    if (text.includes('安全验证') && text.includes('刷新')) {
+      console.error(`[WARN] 页面包含'安全验证'文本`)
+      return true
+    }
+  } catch (e) {
+    console.error(`[ERROR] needsCaptcha 异常: ${e.message}`)
+  }
+  return false
+}
+
+async function waitForCaptcha(page) {
+  console.error('⚠️  检测到安全验证，等待 120 秒...')
+  for (let remaining = 120; remaining > 0; remaining -= 10) {
+    console.error(`⏳ 还剩 ${remaining} 秒...`)
+    await page.waitForTimeout(10000)
+    if (!await needsCaptcha(page)) {
+      console.error('✅ 安全验证已解除')
+      return
+    }
+  }
+  console.error('⚠️  120 秒已过，继续执行')
+}
+
+async function scrapeListPage(page, keyword, limit) {
+  const url = SEARCH_URL + encodeURIComponent(keyword)
+  console.error(`[INFO] 打开搜索页面: ${url}`)
+  
+  await page.goto(url, { waitUntil: 'domcontentloaded', timeout: 30000 })
+  console.error(`[INFO] 页面加载完成，URL: ${page.url()}`)
+  
+  await page.waitForTimeout(2000)
+  
+  // 检查验证码
+  let needsWait = await needsCaptcha(page)
+  if (needsWait) {
+    console.error(`[WARN] 第一次检查发现验证码，执行等待流程...`)
+    await waitForCaptcha(page)
+  }
+  
+  await page.waitForTimeout(3000)
+  
+  console.error(`[DEBUG] 开始采集列表，当前 URL: ${page.url()}`)
+
+  const posts = []
+  let attempts = 0
+  while (posts.length < limit && attempts < 10) {
+    console.error(`[DEBUG] 采集轮次 ${attempts + 1}/10，当前已获取 ${posts.length}/${limit} 笔记`)
+    
+    try {
+      const items = await page.$$eval(
+        '[data-v-a264d] .note-item, .search-feed-item, .note-list-item',
+        els => {
+          console.log(`[DEBUG] 找到 ${els.length} 个列表项`)
+          return els.map(el => ({
+            id: el.getAttribute('data-id') || el.querySelector('a')?.href?.match(/\/([a-z0-9]+)(?:\?|$)/)?.[1],
+            title: el.querySelector('.title, .note-title, h3')?.textContent?.trim(),
+            likes: parseInt(el.querySelector('.like-count, .count')?.textContent?.replace(/[^0-9]/g, '')) || 0,
+            saves: parseInt(el.querySelector('.collect-count, .save-count')?.textContent?.replace(/[^0-9]/g, '')) || 0,
+            comments: parseInt(el.querySelector('.comment-count')?.textContent?.replace(/[^0-9]/g, '')) || 0,
+            url: el.querySelector('a')?.href,
+            cover_image_url: el.querySelector('img')?.src,
+          }))
+        }
+      )
+      
+      console.error(`[INFO] 本轮获取 ${items.length} 个项目`)
+      
+      for (const item of items) {
+        if (item.id && !posts.find(p => p.id === item.id)) {
+          posts.push(item)
+        }
+      }
+    } catch (err) {
+      console.error(`[ERROR] 采集失败: ${err.message}`)
+    }
+    
+    if (posts.length < limit) {
+      console.error(`[DEBUG] 滚动页面...`)
+      await page.evaluate(() => window.scrollBy(0, 800))
+      await page.waitForTimeout(1500)
+    }
+    attempts++
+  }
+  
+  console.error(`[INFO] 列表采集完成，共获取 ${posts.length} 笔记`)
+  return posts.slice(0, limit)
+}
+
+async function scrapeDetailPage(page, post) {
+  if (!post.url) return post
+  await page.goto(post.url, { waitUntil: 'domcontentloaded', timeout: 30000 })
+  if (await needsCaptcha(page)) await waitForCaptcha(page)
+  await page.waitForTimeout(2000)
+
+  const detail = await page.evaluate(() => {
+    const content = document.querySelector('#detail-desc, .note-text, .desc')?.innerText?.trim()
+    const dateText = document.querySelector('.date, .publish-date, time')?.textContent?.trim()
+    const authorEl = document.querySelector('.username, .author-name, .user-name')
+    const author = authorEl?.textContent?.trim()
+    const authorLink = document.querySelector('a[href*="/user/profile/"]')
+    const author_id = authorLink?.href?.match(/\/user\/profile\/([a-f0-9]+)/)?.[1] || ''
+    const coverImg = document.querySelector('.slide-image img, .note-image img')?.src
+    return { content, dateText, author, author_id, coverImg }
+  })
+
+  return {
+    ...post,
+    content: detail.content || '',
+    published_at: parseRelativeDate(detail.dateText),
+    author: detail.author || '',
+    author_id: detail.author_id || '',
+    cover_image_url: detail.coverImg || post.cover_image_url || '',
+  }
+}
+
+export async function explore({ keyword, searchLimit = 20, viralThreshold = 60, authorLimit = 20 }) {
+  console.error(`[INFO] 开始采集: keyword=${keyword}, searchLimit=${searchLimit}, viralThreshold=${viralThreshold}, authorLimit=${authorLimit}`)
+  
+  const session = getValidSession()
+  if (!session) {
+    console.error(`[ERROR] 无可用 session`)
+    return getSessionError()
+  }
+  
+  console.error(`[INFO] 使用账号: ${session.accountName}`)
+
+  // 支持两种 session：storageState 文件路径 或 env cookie 字符串（回退）
+  const storageStateOpt = session.storagePath
+    ? session.storagePath
+    : cookieStringToStorageState(session.cookieStr)
+
+  const browser = await chromium.launch({
+    headless: true,
+    args: ['--disable-blink-features=AutomationControlled']
+  })
+
+  try {
+    const context = await browser.newContext({
+      storageState: storageStateOpt,
+      userAgent: 'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
+      extraHTTPHeaders: { 'Accept-Language': 'zh-CN,zh;q=0.9' }
+    })
+    await context.addInitScript(() => {
+      Object.defineProperty(navigator, 'webdriver', { get: () => undefined })
+    })
+
+    const page = await context.newPage()
+
+    // 阶段一：列表页抓取，为确保能凑够 authorLimit 个不同作者，多抓一些笔记
+    const internalLimit = Math.max(searchLimit, authorLimit * 3)
+    console.error(`[INFO] 阶段一：抓取列表页，目标 ${internalLimit} 笔记`)
+    
+    const listPosts = await scrapeListPage(page, keyword, internalLimit)
+    console.error(`[INFO] 阶段一完成：获取 ${listPosts.length} 笔记`)
+
+    // 阶段二：爆款硬门槛过滤（用列表数据，不进详情）
+    const viralPosts = filterPosts(listPosts, viralThreshold)
+    console.error(`[INFO] 阶段二完成：爆款过滤后 ${viralPosts.length} 笔记（门槛=${viralThreshold}）`)
+
+    // 阶段三：串行详情抓取（随机延迟防反爬），并用详情数据更新 viral_score
+    console.error(`[INFO] 阶段三：抓取详情页...`)
+    const fullPosts = []
+    for (const post of viralPosts) {
+      await randomDelay()
+      const full = await scrapeDetailPage(page, post)
+      fullPosts.push({ ...full, viral_score: scorePost(full) })
+    }
+    console.error(`[INFO] 阶段三完成：获取 ${fullPosts.length} 笔记详情`)
+
+    // 阶段四：按作者聚合，取最高爆款评分排序，返回前 authorLimit 个作者
+    const authorMap = {}
+    for (const post of fullPosts) {
+      const key = post.author_id || post.author
+      if (!key) continue
+      if (!authorMap[key]) {
+        authorMap[key] = { author: post.author, author_id: post.author_id, posts: [] }
+      }
+      authorMap[key].posts.push(post)
+    }
+
+    const authors = Object.values(authorMap)
+      .map(a => {
+        const sorted = [...a.posts].sort((x, y) => y.viral_score - x.viral_score)
+        return {
+          author: a.author,
+          author_id: a.author_id,
+          viral_count: a.posts.length,
+          max_viral_score: sorted[0]?.viral_score || 0,
+          top_post_title: sorted[0]?.title || '',
+          top_post_url: sorted[0]?.url || '',
+        }
+      })
+      .sort((a, b) => b.max_viral_score - a.max_viral_score)
+      .slice(0, authorLimit)
+
+    console.error(`[INFO] 阶段四完成：聚合到 ${authors.length} 个作者`)
+
+    markAccountUsed(session.accountName)
+    
+    const result = {
+      keyword,
+      search_limit: searchLimit,
+      author_limit: authorLimit,
+      total_fetched: listPosts.length,
+      viral_passed: fullPosts.length,
+      authors,
+      posts: fullPosts
+    }
+    
+    console.error(`[INFO] 采集完成！`)
+    return result
+  } catch (err) {
+    console.error(`[ERROR] 采集异常: ${err.message}`)
+    return { error: 'network_error', message: err.message }
+  } finally {
+    await browser.close()
+  }
+}

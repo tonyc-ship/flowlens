@@ -1,0 +1,29 @@
+accounts.json
+.env
+.DS_Store
+node_modules/
+output/
+output/logs/
+package-lock.json
+**/__pycache__/
+*.pyc
+test_notes.json
+*.md.bak
+
+# 项目说明/修复文档
+*_FIX*.md
+*_SUMMARY*.md
+*_DIAGNOSIS*.md
+*_INSTRUCTIONS*.md
+*_VERIFICATION*.md
+DEBUG_*.md
+LOGIN_*.md
+ANTI_*.md
+QUICK_REFERENCE.md
+
+# 本地运行产物
+venv/
+*.log
+flowlens_cache/
+.agents/
+.claude/

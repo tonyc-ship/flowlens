@@ -21,6 +21,8 @@ PROJECT_ROOT = Path(__file__).resolve().parent.parent.parent
 LOCAL_ENV_FILES = (
     PROJECT_ROOT / ".env.local",
     PROJECT_ROOT / ".env",
+    # Monorepo: if FlowLens lives alongside a skills project, share their .env
+    PROJECT_ROOT.parent / ".env",
 )
 SHELL_EXPORT_FILES = (
     Path.home() / ".zshrc.pre-oh-my-zsh",
@@ -50,10 +52,13 @@ SHELL_CREDENTIAL_KEYS = (
     "ANTHROPIC_AUTH_TOKEN",
     "OPENAI_API_KEY",
     "OPENAI_AUTH_TOKEN",
+
     "MOONSHOT_API_KEY",
     "KIMI_API_KEY",
     "DASHSCOPE_API_KEY",
     "QWEN_API_KEY",
+    "MIDSCENE_MODEL_API_KEY",
+    "MIDSCENE_MODEL_BASE_URL",
 )
 SHELL_EXPORT_KEYS = (*RUNTIME_KEYS, *SHELL_CREDENTIAL_KEYS)
 
@@ -100,7 +105,7 @@ def load_runtime_env() -> None:
             if not parsed:
                 continue
             key, value = parsed
-            if key in RUNTIME_KEYS and value and key not in os.environ:
+            if key in SHELL_EXPORT_KEYS and value and key not in os.environ:
                 os.environ[key] = value
 
     for key in SHELL_EXPORT_KEYS:
@@ -119,6 +124,16 @@ def load_runtime_env() -> None:
                     break
             if os.environ.get(key):
                 break
+
+    # Fallback: if OPENAI_API_KEY / OPENAI_BASE_URL are still unset, borrow
+    # from the MIDSCENE_MODEL_* vars so a single key in .env is enough.
+    _midscene_fallbacks = {
+        "OPENAI_API_KEY": "MIDSCENE_MODEL_API_KEY",
+        "OPENAI_BASE_URL": "MIDSCENE_MODEL_BASE_URL",
+    }
+    for target, source in _midscene_fallbacks.items():
+        if not os.environ.get(target) and os.environ.get(source):
+            os.environ[target] = os.environ[source]
 
     _LOADED = True
 

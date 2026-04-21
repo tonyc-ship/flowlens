@@ -477,13 +477,14 @@ class XHSSiteAdapter:
             result = await self.ext_bridge.send_command("click_card", {"index": int(index)})
         else:
             raise ValueError("open_note requires index or note_id")
-        if wait_seconds > 0:
-            deadline = time.monotonic() + float(wait_seconds)
-            while time.monotonic() < deadline:
-                state = await self.detect_state()
-                if str(state.get("state") or "") == "note_detail":
-                    break
-                await asyncio.sleep(0.12)
+        _MIN_WAIT = 2.5
+        effective_wait = max(float(wait_seconds), _MIN_WAIT)
+        deadline = time.monotonic() + effective_wait
+        while time.monotonic() < deadline:
+            state = await self.detect_state()
+            if str(state.get("state") or "") == "note_detail":
+                break
+            await asyncio.sleep(0.12)
         return result
 
     async def close_note(self) -> dict:

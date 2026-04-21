@@ -315,6 +315,7 @@ class ExtensionBridge:
                 self._handle_connection,
                 "localhost",
                 self.port,
+                reuse_address=True,
             )
         except OSError as exc:
             _IN_PROCESS_BRIDGE_OWNERS.pop(self.port, None)
