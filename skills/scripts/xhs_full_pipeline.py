@@ -10,8 +10,8 @@
   5. 结果汇总写入 output/小红书备选/
 
 用法：
-  python3.13 scripts/xhs_full_pipeline.py --keyword "英国留学求职"
-  python3.13 scripts/xhs_full_pipeline.py --keyword "英国留学求职" --accounts 5 --copies 2
+  python3.13 scripts/xhs_full_pipeline.py --keyword "海外求职"
+  python3.13 scripts/xhs_full_pipeline.py --keyword "海外求职" --accounts 5 --copies 2
 """
 
 import argparse
@@ -203,7 +203,7 @@ CONTENT_TOPICS = {
     "面试": ["面试3大致命错误", "offer拿到手前你要做这几件事"],
     "简历": ["0经验简历这样写不被秒拒", "CV到底差在哪里学姐帮你看"],
     "工签": ["PSW转工签最全时间线", "sponsor公司怎么找一文说清"],
-    "留学": ["英国留学生求职最容易踩的坑", "读研期间这样积累经验上岸不难"],
+    "留学": ["海外求职生求职最容易踩的坑", "读研期间这样积累经验上岸不难"],
     "默认": ["留英求职3个月我学到了什么", "刷到就是缘分这些干货别错过"],
 }
 
@@ -240,7 +240,7 @@ def generate_copy(account: dict, topic: str, copy_index: int) -> str:
     body = "\n\n".join(body_parts)
 
     # 标签
-    keyword_tags = ["#英国留学", "#英国求职", "#留英上岸", f"#{topic.replace(' ', '')}"]
+    keyword_tags = ["#海外求职", "#英国求职", "#留英上岸", f"#{topic.replace(' ', '')}"]
     hashtags = " ".join(keyword_tags)
 
     title_raw = account.get("标题模板", "") or ""

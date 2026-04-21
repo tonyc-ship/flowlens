@@ -125,7 +125,7 @@ console.log(`
   $ node -e "
     import { explore } from './scripts/explore.js';
     const result = await explore({
-      keyword: '英国留学求职',
+      keyword: '海外求职',
       searchLimit: 20,
       viralThreshold: 60,
       authorLimit: 5

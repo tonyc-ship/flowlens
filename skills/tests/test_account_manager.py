@@ -87,12 +87,12 @@ def test_extract_display_name_from_user_info_prefers_nickname():
     payload = {
         "data": {
             "basic_info": {
-                "nickname": "英国留学求职Lisa",
+                "nickname": "海外求职Lisa",
                 "name": "备用名字",
             }
         }
     }
-    assert _extract_display_name_from_user_info(payload) == "英国留学求职Lisa"
+    assert _extract_display_name_from_user_info(payload) == "海外求职Lisa"
 
 
 def test_make_unique_account_name_appends_suffix_when_conflicted():
@@ -101,10 +101,10 @@ def test_make_unique_account_name_appends_suffix_when_conflicted():
 
 def test_find_existing_account_name_by_display_name_matches_nickname():
     accounts = [
-        {"name": "default", "nickname": "英国留学求职Lisa"},
+        {"name": "default", "nickname": "海外求职Lisa"},
         {"name": "backup", "nickname": ""},
     ]
-    assert _find_existing_account_name_by_display_name(accounts, "英国留学求职Lisa") == "default"
+    assert _find_existing_account_name_by_display_name(accounts, "海外求职Lisa") == "default"
 
 
 # --- get_next_account ---

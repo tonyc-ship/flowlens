@@ -12,10 +12,10 @@ const SEARCH_URL = 'https://www.xiaohongshu.com/search_result?keyword='
 
 // 本地数据库：关键词对应的账号数据
 const LOCAL_DATA_DB = {
-    '英国留学求职': [
+    '海外求职': [
         {
             user_id: 'UK_STUDY_001',
-            nickname: '英国留学顾问Lisa',
+            nickname: '海外求职顾问Lisa',
             avatar: 'https://img-cdn.xiaohongshu.com/avatar1.jpg',
             desc: '专注英国G5大学申请，累计成功案例500+',
             followers: 185000,
@@ -105,7 +105,7 @@ async function getDataFromPageOrCache(keyword) {
         if (await checkIPRestriction(page)) {
             console.error(`[WARN] 检测到 IP 风险限制，将使用本地缓存数据`)
             await browser.close()
-            return LOCAL_DATA_DB[keyword] || LOCAL_DATA_DB['英国留学求职']
+            return LOCAL_DATA_DB[keyword] || LOCAL_DATA_DB['海外求职']
         }
         
         console.error(`[INFO] 搜索页面加载成功，尝试提取数据`)
@@ -129,12 +129,12 @@ async function getDataFromPageOrCache(keyword) {
         
         // 如果页面正常但无数据，也使用缓存
         console.error(`[WARN] 页面无数据，使用本地缓存`)
-        return LOCAL_DATA_DB[keyword] || LOCAL_DATA_DB['英国留学求职']
+        return LOCAL_DATA_DB[keyword] || LOCAL_DATA_DB['海外求职']
         
     } catch (error) {
         console.error(`[ERROR] 页面加载失败: ${error.message}`)
         console.error(`[WARN] 回退到本地缓存数据`)
-        return LOCAL_DATA_DB[keyword] || LOCAL_DATA_DB['英国留学求职']
+        return LOCAL_DATA_DB[keyword] || LOCAL_DATA_DB['海外求职']
     } finally {
         await browser.close()
     }

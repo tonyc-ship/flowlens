@@ -39,7 +39,7 @@ console.log('\n========================================');
 console.log('🔄 第二步：进行搜索');
 console.log('========================================');
 
-const keyword = '英国留学求职';
+const keyword = '海外求职';
 const searchUrl = `https://www.xiaohongshu.com/search_result?keyword=${encodeURIComponent(keyword)}`;
 console.log(`搜索关键词: "${keyword}"`);
 console.log(`搜索 URL: ${searchUrl}`);

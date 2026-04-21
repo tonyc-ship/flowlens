@@ -34,7 +34,7 @@ def test_main_skip_explore_uses_fixed_workbook_and_tail_rows(monkeypatch, tmp_pa
     monkeypatch.setattr(xhs_full_pipeline, "run_generate_copies", lambda accounts, copies_per_account=2: captured.setdefault("accounts", accounts) or [])
     monkeypatch.setattr(xhs_full_pipeline, "run_generate_cards", lambda draft_paths, accounts: {})
     monkeypatch.setattr(xhs_full_pipeline.argparse.ArgumentParser, "parse_args", lambda self: type("Args", (), {
-        "keyword": "英国留学求职",
+        "keyword": "海外求职",
         "accounts": 2,
         "copies": 1,
         "skip_explore": True,
@@ -57,7 +57,7 @@ def test_main_uses_rows_returned_by_current_run(monkeypatch):
     monkeypatch.setattr(xhs_full_pipeline, "run_generate_copies", lambda accounts, copies_per_account=2: captured.setdefault("accounts", accounts) or [])
     monkeypatch.setattr(xhs_full_pipeline, "run_generate_cards", lambda draft_paths, accounts: {})
     monkeypatch.setattr(xhs_full_pipeline.argparse.ArgumentParser, "parse_args", lambda self: type("Args", (), {
-        "keyword": "英国留学求职",
+        "keyword": "海外求职",
         "accounts": 2,
         "copies": 1,
         "skip_explore": False,

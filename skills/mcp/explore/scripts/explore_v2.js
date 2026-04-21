@@ -144,9 +144,9 @@ export async function explore({ keyword, searchLimit = 20, viralThreshold = 60, 
         const mockAuthors = [
             {
                 user_id: 'author_001',
-                nickname: '英国留学顾问Lisa',
+                nickname: '海外求职顾问Lisa',
                 avatar: 'https://example.com/avatar1.jpg',
-                desc: '专注英国留学申请指导',
+                desc: '专注海外求职申请指导',
                 followers: 125000,
                 following: 500,
                 notes_count: 450,

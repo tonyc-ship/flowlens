@@ -51,7 +51,7 @@ while (running) {
       break;
     
     case '2':
-      const keyword = await prompt('请输入搜索关键词 (默认: 英国留学求职): ') || '英国留学求职';
+      const keyword = await prompt('请输入搜索关键词 (默认: 海外求职): ') || '海外求职';
       console.log(`🔄 搜索"${keyword}"...`);
       const searchUrl = `https://www.xiaohongshu.com/search_result?keyword=${encodeURIComponent(keyword)}`;
       console.log(`📍 URL: ${searchUrl}`);

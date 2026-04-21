@@ -474,7 +474,7 @@ export async function explore({ keyword, searchLimit = 20, viralThreshold = 60, 
 if (import.meta.url === `file://${process.argv[1]}`) {
   (async () => {
     const result = await explore({
-      keyword: '英国留学求职',
+      keyword: '海外求职',
       searchLimit: 20,
       viralThreshold: 60,
       authorLimit: 5

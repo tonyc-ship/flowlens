@@ -9,7 +9,7 @@
 4. 打印两张表格：Explore 结果 + 分析结果
 
 用法：
-    python scripts/explore_and_analyze.py "英国留学求职" [--count 5]
+    python scripts/explore_and_analyze.py "海外求职" [--count 5]
 """
 
 import json
@@ -233,7 +233,7 @@ def print_analyze_table(accounts: list):
 def main():
     import argparse
     parser = argparse.ArgumentParser(description="小红书爆款账号发现 + 分析")
-    parser.add_argument('keyword', nargs='?', default='英国留学求职')
+    parser.add_argument('keyword', nargs='?', default='海外求职')
     parser.add_argument('--count', type=int, default=5, help='目标新账号数（默认5）')
     parser.add_argument('--search-limit', type=int, default=30)
     parser.add_argument('--viral-threshold', type=int, default=50)

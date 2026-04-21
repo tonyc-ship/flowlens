@@ -63,7 +63,7 @@ console.log(`
   import { explore } from './scripts/explore.js'
 
   const result = await explore({
-    keyword: '英国留学求职',    // 搜索关键词
+    keyword: '海外求职',    // 搜索关键词
     searchLimit: 20,            // 笔记数量上限（默认 20）
     viralThreshold: 60,         // 爆款阈值（默认 60）
     authorLimit: 5              // 作者数量上限（默认 20）
@@ -89,7 +89,7 @@ console.log(`
 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 
   result = {
-    keyword: '英国留学求职',
+    keyword: '海外求职',
     search_limit: 20,
     author_limit: 5,
     

@@ -1,7 +1,7 @@
 /**
  * 有头浏览器测试运行器
  * 用法: node run_headed_test.mjs [keyword] [limit]
- * 例如: node run_headed_test.mjs "英国留学求职" 30
+ * 例如: node run_headed_test.mjs "海外求职" 30
  *
  * 通过 monkey-patch chromium.launch 强制 headless: false，
  * 让用户看到浏览器实时操作。
@@ -49,7 +49,7 @@ function parseBool(value, defaultValue = false) {
   return defaultValue
 }
 
-const keyword = positionalArgs[0] || '英国留学求职'
+const keyword = positionalArgs[0] || '海外求职'
 const searchLimit = parseInt(positionalArgs[1] || '30')
 const viralThreshold = parseInt(positionalArgs[2] || '50')
 const authorLimit = parseInt(positionalArgs[3] || '10')

@@ -191,7 +191,7 @@ console.log(`
 import { explore } from './scripts/explore_v3.js'
 
 const result = await explore({
-  keyword: '英国留学求职',
+  keyword: '海外求职',
   searchLimit: 30,
   viralThreshold: 60,
   authorLimit: 10
@@ -199,7 +199,7 @@ const result = await explore({
 
 // 结果结构
 {
-  keyword: '英国留学求职',
+  keyword: '海外求职',
   total_fetched: 28,
   viral_passed: 18,
   data_source: 'real_search',

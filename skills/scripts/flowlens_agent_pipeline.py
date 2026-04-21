@@ -9,7 +9,7 @@ FlowLens Agent 完整调研 → Auto-Redbook-Skills 分析表
   4. 写入 Excel 分析表 + 生成文案内容
 
 用法：
-  python3 scripts/flowlens_agent_pipeline.py --keyword "英国留学求职"
+  python3 scripts/flowlens_agent_pipeline.py --keyword "海外求职"
   python3 scripts/flowlens_agent_pipeline.py --keyword "日本转职" --accounts 5 --copies 2
   python3 scripts/flowlens_agent_pipeline.py --keyword "露营装备" --skip-generate
 """

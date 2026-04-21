@@ -24,10 +24,10 @@ FlowLens agent 做深度浏览器调研 → 输出结构化数据 → Auto-Redbo
 
 ```bash
 # 完整流程：调研 → 分析表 → 文案 → 卡片
-python3.13 scripts/xhs_full_pipeline.py --keyword "英国留学求职" --use-agent
+python3.13 scripts/xhs_full_pipeline.py --keyword "海外求职" --use-agent
 
 # 指定账号数和文案数
-python3.13 scripts/xhs_full_pipeline.py --keyword "英国留学求职" --use-agent --accounts 5 --copies 2
+python3.13 scripts/xhs_full_pipeline.py --keyword "海外求职" --use-agent --accounts 5 --copies 2
 
 # 仅调研分析，不生成文案和卡片
 python3.13 scripts/xhs_full_pipeline.py --keyword "露营装备" --use-agent --skip-cards
@@ -35,7 +35,7 @@ python3.13 scripts/xhs_full_pipeline.py --keyword "露营装备" --use-agent --s
 
 也可直接运行 agent 桥接脚本：
 ```bash
-python3.13 scripts/flowlens_agent_pipeline.py --keyword "英国留学求职"
+python3.13 scripts/flowlens_agent_pipeline.py --keyword "海外求职"
 python3.13 scripts/flowlens_agent_pipeline.py --keyword "日本转职" --accounts 5 --copies 2
 python3.13 scripts/flowlens_agent_pipeline.py --keyword "露营装备" --skip-generate
 ```
@@ -67,9 +67,9 @@ python3.13 scripts/visual_discovery.py
 ### 方式 C：命令行直接运行（传统模式）
 
 ```bash
-python3.13 scripts/xhs_full_pipeline.py --keyword "英国留学求职"
-python3.13 scripts/xhs_full_pipeline.py --keyword "英国留学求职" --accounts 5 --copies 2
-python3.13 scripts/xhs_full_pipeline.py --keyword "英国留学求职" --skip-explore  # 复用最新xlsx
+python3.13 scripts/xhs_full_pipeline.py --keyword "海外求职"
+python3.13 scripts/xhs_full_pipeline.py --keyword "海外求职" --accounts 5 --copies 2
+python3.13 scripts/xhs_full_pipeline.py --keyword "海外求职" --skip-explore  # 复用最新xlsx
 ```
 
 

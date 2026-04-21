@@ -192,14 +192,14 @@ def test_extract_draft_meta_parses_fields():
 
 def test_strip_card_hashtags_removes_tag_only_and_inline_tags():
     content = (
-        "这是正文第一句 #英国留学 #求职攻略\n"
+        "这是正文第一句 #海外求职 #求职攻略\n"
         "#留学生求职 #英国找工\n"
         "第二句保留 #AI求职 经验"
     )
 
     cleaned = visual_discovery._strip_card_hashtags(content)
 
-    assert "#英国留学" not in cleaned
+    assert "#海外求职" not in cleaned
     assert "#求职攻略" not in cleaned
     assert "#留学生求职" not in cleaned
     assert "#AI求职" not in cleaned
@@ -213,7 +213,7 @@ def test_strip_card_hashtags_keeps_plain_text_lines():
 
 
 def test_strip_card_hashtags_preserves_paragraph_break_when_tag_line_removed():
-    content = "第一段说明\n#英国留学 #求职攻略\n第二段说明"
+    content = "第一段说明\n#海外求职 #求职攻略\n第二段说明"
     assert visual_discovery._strip_card_hashtags(content) == "第一段说明\n\n第二段说明"
 
 
@@ -375,7 +375,7 @@ def test_start_account_login_task_allows_empty_name_for_scan(monkeypatch):
 
     class FakeCompleted:
         returncode = 0
-        stdout = "👤 已识别账号：英国留学求职Lisa\n✅ 登录成功\n"
+        stdout = "👤 已识别账号：海外求职Lisa\n✅ 登录成功\n"
         stderr = ""
 
     monkeypatch.setattr(visual_discovery, "Thread", FakeThread)
@@ -415,14 +415,14 @@ def test_pick_account_task_message_skips_separator_noise():
     lines = [
         "🌐 打开小红书登录页",
         "============================================================",
-        "👤 已识别账号：英国留学求职Lisa",
+        "👤 已识别账号：海外求职Lisa",
         "✅ 登录成功，storageState 已保存至 /tmp/storage.json",
         "📅 session 有效期更新至 2026-04-14",
     ]
 
     message = visual_discovery._pick_account_task_message(lines)
 
-    assert message == "👤 已识别账号：英国留学求职Lisa"
+    assert message == "👤 已识别账号：海外求职Lisa"
 
 
 # ── draft assets ──────────────────────────────────────────────────────────────
@@ -480,14 +480,14 @@ def test_build_draft_summary_uses_saved_images_from_pub_json(tmp_path, monkeypat
 
 def test_build_explore_cmd_includes_selected_account(monkeypatch):
     monkeypatch.setenv("XHS_EXPLORE_PER_AUTHOR_NOTES", "4")
-    cmd = visual_discovery._build_explore_cmd("英国留学求职", 5, "主账号A")
+    cmd = visual_discovery._build_explore_cmd("海外求职", 5, "主账号A")
     assert "--account" in cmd
     assert "主账号A" in cmd
     assert "--per-author-notes" in cmd
 
 
 def test_build_explore_cmd_omits_account_when_not_selected():
-    cmd = visual_discovery._build_explore_cmd("英国留学求职", 5, "")
+    cmd = visual_discovery._build_explore_cmd("海外求职", 5, "")
     assert "--account" not in cmd
 
 

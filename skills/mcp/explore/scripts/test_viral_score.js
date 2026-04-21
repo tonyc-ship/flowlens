@@ -37,7 +37,7 @@ function calculateViralScore(likedCount, collectedCount, commentCount, followers
 const mockNotes = [
   {
     note_id: '1001',
-    title: '英国留学申请技巧',
+    title: '海外求职申请技巧',
     liked_count: 5000,
     collected_count: 800,
     comment_count: 300,
