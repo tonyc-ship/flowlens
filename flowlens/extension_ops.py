@@ -11,6 +11,7 @@ import time
 
 from .core.bridge import ExtensionBridge
 from .core.reporting import markdown_styles, render_markdown_block
+from .core.runtime import task_runs_root
 
 
 @dataclass
@@ -99,7 +100,9 @@ async def run_extension_reload(
     This is the preferred path because it tests the actual FlowLens runtime:
     Python bridge -> background service worker -> chrome.runtime.reload().
     """
-    out_dir = Path(output_dir or Path("task_runs") / f"{_safe_slug('extension_reload')}_{_timestamp()}")
+    out_dir = Path(output_dir) if output_dir is not None else (
+        task_runs_root() / f"{_safe_slug('extension_reload')}_{_timestamp()}"
+    )
     started_at = datetime.now().isoformat(timespec="seconds")
     t0 = time.perf_counter()
     logs: list[dict] = []

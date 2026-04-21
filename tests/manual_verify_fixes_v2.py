@@ -22,8 +22,9 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).parent.parent))
 
 from flowlens.core.bridge import ExtensionBridge
+from flowlens.core.runtime import task_runs_root
 
-OUTPUT_DIR = Path("task_runs/verify_fixes_v2")
+OUTPUT_DIR = task_runs_root() / "verify_fixes_v2"
 OUTPUT_DIR.mkdir(parents=True, exist_ok=True)
 
 

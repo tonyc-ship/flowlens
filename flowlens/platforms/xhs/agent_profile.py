@@ -161,8 +161,6 @@ def append_note_screenshot_index(report: str, site_results: list[dict]) -> str:
         "",
         "## 笔记截图索引",
         "",
-        "小红书直链经常被风控或限流，下面保留本次搜索过程中打开过的笔记截图，方便离线快速核对。",
-        "",
     ]
     for item in items:
         title = str(item["title"] or "笔记截图")

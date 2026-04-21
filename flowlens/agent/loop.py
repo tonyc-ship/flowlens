@@ -22,6 +22,7 @@ from pathlib import Path
 from ..core.bridge import ExtensionBridge, TabBridge, ensure_extension_connection
 from ..core.auth import PROVIDER_KIMI, PROVIDER_OPENAI, PROVIDER_QWEN, resolve_model_provider
 from ..core.process_metrics import append_jsonl, system_resource_snapshot
+from ..core.runtime import task_runs_root
 from ..knowledge.loader import detect_site, get_knowledge_for_url
 from ..perception.media import (
     BACKEND_OPENAI,
@@ -372,7 +373,7 @@ async def run_agent(
     if run_dir is None:
         ts = datetime.now().strftime("%Y%m%d_%H%M%S")
         slug = task[:40].replace(" ", "_").replace("/", "_")
-        run_dir = Path("task_runs") / f"agent_{ts}_{slug}"
+        run_dir = task_runs_root() / f"agent_{ts}_{slug}"
     run_dir = Path(run_dir)
     run_dir.mkdir(parents=True, exist_ok=True)
 

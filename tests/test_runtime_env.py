@@ -48,6 +48,16 @@ class RuntimeEnvLoadingTest(unittest.TestCase):
                 self.assertNotIn("FLOWLENS_MODEL_PROVIDER", runtime.os.environ)
                 self.assertNotIn("FLOWLENS_QWEN_MODEL", runtime.os.environ)
 
+    def test_task_runs_root_defaults_to_repo_root(self) -> None:
+        expected = (runtime.PROJECT_ROOT / "task_runs").resolve(strict=False)
+        with mock.patch.dict("os.environ", {}, clear=True):
+            self.assertEqual(runtime.task_runs_root(), expected)
+
+    def test_task_runs_root_relative_override_is_repo_anchored(self) -> None:
+        expected = (runtime.PROJECT_ROOT / "custom_runs").resolve(strict=False)
+        with mock.patch.dict("os.environ", {"FLOWLENS_TASK_RUNS_DIR": "custom_runs"}, clear=True):
+            self.assertEqual(runtime.task_runs_root(), expected)
+
 
 if __name__ == "__main__":
     unittest.main()

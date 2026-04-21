@@ -498,6 +498,76 @@ function selectorDebug(selectors, root = document) {
   });
 }
 
+const NOTE_IMAGE_SELECTORS = [
+  '.carousel-image img',
+  '.slide img',
+  '.swiper-slide img',
+  '.note-slider img',
+  '.note-detail img.note-image',
+  '.media-container img',
+  '.note-scroller img',
+].join(', ');
+
+function noteImageUrl(img) {
+  return img?.currentSrc || img?.src || img?.dataset?.src || '';
+}
+
+function rectVisibleArea(rect) {
+  const visibleWidth = Math.max(0, Math.min(rect.right, window.innerWidth) - Math.max(rect.left, 0));
+  const visibleHeight = Math.max(0, Math.min(rect.bottom, window.innerHeight) - Math.max(rect.top, 0));
+  return visibleWidth * visibleHeight;
+}
+
+function orderedNoteImageUrls(root = getNoteExtractionRoot()) {
+  const seen = new Set();
+  const centerX = window.innerWidth / 2;
+  const centerY = window.innerHeight / 2;
+
+  const ranked = $$(NOTE_IMAGE_SELECTORS, root)
+    .filter((img) => img instanceof HTMLImageElement && isVisibleElement(img))
+    .map((img, domIndex) => {
+      const url = noteImageUrl(img);
+      if (!url || url.startsWith('data:')) return null;
+      const slide = img.closest(
+        '.swiper-slide, [class*="swiper-slide"], .slide, [class*="slide"], ' +
+        '.carousel-image, [class*="carousel"], .note-slider, .media-container'
+      );
+      const classBlob = `${img.className || ''} ${slide?.className || ''}`.toLowerCase();
+      const active =
+        img.getAttribute('aria-current') === 'true'
+        || slide?.getAttribute?.('aria-current') === 'true'
+        || slide?.getAttribute?.('data-active') === 'true'
+        || /\b(?:active|current|selected|swiper-slide-active)\b/.test(classBlob);
+      const rect = img.getBoundingClientRect();
+      const visibleArea = rectVisibleArea(rect);
+      const imageCenterX = rect.left + rect.width / 2;
+      const imageCenterY = rect.top + rect.height / 2;
+      const centerDistance = Math.abs(imageCenterX - centerX) + Math.abs(imageCenterY - centerY);
+      return {
+        url,
+        domIndex,
+        active: active ? 1 : 0,
+        visibleArea,
+        centerDistance,
+      };
+    })
+    .filter(Boolean)
+    .sort((a, b) => (
+      (b.active - a.active)
+      || (b.visibleArea - a.visibleArea)
+      || (a.centerDistance - b.centerDistance)
+      || (a.domIndex - b.domIndex)
+    ));
+
+  const urls = [];
+  for (const item of ranked) {
+    if (seen.has(item.url)) continue;
+    seen.add(item.url);
+    urls.push(item.url);
+  }
+  return urls;
+}
+
 function isLikelyNoteBodyStopLine(line) {
   return (
     /猜你想搜|说点什么/.test(line) ||
@@ -557,11 +627,34 @@ async function waitForVisibleNoteOverlay(timeoutMs = 1200) {
   return getVisibleNoteOverlay();
 }
 
+function countVisibleNoteLoadingIndicators(root = getNoteExtractionRoot()) {
+  const selectors = [
+    '.loading',
+    '[class*="loading"]',
+    '[class*="Loading"]',
+    '[class*="skeleton"]',
+    '[class*="Skeleton"]',
+    '[class*="shimmer"]',
+    '.ant-spin',
+    '.ant-skeleton',
+  ];
+  return $$(selectors.join(', '), root).filter((el) => isVisibleElement(el)).length;
+}
+
+function noteHasPendingHydration(note, root = getNoteExtractionRoot()) {
+  const preview = normalizeNoteText(
+    note?.extraction_debug?.root_text_preview || root?.innerText || root?.textContent || ''
+  );
+  if (/(^|\n)加载中(?:\n|$)/.test(preview)) return true;
+  if (/正在加载|请稍候|loading/i.test(preview)) return true;
+  return countVisibleNoteLoadingIndicators(root) > 0;
+}
+
 async function waitForNoteContent(timeout = 8000) {
   /** Wait for the detail shell to settle; title/media often appear before body text. */
   const deadline = Date.now() + timeout;
   const startedAt = Date.now();
-  const minShellSettleMs = 1400;
+  const minShellSettleMs = 3500;
   let shellSeenAt = 0;
   let bestNote = null;
   let attempts = 0;
@@ -569,6 +662,7 @@ async function waitForNoteContent(timeout = 8000) {
   while (Date.now() < deadline) {
     attempts += 1;
     const note = extractNoteContent();
+    const root = getNoteExtractionRoot();
     const hasContent = Boolean(normalizeNoteText(note.content));
     const hasShell = Boolean(
       note.note_id
@@ -581,6 +675,8 @@ async function waitForNoteContent(timeout = 8000) {
       || note.video_url
       || note.poster_url
     );
+    const loadingIndicatorCount = countVisibleNoteLoadingIndicators(root);
+    const hasPendingHydration = noteHasPendingHydration(note, root);
 
     if (hasShell) {
       bestNote = note;
@@ -592,15 +688,19 @@ async function waitForNoteContent(timeout = 8000) {
         wait_reason: 'content_ready',
         wait_attempts: attempts,
         wait_elapsed_ms: Date.now() - startedAt,
+        loading_indicator_count: loadingIndicatorCount,
+        pending_hydration: hasPendingHydration,
       };
       return note;
     }
-    if (hasShell && Date.now() - shellSeenAt >= minShellSettleMs) {
+    if (hasShell && !hasPendingHydration && Date.now() - shellSeenAt >= minShellSettleMs) {
       note.extraction_debug = {
         ...(note.extraction_debug || {}),
         wait_reason: 'shell_settled_without_content',
         wait_attempts: attempts,
         wait_elapsed_ms: Date.now() - startedAt,
+        loading_indicator_count: loadingIndicatorCount,
+        pending_hydration: hasPendingHydration,
       };
       return note;
     }
@@ -614,6 +714,8 @@ async function waitForNoteContent(timeout = 8000) {
       wait_reason: 'timeout_with_shell',
       wait_attempts: attempts,
       wait_elapsed_ms: Date.now() - startedAt,
+      loading_indicator_count: countVisibleNoteLoadingIndicators(getNoteExtractionRoot()),
+      pending_hydration: noteHasPendingHydration(bestNote, getNoteExtractionRoot()),
     };
   }
   return bestNote;
@@ -659,6 +761,8 @@ function extractNoteContent() {
     '.note-scroller .desc',
     '.note-detail .desc',
   ];
+  const visibleContentNodes = $$(contentSelectors.join(', '), root)
+    .filter((el) => isVisibleElement(el) && !isInCommentArea(el));
   const contentMatch = visibleTextMatch(contentSelectors, root, { excludeComments: true });
   note.content = contentMatch.text;
   note.content_source = contentMatch.selector ? `selector:${contentMatch.selector}` : '';
@@ -680,6 +784,8 @@ function extractNoteContent() {
     content_source: note.content_source || 'empty',
     root_selector: root.id ? `#${root.id}` : (root.className ? `.${String(root.className).trim().split(/\s+/).join('.')}` : root.tagName),
     root_text_preview: normalizeNoteText(root.innerText || root.textContent || '').slice(0, 1200),
+    content_selector_visible_count: visibleContentNodes.length,
+    loading_indicator_count: countVisibleNoteLoadingIndicators(root),
     content_selector_debug: selectorDebug(contentSelectors, root),
   };
 
@@ -741,12 +847,7 @@ function extractNoteContent() {
 
   // Images — different for image-text vs video notes
   if (note.type === 'image') {
-    const imgs = $$(
-      '.carousel-image img, .slide img, .swiper-slide img, ' +
-      '.note-slider img, .note-detail img.note-image',
-      root,
-    );
-    note.image_urls = imgs.map(img => img.src || img.dataset?.src || '').filter(Boolean);
+    note.image_urls = orderedNoteImageUrls(root);
 
     // Image indicator (e.g. "3/7")
     const indicator = root.querySelector?.(
@@ -999,37 +1100,23 @@ async function collectAllCarouselImages(maxImages = 20) {
   );
   const searchRoot = noteOverlay || document;
 
-  // Image selectors scoped to the note overlay
-  const selectorStrategies = [
-    '.carousel-image img, .slide img, .swiper-slide img',
-    '.note-slider img, .note-image',
-    '.media-container img, .note-scroller img',
-    'img',  // Broadest: any img within the scoped container
-  ];
-
   const seenUrls = new Set();
   const orderedUrls = [];
   let matchedStrategy = '';
 
-  function collectVisible() {
-    for (const sel of selectorStrategies) {
-      const imgs = [...searchRoot.querySelectorAll(sel)];
-      for (const img of imgs) {
-        const src = img.src || img.dataset?.src || '';
-        // Filter: must be from XHS CDN, reasonably sized, not data URI
-        if (src && !seenUrls.has(src) && !src.startsWith('data:') &&
-            src.includes('xhscdn.com') && img.naturalWidth > 100) {
-          seenUrls.add(src);
-          orderedUrls.push(src);
-          if (!matchedStrategy) matchedStrategy = sel;
-        }
-      }
-      // Stop at first strategy that finds images
-      if (orderedUrls.length > 0) break;
+  function collectCurrent() {
+    const prioritized = orderedNoteImageUrls(searchRoot);
+    for (const url of prioritized) {
+      if (seenUrls.has(url)) continue;
+      seenUrls.add(url);
+      orderedUrls.push(url);
+      if (!matchedStrategy) matchedStrategy = 'orderedNoteImageUrls';
+      return true;
     }
+    return false;
   }
 
-  collectVisible();
+  collectCurrent();
 
   // Read total from indicator (e.g. "2/7") — try multiple selectors
   const indicatorSelectors = [
@@ -1096,9 +1183,9 @@ async function collectAllCarouselImages(maxImages = 20) {
     }));
 
     await wait(400); // Wait for slide transition + lazy load
-    collectVisible();
+    const advanced = collectCurrent();
 
-    if (seenUrls.size === prevCount) {
+    if (!advanced || seenUrls.size === prevCount) {
       staleCount++;
       if (staleCount >= 3) break; // No new images after 3 attempts
     } else {

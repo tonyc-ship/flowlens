@@ -375,6 +375,7 @@ class NoteEntity:
     requested_sections: tuple[str, ...] = ("content", "media", "engagement", "comments", "author")
     applied_capabilities: list[str] = field(default_factory=list)
     extraction_debug: dict = field(default_factory=dict)
+    stale_warning: str = ""
 
     @property
     def has_content(self) -> bool:
@@ -493,6 +494,7 @@ class NoteEntity:
             comments_count=d.get("comments_count", ""),
             shares=d.get("shares", ""),
             extraction_debug=d.get("extraction_debug", {}) if isinstance(d.get("extraction_debug"), dict) else {},
+            stale_warning=str(d.get("_stale_warning", "") or ""),
         )
         if note.note_id:
             note.url = f"https://www.xiaohongshu.com/explore/{note.note_id}"
@@ -536,6 +538,8 @@ class NoteEntity:
         }
         if self.extraction_debug:
             payload["extraction_debug"] = self.extraction_debug
+        if self.stale_warning:
+            payload["stale_warning"] = self.stale_warning
         if self.video:
             payload["video"] = self.video.to_tool_dict()
         return payload

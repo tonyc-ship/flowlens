@@ -7,6 +7,7 @@ import time
 from datetime import datetime
 from pathlib import Path
 
+from ...core.runtime import task_runs_root
 from ...core.watch import JSONLWatchSink, MemoryWatchSink, WatchEvent, WatchRuntime
 from ...perception.llm import VisionLLM
 from ...perception.media import MediaConfig, MediaProcessor
@@ -54,10 +55,10 @@ class WeChatChatSummaryRunner:
     def __init__(
         self,
         *,
-        output_root: str = "task_runs/wechat_summary",
+        output_root: str | Path | None = None,
         llm_backend: str = "qwen-local",
     ):
-        self.output_root = Path(output_root)
+        self.output_root = Path(output_root) if output_root is not None else (task_runs_root() / "wechat_summary")
         self.llm_backend = "qwen-local" if llm_backend != "qwen-local" else llm_backend
         self.media = MediaProcessor(
             MediaConfig(

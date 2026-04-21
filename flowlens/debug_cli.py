@@ -7,13 +7,14 @@ import json
 from datetime import datetime
 from pathlib import Path
 
+from .core.runtime import task_runs_root
 from .debug import MacOSController, VisualDebugger
 from .debug.workflows import run_sidepanel_demo_sync
 
 
 def _default_save_dir() -> Path:
     stamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-    return Path("task_runs") / "visual_debug" / stamp
+    return task_runs_root() / "visual_debug" / stamp
 
 
 def build_parser() -> argparse.ArgumentParser:

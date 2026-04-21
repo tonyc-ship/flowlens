@@ -124,6 +124,16 @@ def load_runtime_env() -> None:
     _LOADED = True
 
 
+def task_runs_root() -> Path:
+    """Return the canonical task output root under the repository."""
+
+    configured = str(os.environ.get("FLOWLENS_TASK_RUNS_DIR", "") or "").strip()
+    root = Path(configured).expanduser() if configured else (PROJECT_ROOT / "task_runs")
+    if not root.is_absolute():
+        root = PROJECT_ROOT / root
+    return root.resolve(strict=False)
+
+
 def find_whisper_cli(explicit: str | None = None) -> Path | None:
     """Resolve the local whisper-cli binary."""
 

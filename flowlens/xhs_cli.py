@@ -21,6 +21,7 @@ from .core.auth import (
     resolve_provider_auth,
 )
 from .core.bridge import ExtensionBridge, ensure_extension_connection
+from .core.runtime import task_runs_root
 from .perception.media import (
     BACKEND_OPENAI,
     BACKEND_QWEN_LOCAL,
@@ -53,7 +54,7 @@ def _clean_topic(prompt: str) -> str:
 
 def _make_run_dir(prefix: str, slug: str) -> Path:
     safe_slug = re.sub(r"[^a-z0-9\u4e00-\u9fff]+", "_", slug.lower()).strip("_")[:80] or prefix
-    path = Path("task_runs") / f"xhs_{datetime.now().strftime('%Y%m%d_%H%M%S')}_{prefix}_{safe_slug}"
+    path = task_runs_root() / f"xhs_{datetime.now().strftime('%Y%m%d_%H%M%S')}_{prefix}_{safe_slug}"
     path.mkdir(parents=True, exist_ok=True)
     return path
 

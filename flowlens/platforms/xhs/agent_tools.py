@@ -75,6 +75,7 @@ def _summarize_note_entity(entity: dict) -> dict:
         "screenshot": entity.get("screenshot", ""),
         "completeness_score": entity.get("completeness_score"),
         "applied_capabilities": list(entity.get("applied_capabilities", [])),
+        "stale_warning": entity.get("stale_warning", ""),
     }
 
 
@@ -217,10 +218,16 @@ def _payload_summary(payload: dict, *, artifact_path: str) -> dict:
             for note in notes[:8]
         ]
         if notes and payload.get("action") == "xhs_topic_scan":
-            summary["next_step_hint"] = (
-                "This topic scan already searched and opened/read sampled notes. "
-                "Write the final report unless a specific requested field is still missing."
-            )
+            summary["sampling_status"] = {
+                "searched": True,
+                "sampled_count": len(notes),
+                "sampled_note_ids": [
+                    str(((note.get("entity") or {}).get("note_id")) or "").strip()
+                    for note in notes
+                    if isinstance(note, dict) and isinstance(note.get("entity"), dict)
+                    and str(((note.get("entity") or {}).get("note_id")) or "").strip()
+                ][:12],
+            }
 
     timing = payload.get("timing")
     if isinstance(timing, dict) and timing:
@@ -758,7 +765,8 @@ class XHSTopicScanTool(Tool):
             comment_count = int(params.get("deep_comment_count", 10)) if level == "deep" else int(params.get("lite_comment_count", 4))
             try:
                 note = await adapter.read_note(
-                    index=card.position,
+                    index=None if card.note_id else card.position,
+                    note_id=card.note_id,
                     level=level,
                     max_comments=comment_count,
                     max_images=int(params.get("max_images", 4)),

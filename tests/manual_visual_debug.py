@@ -16,6 +16,7 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
+from flowlens.core.runtime import task_runs_root
 from flowlens.debug import VisualDebugger
 
 
@@ -51,7 +52,7 @@ def main() -> int:
 
     target_app = args.app or "Google Chrome"
     targets = debugger.resolve_targets(app_name=target_app, title_contains=args.title, visible_only=args.visible_only)
-    save_dir = Path(args.save_dir) if args.save_dir else Path("task_runs") / "visual_debug" / "manual_smoke"
+    save_dir = Path(args.save_dir) if args.save_dir else (task_runs_root() / "visual_debug" / "manual_smoke")
 
     if args.inspect:
         result = debugger.inspect_targets(

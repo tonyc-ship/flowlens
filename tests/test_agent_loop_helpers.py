@@ -31,6 +31,7 @@ class AgentLoopReportHelperTest(unittest.TestCase):
         self.assertIn("## 笔记截图索引", updated)
         self.assertIn("![南港 AR1 体验](003_note_detail.png)", updated)
         self.assertIn("[笔记链接](https://www.xiaohongshu.com/explore/abc)", updated)
+        self.assertNotIn("小红书直链经常被风控或限流", updated)
 
     def test_append_missing_note_screenshots_does_not_duplicate_existing_images(self) -> None:
         report = "# Report\n\n![南港 AR1 体验](003_note_detail.png)"

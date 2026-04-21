@@ -17,6 +17,7 @@ from pathlib import Path
 
 from .agent.loop import run_agent
 from .core.auth import default_cloud_model
+from .core.runtime import task_runs_root
 from .perception.policy import TaskModelPolicy
 from .reasoning.tasks import (
     make_creator_growth_breakdown_task,
@@ -185,7 +186,11 @@ def main(argv: list[str] | None = None) -> int:
 
     run_parser = subparsers.add_parser("run", help="Run a prompt through the agent loop.")
     run_parser.add_argument("--prompt", required=True, help="Free-form task prompt from the desktop app.")
-    run_parser.add_argument("--output-root", default="task_runs/desktop_app", help="Task output root.")
+    run_parser.add_argument(
+        "--output-root",
+        default=str(task_runs_root() / "desktop_app"),
+        help="Task output root.",
+    )
     run_parser.add_argument("--port", type=int, default=8765, help="Extension websocket port.")
     run_parser.add_argument(
         "--llm-backend",

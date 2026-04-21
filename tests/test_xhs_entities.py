@@ -65,6 +65,15 @@ class XHSEntityTests(unittest.TestCase):
         })
         self.assertEqual(debug_note.to_tool_dict()["extraction_debug"]["content_source"], "root_text_after_title")
 
+        stale_note = NoteEntity.from_dom_dict({
+            "note_id": "abc123",
+            "title": "重复打开的笔记",
+            "content": "这是正文",
+            "_stale_warning": "same note as previous extract",
+        })
+        self.assertEqual(stale_note.stale_warning, "same note as previous extract")
+        self.assertEqual(stale_note.to_tool_dict()["stale_warning"], "same note as previous extract")
+
         # Dedup keeps the richer of two near-duplicate comments.
         a = Comment.from_dom_dict({"username": "露营控", "text": "这个卡式炉真的更适合新手",
                                     "likes": "12", "reply_count": 0})

@@ -22,6 +22,7 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
+from flowlens.core.runtime import task_runs_root
 from flowlens.perception import LocalLLM, MediaConfig, MediaProcessor, VisionLLM
 
 
@@ -125,7 +126,7 @@ def main():
         image_path = args.image
         if not image_path:
             # Try to find any recent screenshot in task_runs
-            candidates = sorted(Path("task_runs").rglob("*.png"), key=lambda p: p.stat().st_mtime, reverse=True)
+            candidates = sorted(task_runs_root().rglob("*.png"), key=lambda p: p.stat().st_mtime, reverse=True)
             if candidates:
                 image_path = str(candidates[0])
             else:

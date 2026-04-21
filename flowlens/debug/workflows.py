@@ -10,6 +10,7 @@ from pathlib import Path
 
 from PIL import ImageDraw
 
+from ..core.runtime import task_runs_root
 from .macos import MacOSController
 from .visual_debug import VisualDebugger
 
@@ -28,7 +29,7 @@ class WorkflowResult:
 def run_sidepanel_demo_sync(output_dir: Path | None = None) -> WorkflowResult:
     """Run a small end-to-end visual-debug task around the FlowLens side panel."""
     timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-    output_dir = output_dir or Path("task_runs") / "visual_debug" / f"sidepanel_demo_{timestamp}"
+    output_dir = output_dir or task_runs_root() / "visual_debug" / f"sidepanel_demo_{timestamp}"
     output_dir.mkdir(parents=True, exist_ok=True)
 
     controller = MacOSController()

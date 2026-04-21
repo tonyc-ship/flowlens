@@ -536,6 +536,9 @@ class XHSSiteAdapter:
             raise RuntimeError(raw.get("message") or raw["error"])
 
         note = NoteEntity.from_dom_dict(raw.get("note", {}))
+        if note.images:
+            note.images = _unique_image_infos(note.images)
+            note.image_count = max(int(note.image_count or 0), len(note.images))
         note.extraction_level = plan.level.value
         note.requested_sections = plan.requested_sections
         note.applied_capabilities = ["xhs.note.open_basic"]
@@ -548,7 +551,10 @@ class XHSSiteAdapter:
                 media_task = asyncio.create_task(self._process_video(note, plan))
             else:
                 await self._ensure_all_images(note, plan.max_images)
+                await self._ensure_cover_image_ocr(note)
                 media_task = asyncio.create_task(self._enrich_images(note, plan))
+        elif self.config.use_ocr and note.images:
+            await self._ensure_cover_image_ocr(note)
 
         if plan.include_comments:
             comments_task = asyncio.create_task(self._collect_note_comments(plan))
@@ -576,6 +582,7 @@ class XHSSiteAdapter:
         open_wait_seconds: float = 2.5,
         close_after: bool = False,
     ) -> NoteEntity:
+        expected_note_id = note_id or await self._resolve_note_target_id(index=index)
         if index is not None or note_id:
             await self.open_note(index=index, note_id=note_id, wait_seconds=open_wait_seconds)
 
@@ -588,6 +595,13 @@ class XHSSiteAdapter:
             include_media=include_media,
         )
 
+        if expected_note_id and note.note_id and note.note_id != expected_note_id:
+            raise RuntimeError(
+                "Opened stale Xiaohongshu note: "
+                f"expected note_id={expected_note_id}, got note_id={note.note_id}. "
+                "The previous note detail likely remained open or the click did not switch cards."
+            )
+
         if close_after:
             try:
                 await self.close_note()
@@ -595,6 +609,30 @@ class XHSSiteAdapter:
                 pass
 
         return note
+
+    async def _resolve_note_target_id(self, *, index: int | None = None) -> str:
+        if index is None:
+            return ""
+        try:
+            state = await self.detect_state()
+        except Exception:
+            return ""
+
+        page_state = str(state.get("state") or "")
+        try:
+            if page_state == "search_results":
+                cards = await self.extract_search_cards()
+            elif page_state == "profile_page":
+                raw = await self.ext_bridge.send_command("extract_profile_notes")
+                cards = [NoteCard.from_dom_dict(item) for item in raw.get("notes", [])]
+            else:
+                return ""
+        except Exception:
+            return ""
+
+        if index < 0 or index >= len(cards):
+            return ""
+        return str(cards[index].note_id or "").strip()
 
     async def _collect_note_comments(self, plan: NoteExtractionPlan) -> list[Comment]:
         merged: list[Comment] = []
@@ -621,6 +659,7 @@ class XHSSiteAdapter:
 
     async def _process_images(self, note: NoteEntity, plan: NoteExtractionPlan) -> None:
         await self._ensure_all_images(note, plan.max_images)
+        await self._ensure_cover_image_ocr(note)
         await self._enrich_images(note, plan)
 
     async def _enrich_images(self, note: NoteEntity, plan: NoteExtractionPlan) -> None:
@@ -657,7 +696,8 @@ class XHSSiteAdapter:
         semaphore = asyncio.Semaphore(self._vision_concurrency())
 
         async def enrich_single(img: ImageInfo, img_bytes: bytes) -> None:
-            if plan.use_image_ocr and self.config.use_ocr:
+            should_ocr = self.config.use_ocr and (img.is_cover or plan.use_image_ocr)
+            if should_ocr and not img.ocr_text:
                 t0_local = time.time()
                 ocr_text = await asyncio.to_thread(self.media.ocr_image, img_bytes)
                 self.timing.record("ocr_single", time.time() - t0_local)
@@ -683,6 +723,36 @@ class XHSSiteAdapter:
             for img, payload in deduped
         ], return_exceptions=True)
         self.timing.record("image_process_batch", time.time() - t0)
+
+    async def _ensure_cover_image_ocr(self, note: NoteEntity) -> None:
+        if not self.config.use_ocr or not note.images:
+            return
+        cover = next((img for img in note.images if img.is_cover), note.images[0])
+        if not str(cover.url or "").strip():
+            return
+        if cover.ocr_text:
+            if note.note_type == NoteType.VIDEO and note.video and not note.video.poster_ocr:
+                note.video.poster_ocr = cover.ocr_text
+            return
+
+        t0 = time.time()
+        payload = await asyncio.to_thread(self.media.download_image, cover.url, note.url or XHS_REFERER)
+        self.timing.record("cover_image_download", time.time() - t0)
+        if not isinstance(payload, bytes) or not payload:
+            return
+
+        if not cover.local_path:
+            cover.local_path = self._save_image_bytes(note.note_id or "note", cover.index, payload)
+
+        t0 = time.time()
+        ocr_text = await asyncio.to_thread(self.media.ocr_image, payload)
+        self.timing.record("ocr_cover", time.time() - t0)
+        if not ocr_text.strip():
+            return
+
+        cover.ocr_text = ocr_text
+        if note.note_type == NoteType.VIDEO and note.video and not note.video.poster_ocr:
+            note.video.poster_ocr = ocr_text
 
     async def _ensure_all_images(self, note: NoteEntity, max_images: int) -> None:
         dom_count = len(note.images)
@@ -767,7 +837,10 @@ class XHSSiteAdapter:
             self.timing.record("vision_poster", time.time() - t0_local)
 
         async def poster_ocr() -> None:
-            if not poster_bytes or not plan.use_image_ocr or not self.config.use_ocr:
+            if note.images and note.images[0].ocr_text and not video.poster_ocr:
+                video.poster_ocr = note.images[0].ocr_text
+                return
+            if not poster_bytes or not self.config.use_ocr or video.poster_ocr:
                 return
             t0_local = time.time()
             video.poster_ocr = await asyncio.to_thread(self.media.ocr_image, poster_bytes)
