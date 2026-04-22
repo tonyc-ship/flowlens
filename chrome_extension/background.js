@@ -1,20 +1,19 @@
 /**
- * XHS Research Agent — Background Service Worker (v2)
+ * FlowLens Agent — Background Service Worker
  *
- * WebSocket client connecting to the external Python agent.
+ * WebSocket client connecting to the local FlowLens agent runtime.
  * Routes commands between the agent and content scripts.
  *
  * Handles directly:
  *   - navigate: chrome.tabs.update
- *   - capture_screenshot: chrome.tabs.captureVisibleTab
+ *   - capture_screenshot: chrome.debugger / captureVisibleTab
  *   - get_tab_info: tab URL and state
  *
  * Forwards to content script:
  *   - All DOM extraction and action commands
  *
  * Watch mode:
- *   - Broadcasts all agent commands/responses to the extension side panel
- *   - Sends click highlights in the active page before CDP clicks
+ *   - Broadcasts agent commands / results / highlights to the in-page overlay
  */
 
 const DEFAULT_PORT = 8765;
@@ -29,8 +28,6 @@ let contentReady = new Map(); // tabId -> true
 let reconnectTimer = null;
 let wsPort = DEFAULT_PORT;
 const debuggerQueues = new Map();
-const sidePanelPorts = new Set();
-const sidePanelPortWindows = new Map();
 
 // ── Watch Mode State ──────────────────────────────────────────
 let watchMode = false;
@@ -175,18 +172,7 @@ function statusSnapshot() {
     targetUrl: targetTabUrl(),
     targetSite: siteFromUrl(targetTabUrl()),
     watchMode,
-    sidePanelOpen: sidePanelPorts.size > 0,
-    sidePanelPortCount: sidePanelPorts.size,
-    sidePanelWindowIds: [...new Set([...sidePanelPortWindows.values()].filter(Boolean))],
   };
-}
-
-function broadcastSidePanel(message) {
-  for (const port of [...sidePanelPorts]) {
-    try {
-      port.postMessage(message);
-    } catch {}
-  }
 }
 
 function broadcastOverlay(message, explicitTabId = null) {
@@ -199,7 +185,6 @@ function broadcastOverlay(message, explicitTabId = null) {
 
 function broadcastStatus() {
   const data = statusSnapshot();
-  broadcastSidePanel({ type: 'status', data });
   broadcastOverlay({ type: 'watch_status', data });
 }
 
@@ -218,7 +203,6 @@ function broadcastWatch(data) {
 
   watchLog.push(data);
   if (WATCH_LOG_MAX > 0 && watchLog.length > WATCH_LOG_MAX) watchLog.shift();
-  broadcastSidePanel({ type: 'watch_event', data });
   broadcastOverlay({ type: 'watch_event', data });
   broadcastStatus();
 }
@@ -234,39 +218,6 @@ function broadcastHighlight(mode, opts) {
   try {
     chrome.tabs.sendMessage(tabId, { type: 'watch_highlight', mode, ...opts });
   } catch {}
-}
-
-async function openSidePanelForWindow(windowId, tabId) {
-  if (chrome.sidePanel?.open) {
-    try {
-      if (chrome.sidePanel?.setOptions) {
-        await chrome.sidePanel.setOptions({
-          path: 'sidepanel.html',
-          enabled: true,
-        });
-      }
-      if (tabId) {
-        try {
-          await chrome.sidePanel.open({ tabId });
-          broadcastStatus();
-          return true;
-        } catch {}
-      }
-      if (windowId) {
-        await chrome.sidePanel.open({ windowId });
-        broadcastStatus();
-        return true;
-      }
-    } catch (err) {
-      console.log('[BG] sidePanel.open failed (no user gesture?):', err.message);
-    }
-  }
-
-  // sidePanel.open requires a user gesture context.
-  // The Python agent will click the extension icon via macOS Accessibility
-  // to provide a real user gesture, which triggers openPanelOnActionClick.
-  console.log('[BG] sidePanel.open unavailable without user gesture — agent will click extension icon');
-  return false;
 }
 
 async function launchDeepLink(url) {
@@ -329,7 +280,6 @@ async function prepareWatchModeOnCurrentTab(params = {}) {
     tabId: tab.id,
     locked: params.lock !== false,
     watchMode: true,
-    sidePanel: false,
   };
 }
 
@@ -393,7 +343,7 @@ function connect(port) {
           capabilities: {
             watch_mode: true,
             create_watch_window: true,
-            side_panel: true,
+            side_panel: false,
             protocol_version: 2,
             extension_version: manifest.version,
           },
@@ -1351,7 +1301,6 @@ async function handleCommand(msg) {
     case 'disable_watch_mode': {
       watchMode = false;
       broadcastStatus();
-      broadcastSidePanel({ type: 'watch_state', status: statusSnapshot(), startTime: watchStartTime, entries: watchLog });
       return { ok: true };
     }
 
@@ -1654,25 +1603,6 @@ chrome.runtime.onConnect.addListener((port) => {
     }
     return;
   }
-
-  if (port.name === 'sidepanel') {
-    sidePanelPorts.add(port);
-    try {
-      port.postMessage(currentWatchState());
-    } catch {}
-    port.onMessage.addListener((msg) => {
-      if (msg?.type === 'panel_context' && Number.isFinite(msg.windowId)) {
-        sidePanelPortWindows.set(port, Number(msg.windowId));
-        broadcastStatus();
-      }
-    });
-    port.onDisconnect.addListener(() => {
-      sidePanelPorts.delete(port);
-      sidePanelPortWindows.delete(port);
-      broadcastStatus();
-    });
-    return;
-  }
 });
 
 chrome.tabs.onActivated.addListener(({ tabId }) => {
@@ -1721,19 +1651,7 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
     return;
   }
 
-  // Popup messages
-  if (msg.action === 'connect') {
-    connect(msg.port || DEFAULT_PORT);
-    sendResponse({ ok: true });
-    return;
-  }
-
-  if (msg.action === 'disconnect') {
-    disconnect();
-    sendResponse({ ok: true });
-    return;
-  }
-
+  // Popup status query
   if (msg.action === 'get_status') {
     sendResponse(statusSnapshot());
     return;
@@ -1749,33 +1667,6 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
 
 // Auto-connect on startup and use alarms to keep service worker alive
 connect(DEFAULT_PORT);
-
-if (chrome.sidePanel?.setPanelBehavior) {
-  chrome.sidePanel.setPanelBehavior({ openPanelOnActionClick: true }).catch((err) => {
-    console.log('[BG] Failed to enable openPanelOnActionClick:', err.message);
-  });
-}
-
-if (chrome.action?.onClicked) {
-  chrome.action.onClicked.addListener(async (tab) => {
-    if (!tab?.windowId) return;
-    activeTabId = tab.id || activeTabId;
-    await openSidePanelForWindow(tab.windowId, tab.id);
-  });
-}
-
-if (chrome.commands?.onCommand) {
-  chrome.commands.onCommand.addListener(async (command) => {
-    if (command !== 'open-watch-side-panel') return;
-    let tab = null;
-    try {
-      [tab] = await chrome.tabs.query({ active: true, lastFocusedWindow: true });
-    } catch {}
-    if (!tab?.windowId) return;
-    activeTabId = tab.id || activeTabId;
-    await openSidePanelForWindow(tab.windowId, tab.id);
-  });
-}
 
 // Alarms keep the service worker from dying
 chrome.alarms.create('keepalive', { periodInMinutes: 0.5 });

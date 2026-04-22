@@ -38,7 +38,6 @@ Inspect this screenshot and return JSON only with this schema:
   "chrome_visible": true,
   "window_type": "browser|extensions|popup|other|unknown",
   "page_or_dialog": "short string",
-  "side_panel_visible": true,
   "extension_popup_visible": true,
   "agent_activity_visible": true,
   "manual_prompt_visible": true,
@@ -53,11 +52,6 @@ Intended target:
 - app: {app_name}
 - title hint: {title}
 
-Important:
-- A browser side panel attached to the same Chrome window is valid and should NOT count as occlusion.
-- Normal browser UI changes after clicking an extension, including a right-side extension panel, are still a valid match for the target window.
-- Set cross_space_or_split_artifact=true only for obvious stitched captures across different Spaces or displays, not for a legitimate browser side panel.
-
 Return JSON only with this schema:
 {{
   "matches_target": true,
@@ -67,20 +61,6 @@ Return JSON only with this schema:
   "notes": "short string"
 }}
 Set matches_target=false if the screenshot is mostly another app, the target is covered by another window, or the image looks stitched across spaces/displays."""
-
-
-RIGHT_PANEL_VERIFY_PROMPT = """This image is only the right edge of a Chrome window.
-Decide whether it shows a distinct browser side panel, not just normal webpage content.
-Treat "XHS Research Agent" as the FlowLens panel identity.
-
-Return JSON only with this schema:
-{
-  "side_panel_visible": true,
-  "panel_identity": "FlowLens|other|none",
-  "looks_like_regular_page_content": true
-}
-
-Set side_panel_visible=true only if the crop clearly shows a separate vertical panel with its own background, controls, header, or bounded layout. If it just looks like webpage content or empty page margin, return false."""
 
 
 @dataclass
@@ -448,27 +428,6 @@ class VisualDebugger:
             title=target.title or target.label,
         )
         return self._analyze_image(image, prompt, max_tokens=96)
-
-    def verify_right_side_panel(
-        self,
-        image: Image.Image,
-        *,
-        crop_ratio: float = 0.34,
-        max_dim: int = 640,
-        save_path: Path | None = None,
-    ) -> dict:
-        width, height = image.size
-        left = max(0, int(width * (1.0 - crop_ratio)))
-        crop = image.crop((left, 0, width, height))
-        normalized = _normalize_image(crop, max_dim=max_dim)
-        if save_path is not None:
-            save_path.parent.mkdir(parents=True, exist_ok=True)
-            crop.save(save_path)
-        result = self._analyze_image(normalized, RIGHT_PANEL_VERIFY_PROMPT, max_tokens=72)
-        result["crop_box"] = {"left": left, "top": 0, "right": width, "bottom": height}
-        if save_path is not None:
-            result["crop_image"] = str(save_path)
-        return result
 
     @staticmethod
     def _window_target(window: WindowInfo) -> CaptureTarget:

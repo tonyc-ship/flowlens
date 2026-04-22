@@ -806,15 +806,13 @@ class ExtensionBridge:
     async def create_watch_window(self, url: str = "about:blank") -> dict:
         """Enable watch mode on the current browser window.
 
-        Watch mode now relies on the in-page overlay by default instead of
-        trying to auto-open Chrome's native side panel.
+        Watch mode uses the in-page overlay injected by the extension.
         """
         result = await self.send_command("create_watch_window", {
             "url": url,
             "lock": True,
         })
         self._watch_mode = True
-        result["sidePanel"] = False
         return result
 
     async def enable_watch_mode(self) -> dict:

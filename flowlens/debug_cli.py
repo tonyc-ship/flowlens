@@ -9,7 +9,6 @@ from pathlib import Path
 
 from .core.runtime import task_runs_root
 from .debug import MacOSController, VisualDebugger
-from .debug.workflows import run_sidepanel_demo_sync
 
 
 def _default_save_dir() -> Path:
@@ -45,10 +44,6 @@ def build_parser() -> argparse.ArgumentParser:
     click.add_argument("--y", type=int, required=True)
     click.add_argument("--button", default="left", choices=["left", "right"])
     click.add_argument("--clicks", type=int, default=1)
-
-    demo = subparsers.add_parser("demo-sidepanel", help="Open and visually verify the FlowLens side panel in Chrome")
-    demo.add_argument("--output-dir", default=None, help="Directory for demo artifacts")
-    demo.add_argument("--json", action="store_true", help="Emit machine-readable JSON")
 
     inspect = subparsers.add_parser("inspect", help="Capture and analyze one frame")
     _add_capture_target_args(inspect)
@@ -158,11 +153,6 @@ def main(argv: list[str] | None = None) -> int:
         controller.click(args.x, args.y, button=args.button, clicks=args.clicks)
         print(f"clicked=({args.x},{args.y})")
         return 0
-
-    if args.command == "demo-sidepanel":
-        result = run_sidepanel_demo_sync(Path(args.output_dir) if args.output_dir else None)
-        _emit(result.to_dict(), args.json)
-        return 0 if result.success else 1
 
     debugger = VisualDebugger(
         controller=controller,

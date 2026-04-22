@@ -3,45 +3,18 @@
 <head>
   <meta charset="utf-8">
   <style>
-    body { width: 300px; padding: 14px; font-family: -apple-system, sans-serif; font-size: 13px; }
+    body { width: 240px; padding: 14px; font-family: -apple-system, sans-serif; font-size: 13px; margin: 0; }
     h3 { color: #ff2442; margin: 0 0 10px; font-size: 15px; }
-    .status { padding: 8px 10px; border-radius: 6px; margin: 8px 0; font-size: 12px; }
+    .status { padding: 8px 10px; border-radius: 6px; font-size: 12px; }
     .status.connected { background: #e8f5e9; color: #2e7d32; }
     .status.disconnected { background: #fce4ec; color: #c62828; }
-    .row { display: flex; gap: 6px; align-items: center; margin: 8px 0; }
-    .row label { font-weight: 600; white-space: nowrap; }
-    input[type="number"] { width: 60px; padding: 4px 6px; border: 1px solid #ddd; border-radius: 4px; }
-    button { background: #ff2442; color: #fff; border: none; padding: 6px 14px; border-radius: 4px; cursor: pointer; font-size: 13px; }
-    button:hover { background: #e0203a; }
-    button.secondary { background: #666; }
-    button:disabled { background: #ccc; cursor: default; }
-    .info { color: #888; font-size: 11px; margin-top: 10px; line-height: 1.4; }
   </style>
 </head>
 <body>
-  <h3>XHS Research Agent</h3>
-
+  <h3>FlowLens Agent</h3>
   <div id="statusBar" class="status disconnected">
     Agent: disconnected
   </div>
-
-  <div class="row">
-    <label>Port:</label>
-    <input type="number" id="port" value="8765" min="1024" max="65535">
-    <button id="connectBtn">Connect</button>
-    <button id="disconnectBtn" class="secondary" style="display:none">Disconnect</button>
-  </div>
-
-  <div class="row" style="margin-top: 12px">
-    <button id="observerBtn" class="secondary" style="background:#1f6feb;width:100%">View Observations</button>
-  </div>
-  <div id="observerStats" style="color:#888;font-size:11px;margin-top:4px"></div>
-
-  <p class="info">
-    Start the Python agent first, then click Connect.<br>
-    <code>python -m flowlens</code>
-  </p>
-
   <script src="popup.js"></script>
 </body>
 </html>
