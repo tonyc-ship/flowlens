@@ -10,6 +10,7 @@ dependencies = [
     "openai>=1.98.0",
     "websockets>=13.0",
     "Pillow>=10.0.0",
+    "mcp>=1.0.0",
 ]
 
 [project.urls]
@@ -47,6 +48,7 @@ dev = [
 
 [project.scripts]
 flowlens = "flowlens.cli:main"
+flowlens-mcp = "flowlens.mcp_server:main"
 
 [build-system]
 requires = ["hatchling"]
