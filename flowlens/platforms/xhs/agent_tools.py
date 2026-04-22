@@ -330,15 +330,20 @@ def _dedup_short_circuit(
     *,
     note_id: str,
     requested_level: str,
+    requested_include_media: bool,
     force: bool,
 ) -> str | None:
     """Return a short-circuit tool response when the note was already analyzed.
 
-    Called before opening/extracting a note. If the note_id is already in
-    ``ctx.processed_notes`` at a level greater-than-or-equal to the requested
-    level, and the caller did not pass ``force=true``, we refuse to re-extract
-    and point the agent at the prior artifact instead. Lite->deep upgrades are
-    still allowed because a prior lite extraction lacks media.
+    Called before opening/extracting a note. Short-circuits only when the prior
+    extraction already covers the requested (level, include_media) combination.
+    Upgrades (lite->deep, or deep-without-media -> deep-with-media) are always
+    allowed so the agent can genuinely enrich a prior extraction.
+
+    When we do short-circuit, we do NOT hint at ``force=true`` — that hint was
+    observed to drive loops where a small model toggles ``force`` on/off and
+    re-reads the same note forever. Instead we hand back an explicit next-step:
+    read one of the *other* sampled notes, or move to summarization.
     """
     if force or not note_id:
         return None
@@ -347,8 +352,39 @@ def _dedup_short_circuit(
     if not isinstance(info, dict):
         return None
     prior_level = info.get("level") or ""
+    prior_include_media = bool(info.get("include_media", False))
+    # Allow upgrading level (lite -> deep).
     if _level_rank(prior_level) < _level_rank(requested_level):
         return None
+    # Allow upgrading media capture within the same level (e.g. deep no-media -> deep with media).
+    if requested_include_media and not prior_include_media:
+        return None
+
+    processed_ids = [str(nid) for nid in processed.keys() if nid]
+    # Surface every sampled note_id we know about from topic_scan so the agent
+    # has an explicit set of candidates to move on to. ctx.topic_scan_note_ids
+    # is populated by xhs_topic_scan below.
+    sampled_ids = [
+        str(nid) for nid in getattr(ctx, "topic_scan_note_ids", []) or [] if nid
+    ]
+    remaining_ids = [nid for nid in sampled_ids if nid not in processed_ids]
+
+    directive_lines = [
+        "Do NOT re-open this note. The prior artifact already contains the full entity "
+        "(content, comments, media, key points) — read it instead of extracting again.",
+        f"Already-analyzed note_ids in this run: {processed_ids or '[]'}.",
+    ]
+    if remaining_ids:
+        directive_lines.append(
+            f"Notes from topic_scan that have NOT been read yet: {remaining_ids}. "
+            "Pick one of these as the next read_note target."
+        )
+    else:
+        directive_lines.append(
+            "All sampled notes from topic_scan have been analyzed. Stop calling read_note "
+            "and produce the final report now, grounded on the saved artifacts."
+        )
+
     return json.dumps(
         {
             "site": "xiaohongshu",
@@ -358,27 +394,49 @@ def _dedup_short_circuit(
             "note_id": note_id,
             "title": info.get("title", ""),
             "prior_level": prior_level,
+            "prior_include_media": prior_include_media,
             "requested_level": requested_level,
+            "requested_include_media": requested_include_media,
             "prior_artifact": info.get("artifact", ""),
-            "artifact_file_note": (
-                "This note_id was already extracted at the same or deeper level. "
-                "Reuse the prior artifact instead of re-opening. "
-                "Pass force=true if a fresh re-extraction is genuinely needed."
-            ),
+            "already_processed_note_ids": processed_ids,
+            "remaining_sampled_note_ids": remaining_ids,
+            "next_action": directive_lines,
         },
         ensure_ascii=False,
         indent=2,
     )
 
 
-def _record_processed_note(ctx: ToolContext, note: NoteEntity, artifact: str) -> None:
-    """Remember a note as already analyzed so future tool results can flag it."""
+def _record_processed_note(
+    ctx: ToolContext,
+    note: NoteEntity,
+    artifact: str,
+    *,
+    include_media: bool = False,
+) -> None:
+    """Remember a note as already analyzed so future tool results can flag it.
+
+    ``include_media`` records whether media capture (images/video/OCR) was
+    actually performed on this extraction. Callers like xhs_topic_scan may
+    request level="deep" but pass ``include_media=False`` to stay cheap; in
+    that case a later ``read_note(level='deep', include_media=True)`` should
+    still be allowed to upgrade — dedup compares on (level, include_media).
+    """
     note_id = str(getattr(note, "note_id", "") or "").strip()
     if not note_id:
         return
     new_level = str(getattr(note, "extraction_level", "") or "")
     prior = ctx.processed_notes.get(note_id) or {}
-    if prior and _level_rank(prior.get("level", "")) > _level_rank(new_level):
+    prior_rank = _level_rank(prior.get("level", ""))
+    new_rank = _level_rank(new_level)
+    prior_media = bool(prior.get("include_media", False))
+
+    # Keep the strictly richer record: prefer higher level, then include_media.
+    keep_prior = prior and (
+        prior_rank > new_rank
+        or (prior_rank == new_rank and prior_media and not include_media)
+    )
+    if keep_prior:
         prior["artifact"] = artifact
         ctx.processed_notes[note_id] = prior
         return
@@ -387,6 +445,7 @@ def _record_processed_note(ctx: ToolContext, note: NoteEntity, artifact: str) ->
         or prior.get("title", ""),
         "artifact": artifact,
         "level": new_level,
+        "include_media": bool(include_media),
     }
 
 
@@ -568,7 +627,10 @@ class ExtractSiteEntityTool(Tool):
             }
             note_label = f"xhs_note_{note.note_id or level}"
             artifact_rel = _write_payload_artifact(ctx, note_label, payload)
-            _record_processed_note(ctx, note, artifact_rel)
+            _record_processed_note(
+                ctx, note, artifact_rel,
+                include_media=bool(params.get("include_media")),
+            )
             return json.dumps(
                 _payload_summary(
                     payload,
@@ -609,10 +671,12 @@ class RunSiteActionTool(Tool):
         "Prefer read_note over manually chaining click_card + wait + extract_site_entity(note). "
         "Prefer targeting notes by `note_id` (stable) over `index` (position-dependent and can change between searches). "
         "Every card in tool results includes `note_id`, `title`, and an `already_analyzed` flag; "
-        "skip notes already marked `already_analyzed: true` unless you need a fresh re-extraction. "
+        "skip notes already marked `already_analyzed: true`. "
         "read_note will short-circuit with skipped=true when the note_id was already extracted at "
-        "the same or deeper level earlier in this run; pass force=true only when a re-extraction "
-        "is actually needed."
+        "the same or deeper (level, include_media) — when that happens, do NOT re-read the same "
+        "note. Move on to a different note_id from `remaining_sampled_note_ids`, or produce the "
+        "final report from the prior artifacts. Only use include_media=true to upgrade a prior "
+        "media-less extraction."
     )
 
     @property
@@ -689,9 +753,12 @@ class RunSiteActionTool(Tool):
                 "force": {
                     "type": "boolean",
                     "description": (
-                        "For read_note: bypass the already_analyzed short-circuit and "
-                        "re-open the note even if it was extracted at the same/deeper "
-                        "level earlier in this run. Default false."
+                        "For read_note: escape hatch to force a full re-extraction even "
+                        "when the note was already read at the same or deeper (level, "
+                        "include_media). Reserve for the rare case where the prior "
+                        "artifact is known to be corrupt. Do NOT use this just because a "
+                        "skipped=true response came back — that response already contains "
+                        "the correct next action. Default false."
                     ),
                     "default": False,
                 },
@@ -753,6 +820,7 @@ class RunSiteActionTool(Tool):
                 ctx,
                 note_id=str(params.get("note_id", "")).strip(),
                 requested_level=level,
+                requested_include_media=bool(include_media),
                 force=bool(params.get("force", False)),
             )
             if short_circuit is not None:
@@ -795,7 +863,7 @@ class RunSiteActionTool(Tool):
             }
             note_label = f"xhs_read_note_{note.note_id or level}"
             artifact_rel = _write_payload_artifact(ctx, note_label, payload)
-            _record_processed_note(ctx, note, artifact_rel)
+            _record_processed_note(ctx, note, artifact_rel, include_media=bool(include_media))
             return json.dumps(
                 _payload_summary(
                     payload,
@@ -948,6 +1016,12 @@ class XHSTopicScanTool(Tool):
             "topic_scan_plan",
             f"query='{query}' deep={max_deep} lite={max_lite} media={include_media} selected={len(selected_cards)}",
         )
+        # Publish sampled note_ids on ctx so the dedup short-circuit can tell the
+        # agent which notes remain unread instead of looping on the first one.
+        sampled_ids = [c.note_id for c in selected_cards if getattr(c, "note_id", "")]
+        existing = list(getattr(ctx, "topic_scan_note_ids", []) or [])
+        merged = existing + [nid for nid in sampled_ids if nid not in existing]
+        ctx.topic_scan_note_ids = merged
         notes: list[dict] = []
         for idx, card in enumerate(selected_cards):
             level = "deep" if idx < max_deep else "lite"
@@ -981,6 +1055,7 @@ class XHSTopicScanTool(Tool):
                     ctx,
                     note,
                     f"topic_scan:{query} #{idx + 1} [{level}]",
+                    include_media=bool(include_media and level == "deep"),
                 )
             except Exception as exc:
                 notes.append({

@@ -27,6 +27,7 @@ class ToolContext:
     screenshot_max_dim: int = 0  # 0 = no downscaling
     artifact_counter: int = 0
     processed_notes: dict = field(default_factory=dict)
+    topic_scan_note_ids: list = field(default_factory=list)
     turn: int = 0
     active_tool_name: str = ""
 

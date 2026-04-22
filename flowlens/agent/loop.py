@@ -13,8 +13,12 @@ Supports three backend families:
 from __future__ import annotations
 
 import asyncio
+import hashlib
 import json
 import os
+import platform
+import subprocess
+import sys
 import time
 from datetime import datetime
 from pathlib import Path
@@ -134,6 +138,77 @@ def _build_system_prompt(
     return "\n".join(parts)
 
 
+_FLOWLENS_ENV_KEYS = (
+    "FLOWLENS_LLM_BACKEND",
+    "FLOWLENS_AGENT_CONTEXT_RECENT_MESSAGES",
+    "FLOWLENS_AGENT_CONTEXT_MEMORY_CHARS",
+    "FLOWLENS_SITE_MEDIA_BACKEND",
+    "FLOWLENS_SITE_MEDIA_MODEL",
+    "FLOWLENS_KIMI_MODEL",
+    "FLOWLENS_QWEN_MODEL",
+    "FLOWLENS_APP_DATA_DIR",
+)
+
+
+def _git_commit_sha() -> str:
+    """Best-effort short git sha of the running flowlens checkout."""
+    try:
+        repo_root = Path(__file__).resolve().parents[2]
+    except Exception:
+        return ""
+    try:
+        out = subprocess.run(
+            ["git", "-C", str(repo_root), "rev-parse", "--short=12", "HEAD"],
+            capture_output=True,
+            text=True,
+            timeout=2,
+        )
+        if out.returncode == 0:
+            return out.stdout.strip()
+    except Exception:
+        pass
+    return ""
+
+
+def _flowlens_package_version() -> str:
+    try:
+        from importlib.metadata import version  # stdlib since 3.8
+        return version("flowlens")
+    except Exception:
+        return ""
+
+
+def _runtime_environment(model: str) -> dict:
+    """Snapshot of runtime info to pin every run to a concrete build.
+
+    Captured once at task_start so later debugging can match a log bundle to an
+    exact flowlens build, model backend, and the env-var-driven context tuning.
+    """
+    env_snapshot = {
+        key: os.environ.get(key, "")
+        for key in _FLOWLENS_ENV_KEYS
+        if os.environ.get(key, "") != ""
+    }
+    return {
+        "flowlens_version": _flowlens_package_version(),
+        "git_commit": _git_commit_sha(),
+        "python_version": sys.version.split()[0],
+        "platform": platform.platform(),
+        "model": model,
+        "backend_provider": _infer_media_backend(model),
+        "env": env_snapshot,
+    }
+
+
+def _tool_call_signature(tool_name: str, tool_input: dict) -> str:
+    """Stable hash of (tool_name, tool_input) for repeat-call detection."""
+    try:
+        payload = json.dumps(tool_input or {}, sort_keys=True, ensure_ascii=False)
+    except Exception:
+        payload = str(tool_input)
+    return hashlib.md5(f"{tool_name}::{payload}".encode("utf-8")).hexdigest()[:12]
+
+
 def _text_summary(content_blocks: list[dict], max_len: int = 500) -> str:
     """Summarize tool result content blocks for logging (omit base64 images)."""
     parts = []
@@ -184,6 +259,7 @@ def _prepare_messages_for_context(
     *,
     keep_recent_messages: int | None = None,
     memory_max_chars: int | None = None,
+    compaction_info: dict | None = None,
 ) -> list[dict]:
     keep_recent = keep_recent_messages
     if keep_recent is None:
@@ -191,6 +267,14 @@ def _prepare_messages_for_context(
     memory_chars = memory_max_chars
     if memory_chars is None:
         memory_chars = int(os.environ.get("FLOWLENS_AGENT_CONTEXT_MEMORY_CHARS", "6000") or "6000")
+    if compaction_info is not None:
+        compaction_info.clear()
+        compaction_info.update({
+            "raw_messages": len(messages),
+            "keep_recent": keep_recent,
+            "memory_chars_budget": memory_chars,
+            "compacted": False,
+        })
     if len(messages) <= keep_recent + 2:
         return messages
 
@@ -212,7 +296,7 @@ def _prepare_messages_for_context(
     while recent and _is_tool_result_message(recent[0]):
         recent.pop(0)
 
-    return [
+    result = [
         messages[0],
         {
             "role": "user",
@@ -220,6 +304,12 @@ def _prepare_messages_for_context(
         },
         *recent,
     ]
+    if compaction_info is not None:
+        compaction_info["compacted"] = True
+        compaction_info["effective_messages"] = len(result)
+        compaction_info["dropped_messages"] = max(0, len(messages) - len(result))
+        compaction_info["memory_entries_used"] = len(memory_entries)
+    return result
 
 
 def _log_excerpt(text: str, max_len: int = 200) -> str:
@@ -562,6 +652,11 @@ async def _agent_loop(
     reasoning_log: list[dict] = []
     resource_snapshots: list[dict] = []
     task_start_time = time.time()
+    # Rolling tally of (tool, input) signatures — used to surface loop-like
+    # behavior in tool_result entries. Each entry records turn + repeat count
+    # so debuggers can spot A/B oscillation without replaying the whole log.
+    tool_call_signatures: dict[str, list[int]] = {}
+    last_compaction_turn: int = 0
 
     def log_entry(entry: dict):
         entry["elapsed_s"] = round(time.time() - task_start_time, 2)
@@ -581,6 +676,7 @@ async def _agent_loop(
         resource_snapshots.append(snapshot)
         append_jsonl(run_dir / "resource_log.jsonl", snapshot)
 
+    runtime_env = _runtime_environment(model)
     log_entry({
         "type": "task_start",
         "task": task,
@@ -588,7 +684,14 @@ async def _agent_loop(
         "max_turns": max_turns,
         "tools": [t.name for t in tools],
         "site_knowledge_loaded": bool(site_knowledge),
+        "runtime": runtime_env,
     })
+    log(
+        "env",
+        f"flowlens={runtime_env.get('flowlens_version') or '?'} "
+        f"git={runtime_env.get('git_commit') or '?'} "
+        f"backend={runtime_env.get('backend_provider') or '?'}",
+    )
     resource_entry("task_start", extra={"model": model, "max_turns": max_turns})
 
     log("start", f"Task: {task}")
@@ -646,11 +749,20 @@ async def _agent_loop(
 
         # Call LLM backend
         api_start = time.time()
-        request_messages = (
-            messages
-            if hasattr(backend, "_previous_response_id")
-            else _prepare_messages_for_context(messages, run_state, context_memory)
-        )
+        compaction_info: dict = {}
+        if hasattr(backend, "_previous_response_id"):
+            request_messages = messages
+        else:
+            request_messages = _prepare_messages_for_context(
+                messages, run_state, context_memory, compaction_info=compaction_info,
+            )
+        if compaction_info.get("compacted") and turn != last_compaction_turn:
+            last_compaction_turn = turn
+            log_entry({
+                "type": "context_compacted",
+                "turn": turn,
+                **{k: v for k, v in compaction_info.items() if k != "compacted"},
+            })
         try:
             response = backend.create_message(
                 system=system_prompt,
@@ -708,21 +820,25 @@ async def _agent_loop(
                 "generation_s": response.metrics.get("generation_s"),
                 "generation_tps": response.metrics.get("generation_tps"),
             })
-        log_entry({
+        llm_entry: dict = {
             "type": "llm_response",
             "turn": turn,
             "api_duration_s": api_duration,
             "context_messages": len(request_messages),
             "raw_context_messages": len(messages),
-            "thinking": "\n".join(thinking_texts) if thinking_texts else None,
-            "text": "\n".join(visible_texts) if visible_texts else None,
-            "tool_calls": [
-                {"name": tu.name, "input": tu.input}
-                for tu in tool_use_blocks
-            ] if tool_use_blocks else None,
             "stop_reason": response.stop_reason,
             "usage": usage_entry,
-        })
+        }
+        if thinking_texts:
+            llm_entry["thinking"] = "\n".join(thinking_texts)
+        if visible_texts:
+            llm_entry["text"] = "\n".join(visible_texts)
+        if tool_use_blocks:
+            llm_entry["tool_calls"] = [
+                {"name": tu.name, "input": tu.input}
+                for tu in tool_use_blocks
+            ]
+        log_entry(llm_entry)
         run_state.note_assistant_turn(
             turn=turn,
             text="\n".join(visible_texts or text_blocks),
@@ -769,7 +885,25 @@ async def _agent_loop(
             ctx.turn = turn
             ctx.active_tool_name = tool_name
 
+            signature = _tool_call_signature(tool_name, tool_input)
+            history = tool_call_signatures.setdefault(signature, [])
+            history.append(turn)
+            repeat_count = len(history)
+
             log("tool_call", f"{tool_name}({json.dumps(tool_input, ensure_ascii=False)[:200]})")
+            if repeat_count >= 3:
+                log(
+                    "repeat_warning",
+                    f"{tool_name} called {repeat_count}x with identical args (turns {history})",
+                )
+                log_entry({
+                    "type": "repeat_tool_call",
+                    "turn": turn,
+                    "tool": tool_name,
+                    "signature": signature,
+                    "repeat_count": repeat_count,
+                    "turns": list(history),
+                })
             run_state.note_tool_call(turn=turn, tool_name=tool_name, tool_input=tool_input)
             if tool_name in {"read_run_state", "read_saved_artifact"}:
                 report_grounding_observed = True
@@ -819,14 +953,30 @@ async def _agent_loop(
                             source_tool=tool_name,
                         )
 
-                    log_entry({
+                    result_entry = {
                         "type": "tool_result",
                         "turn": turn,
                         "tool": tool_name,
                         "input": tool_input,
                         "duration_s": tool_duration,
                         "result_summary": _text_summary(result_content),
-                    })
+                    }
+                    if repeat_count > 1:
+                        result_entry["repeat_count"] = repeat_count
+                    processed = getattr(ctx, "processed_notes", None)
+                    if isinstance(processed, dict) and processed:
+                        # Compact snapshot keyed by note_id so loop-style fixations
+                        # on a single note_id (see A/B dedup oscillation) are
+                        # visible without cross-referencing every artifact.
+                        result_entry["processed_notes_snapshot"] = {
+                            nid: {
+                                "level": info.get("level", ""),
+                                "include_media": bool(info.get("include_media", False)),
+                            }
+                            for nid, info in list(processed.items())[-10:]
+                            if isinstance(info, dict)
+                        }
+                    log_entry(result_entry)
                     memory_input = json.dumps(tool_input, ensure_ascii=False)[:160]
                     context_memory.append(
                         f"- turn {turn} {tool_name}({memory_input}): "
