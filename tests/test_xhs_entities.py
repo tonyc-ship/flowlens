@@ -74,6 +74,29 @@ class XHSEntityTests(unittest.TestCase):
         self.assertEqual(stale_note.stale_warning, "same note as previous extract")
         self.assertEqual(stale_note.to_tool_dict()["stale_warning"], "same note as previous extract")
 
+        tokenized_url_note = NoteEntity.from_dom_dict({
+            "note_id": "66f4fdb4000000001a022c8f",
+            "url": (
+                "https://www.xiaohongshu.com/explore/66f4fdb4000000001a022c8f"
+                "?xsec_token=ABzs0MvXNkEdW7z5tdSvtxFlzTY-WPq0lctBGIQTlzWYo%3D"
+                "&xsec_source=pc_search&source=web_explore_feed"
+            ),
+            "title": "保留真实帖子链接",
+            "content": "正文",
+        })
+        self.assertIn("xsec_token=", tokenized_url_note.url)
+
+        search_overlay_note = NoteEntity.from_dom_dict({
+            "note_id": "66f4fdb4000000001a022c8f",
+            "url": "https://www.xiaohongshu.com/search_result?keyword=%E5%B0%9A%E9%85%B7",
+            "title": "搜索页覆盖层",
+            "content": "正文",
+        })
+        self.assertEqual(
+            search_overlay_note.url,
+            "https://www.xiaohongshu.com/explore/66f4fdb4000000001a022c8f",
+        )
+
         # Dedup keeps the richer of two near-duplicate comments.
         a = Comment.from_dom_dict({"username": "露营控", "text": "这个卡式炉真的更适合新手",
                                     "likes": "12", "reply_count": 0})

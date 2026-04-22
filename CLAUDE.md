@@ -135,6 +135,9 @@ When blocked by something that needs manual browser/UI interaction (reload Chrom
 For extension reload specifically:
 - Prefer the built-in runtime path first: `bridge.reload_extension()` or `python -m flowlens extension reload`
 - If the extension is too broken or disconnected to reload itself, then fall back to macOS Accessibility on `chrome://extensions/`
+- Any code change under `chrome_extension/` must also bump `chrome_extension/manifest.json` `version`.
+  FlowLens auto-reload compares the connected extension version against the source-tree manifest version, so
+  extension code changes without a version bump may silently keep using stale code.
 
 ### Autonomous long-horizon work
 

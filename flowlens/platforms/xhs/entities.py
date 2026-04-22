@@ -497,7 +497,9 @@ class NoteEntity:
             stale_warning=str(d.get("_stale_warning", "") or ""),
         )
         if note.note_id:
-            note.url = f"https://www.xiaohongshu.com/explore/{note.note_id}"
+            raw_url = str(note.url or "").strip()
+            if not re.search(r"xiaohongshu\.com/(?:explore|discovery(?:/item)?)/", raw_url):
+                note.url = f"https://www.xiaohongshu.com/explore/{note.note_id}"
         note.refresh_derived_fields()
         return note
 

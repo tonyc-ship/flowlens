@@ -780,15 +780,6 @@ function extractNoteContent() {
     note.content = extractNoteContentFromRootText(root, note.title, note.author);
     if (note.content) note.content_source = 'root_text_after_title';
   }
-  note.extraction_debug = {
-    content_source: note.content_source || 'empty',
-    root_selector: root.id ? `#${root.id}` : (root.className ? `.${String(root.className).trim().split(/\s+/).join('.')}` : root.tagName),
-    root_text_preview: normalizeNoteText(root.innerText || root.textContent || '').slice(0, 1200),
-    content_selector_visible_count: visibleContentNodes.length,
-    loading_indicator_count: countVisibleNoteLoadingIndicators(root),
-    content_selector_debug: selectorDebug(contentSelectors, root),
-  };
-
   // Date
   note.date = firstVisibleText([
     '.note-content .date',
@@ -798,29 +789,51 @@ function extractNoteContent() {
   ], root, { excludeComments: true });
 
   // Engagement metrics
-  note.likes = firstVisibleText([
+  const likeSelectors = [
     '.like-wrapper .count',
     '.engage-bar .like .count',
     '[data-type="like"] .count',
     '.engage-bar-style .like-wrapper .count',
-  ], root);
-
-  note.favorites = firstVisibleText([
+  ];
+  const favoriteSelectors = [
     '.collect-wrapper .count',
     '.engage-bar .collect .count',
     '[data-type="collect"] .count',
-  ], root);
-
-  note.comments_count = firstVisibleText([
+  ];
+  const commentCountSelectors = [
     '.chat-wrapper .count',
     '.engage-bar .chat .count',
     '[data-type="chat"] .count',
-  ], root);
-
-  note.shares = firstVisibleText([
+  ];
+  const shareSelectors = [
     '.share-wrapper .count',
     '.engage-bar .share .count',
-  ], root);
+  ];
+
+  const likesMatch = visibleTextMatch(likeSelectors, root, { excludeComments: true });
+  const favoritesMatch = visibleTextMatch(favoriteSelectors, root, { excludeComments: true });
+  const commentsMatch = visibleTextMatch(commentCountSelectors, root, { excludeComments: true });
+  const sharesMatch = visibleTextMatch(shareSelectors, root, { excludeComments: true });
+
+  note.likes = likesMatch.text;
+  note.favorites = favoritesMatch.text;
+  note.comments_count = commentsMatch.text;
+  note.shares = sharesMatch.text;
+
+  note.extraction_debug = {
+    content_source: note.content_source || 'empty',
+    root_selector: root.id ? `#${root.id}` : (root.className ? `.${String(root.className).trim().split(/\s+/).join('.')}` : root.tagName),
+    root_text_preview: normalizeNoteText(root.innerText || root.textContent || '').slice(0, 1200),
+    content_selector_visible_count: visibleContentNodes.length,
+    loading_indicator_count: countVisibleNoteLoadingIndicators(root),
+    content_selector_debug: selectorDebug(contentSelectors, root),
+    engagement_selector_debug: {
+      likes: { selector: likesMatch.selector || '', text: (likesMatch.text || '').slice(0, 64) },
+      favorites: { selector: favoritesMatch.selector || '', text: (favoritesMatch.text || '').slice(0, 64) },
+      comments_count: { selector: commentsMatch.selector || '', text: (commentsMatch.text || '').slice(0, 64) },
+      shares: { selector: sharesMatch.selector || '', text: (sharesMatch.text || '').slice(0, 64) },
+    },
+  };
 
   // Author profile link
   const authorLink = root.querySelector?.(
