@@ -44,10 +44,7 @@ from ..perception.local_llm import DEFAULT_LOCAL_IMAGE_MAX_DIM, LocalLLM
 from .backends import create_backend
 from .run_state import RunState
 from .tool import Tool, ToolContext
-from .tools.browser import make_browser_tools
-from .tools.site import make_site_tools
-from .tools.state import make_state_tools
-from .tools.vision import AnalyzeScreenshotTool, OcrScreenshotTool
+from ..tools import build_tools
 from ..platforms.agent_profiles import (
     active_tool_names as profile_active_tool_names,
     append_report_extras,
@@ -78,11 +75,10 @@ element coordinates. Do NOT guess coordinates from screenshots alone — use the
 element's bounding box.
 - Prefer using site-specific extractors (extract_page_data) when available — \
 they are faster and more reliable than reading raw DOM or manually clicking UI.
-- Prefer `run_site_action` for common site flows like search + open + read_note \
-on supported sites.
-- Prefer `extract_site_entity` for full note/profile extraction when you are \
-already on the relevant page state. Use raw `extract_page_data` only for \
-low-level actions and DOM-only helpers.
+- Prefer site-specific macros (e.g. `xhs_topic_scan`, `xhs_read_note`, \
+`xhs_search_notes`) over chaining navigate + click + extract_page_data. \
+The per-site tools are named with the site prefix (`xhs_*`). \
+Use raw `extract_page_data` only for low-level actions and DOM-only helpers.
 - When site knowledge marks a command as PREFERRED, use that command before \
 trying read_page + click/type fallbacks.
 - Do not use standalone `wait` when a site-specific action already has a `wait_seconds` parameter. Keep waits short unless recovering from an error.
@@ -601,15 +597,14 @@ async def _agent_loop(
     if ext_bridge is None and isinstance(bridge, ExtensionBridge):
         ext_bridge = bridge
 
-    # Build tools — extract_page_data needs the ExtensionBridge for send_command
-    tools: list[Tool] = make_browser_tools(bridge, ext_bridge=ext_bridge)
-    tools.extend(make_state_tools())
-    if media:
-        tools.append(AnalyzeScreenshotTool(media=media))
-        tools.append(OcrScreenshotTool(media=media))
+    # Build tools from the unified registry (same surface as flowlens-mcp)
     site_media = _make_site_media_for_model(model) if ext_bridge is not None else None
-    if site_media and ext_bridge is not None:
-        tools.extend(make_site_tools(bridge, ext_bridge=ext_bridge, media=site_media))
+    tools: list[Tool] = build_tools(
+        bridge,
+        ext_bridge=ext_bridge,
+        media=media,
+        site_media=site_media,
+    )
 
     # ── Watch mode overlay helper ──────────────────────────────
     async def watch(level: str, message: str, **kwargs):

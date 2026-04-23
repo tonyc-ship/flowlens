@@ -53,6 +53,16 @@ flowlens xhs agent "找最近高互动的露营清单帖子并总结标题套路
 
 任务结果保存在 `task_runs/`，包含 `result.json`、`report.md`、截图和推理日志。
 
+### MCP：直接在 Claude Code / Cursor / Claude Cowork /Codex 等等 里用
+
+FlowLens 也可以作为 MCP server，在你的 MCP 对应的 config json 文件里加：
+
+```json
+{ "mcpServers": { "flowlens": { "command": "flowlens-mcp" } } }
+```
+
+然后就可以对CC/Cursor/Codex说 "帮我在小红书调研 XX"，它会开始调用 `xhs_topic_scan` 等工具，用你这边已登录的 Chrome 跑。MCP 和 CLI 共享同一套工具与 bridge，不能同时跑。
+
 ### 结果示例
 
 <img src="docs/example_search_1.png" width="260"> <img src="docs/example_search_2.png" width="260"> <img src="docs/example_note.png" width="260">

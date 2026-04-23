@@ -41,9 +41,9 @@ pages:
       Grid of recommended note cards. Left sidebar with navigation
       (首页/发现/发布/通知/我). Search bar at top center. XHS red logo top-left.
     navigation_tips:
-      - "PREFERRED: use run_site_action(action='search_notes', query='...') directly from the homepage"
-      - "For topic research, PREFERRED: call run_site_action(action='search_notes', query='...') and/or extract_site_entity(entity_type='search_cards') first, then open the most relevant notes one by one"
-      - "If the next step is obvious, you can use run_site_action(action='search_notes', query='...') to search and get visible cards in one call"
+      - "PREFERRED: use xhs_search_notes(query='...') directly from the homepage"
+      - "For topic research, PREFERRED: call xhs_search_notes(query='...') and/or xhs_extract_search_cards() first, then open the most relevant notes one by one"
+      - "If the next step is obvious, you can use xhs_search_notes(query='...') to search and get visible cards in one call"
       - "The search bar is an input#search-input with placeholder '搜索小红书', typically at the top center of the page"
       - "Use extract_page_data(command='submit_search_query', params={keyword: '...'}) only as a low-level fallback"
       - "Click any note card to open it as a modal overlay"
@@ -56,18 +56,18 @@ pages:
       waterfall grid of matching note cards. Each card shows: cover image,
       title, author name, like count.
     navigation_tips:
-      - "For topic research, PREFERRED: inspect visible cards with run_site_action(action='search_notes', ...) or extract_site_entity(entity_type='search_cards') before opening notes"
-      - "PREFERRED: after choosing a card, call run_site_action(action='read_note', index=N, level='lite|deep')"
+      - "For topic research, PREFERRED: inspect visible cards with xhs_search_notes(...) or xhs_extract_search_cards() before opening notes"
+      - "PREFERRED: after choosing a card, call xhs_read_note(index=N, level='lite|deep')"
       - "Click filter tabs to switch between 全部(all), 图文(images), 视频(video), 用户(users)"
       - "Click a note card to open it as a modal overlay on top of search results"
       - "Scroll down to load more results (infinite scroll)"
-      - "PREFERRED for a new query: use run_site_action(action='search_notes', query='...')"
+      - "PREFERRED for a new query: use xhs_search_notes(query='...')"
       - "Use extract_page_data(command='submit_search_query', params={keyword: '...'}) only as a low-level fallback when site actions are unavailable"
     available_extractors:
       - "extract_search_cards — returns all visible note cards with title, author, likes, note_id"
       - "extract_search_tabs — returns available filter tab names and which is active"
-      - "extract_site_entity(entity_type='search_cards') — normalized card objects for agent ranking"
-      - "run_site_action(action='read_note', index=N, level='lite|deep') — open a card and extract note info in one call"
+      - "xhs_extract_search_cards() — normalized card objects for agent ranking"
+      - "xhs_read_note(index=N, level='lite|deep') — open a card and extract note info in one call"
     search_url_template: "https://www.xiaohongshu.com/search_result?keyword={encoded_keyword}&source=web_search_result_notes"
 
   note_detail:
@@ -90,8 +90,8 @@ pages:
     available_extractors:
       - "extract_note_content — returns title, author, text, hashtags, date, engagement counts, image_count, type"
       - "extract_comments — returns comments with username, text, likes, replies"
-      - "extract_site_entity(entity_type='note', level='lite|deep') — normalized note extraction with optional OCR / transcription"
-      - "run_site_action(action='read_note', level='lite|deep') — extract the current note with less planning overhead"
+      - "xhs_extract_note(level='lite|deep') — normalized note extraction with optional OCR / transcription"
+      - "xhs_read_note(level='lite|deep') — extract the current note with less planning overhead"
 
   profile_page:
     name: "User Profile (个人主页)"
@@ -107,7 +107,7 @@ pages:
     available_extractors:
       - "extract_profile_info — returns display_name, xhs_id, bio, followers, following, likes_and_collections"
       - "extract_profile_notes — returns grid of note cards"
-      - "extract_site_entity(entity_type='author_profile') — normalized profile + visible note cards"
+      - "xhs_extract_author_profile() — normalized profile + visible note cards"
 
 entities:
   note:
@@ -164,7 +164,7 @@ reporting:
 
 navigation:
   search: |
-    PREFERRED: Use run_site_action(action="search_notes", query="your query")
+    PREFERRED: Use xhs_search_notes(query="your query")
     or extract_page_data(command="submit_search_query", params={keyword: "your query"}).
     These are the most reliable search methods.
 
@@ -173,9 +173,9 @@ navigation:
     AVOID: Direct URL navigation to search_result pages often triggers anti-bot
     protection and returns empty results.
   open_note_from_card: |
-    First extract and rank visible cards with run_site_action(action="search_notes", ...)
-    or extract_site_entity(entity_type="search_cards"), then either use
-    run_site_action(action="read_note", index=N, level="lite|deep") or click the
+    First extract and rank visible cards with xhs_search_notes(...)
+    or xhs_extract_search_cards(), then either use
+    xhs_read_note(index=N, level="lite|deep") or click the
     chosen note card directly on search results or profile page. NEVER navigate
     directly to /explore/{note_id}.
   close_note_modal: |

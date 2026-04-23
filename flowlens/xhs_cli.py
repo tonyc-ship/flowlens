@@ -148,7 +148,7 @@ def _xhs_agent_instructions(query_hint: str) -> str:
     return (
         "This is a Xiaohongshu research task. The dedicated browser window starts on Xiaohongshu. "
         f"Begin by calling `xhs_topic_scan` with query `{query_hint}`. Choose `include_media` based on the task: enable it when understanding image/video content is needed to answer the user, keep it off when titles, body text, and comments suffice — `include_media=true` adds image OCR, image vision, video ASR, and video frame sampling at higher latency. "
-        "If that macro is unavailable, call `run_site_action(action='search_notes', query=...)` directly. "
+        "If that macro is unavailable, call `xhs_search_notes(query=...)` directly. "
         "For tables that mention post body text, use `entity.content` only and label image OCR/vision/video evidence in separate columns; do not mix media descriptions into body summaries. "
         "After collecting a representative sample, write the report instead of repeatedly opening more notes. "
         "Do not take a generic initial screenshot, do not analyze screenshots before searching, "

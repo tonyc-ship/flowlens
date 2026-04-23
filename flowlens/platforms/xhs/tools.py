@@ -18,13 +18,18 @@ from .processor import XHSSiteAdapter, rank_note_card
 
 
 def _make_xhs_progress_logger(ctx: ToolContext):
-    """Emit long-running stage progress both to stdout and a JSONL file.
+    """Emit long-running stage progress both to stderr and a JSONL file.
 
     The XHS macros run entirely inside a single agent tool call, so the agent
     loop sees silence between ``tool_call`` and ``tool_result``. This logger
     gives the human (and anyone tailing ``stage_progress.jsonl``) a live
     heartbeat of which media stage is active.
+
+    Writes go to **stderr**, not stdout, so the MCP stdio transport (which
+    uses stdout exclusively for JSON-RPC) stays uncorrupted. The CLI still
+    prints them to the terminal via stderr.
     """
+    import sys as _sys
     progress_path = ctx.run_dir / "stage_progress.jsonl"
 
     def log(action: str, detail: str = "", duration: float | None = None) -> None:
@@ -42,7 +47,10 @@ def _make_xhs_progress_logger(ctx: ToolContext):
             pass
         suffix = f" ({duration:.1f}s)" if duration is not None else ""
         detail_str = f": {detail}" if detail else ""
-        print(f"  [xhs] {action}{detail_str}{suffix}", flush=True)
+        try:
+            print(f"  [xhs] {action}{detail_str}{suffix}", file=_sys.stderr, flush=True)
+        except Exception:
+            pass
 
     return log
 
@@ -462,190 +470,34 @@ def _emit_payload(ctx: ToolContext, label: str, payload: dict) -> str:
     )
 
 
-class ExtractSiteEntityTool(Tool):
-    """Extract normalized entities from supported sites."""
+# ═════════════════════════════════════════════════════════════════════
+# Individual Xiaohongshu tools (former dispatcher tools split into
+# single-purpose Tool classes so the LLM — internal agent or external
+# MCP host — sees a flat list of semantic tools instead of enum actions).
+# ═════════════════════════════════════════════════════════════════════
 
-    def __init__(
-        self,
-        bridge: ExtensionBridge | TabBridge,
-        *,
-        ext_bridge: ExtensionBridge,
-        media: MediaProcessor,
-    ):
-        self._bridge = bridge
-        self._ext_bridge = ext_bridge
-        self._media = media
 
-    name = "extract_site_entity"
-    description = (
-        "Extract a structured entity from the CURRENT page on a supported site. "
-        "Prefer this over raw extract_page_data when you need a normalized XHS "
-        "note/profile with comments, count normalization, OCR, image vision, or "
-        "video transcription. Currently supports Xiaohongshu entities:\n"
-        "- search_cards: visible note cards on a search/profile grid\n"
-        "- note: the OPEN note modal/detail currently on screen\n"
-        "- author_profile: the currently open profile page\n"
-        "Levels:\n"
-        "- card: cheapest metadata only\n"
-        "- lite: normalized note + hot comments\n"
-        "- deep: add image OCR/vision and video transcript/frame understanding\n"
-        "Typical XHS flow:\n"
-        "- after search: extract_site_entity(search_cards)\n"
-        "- after opening a note: extract_site_entity(note, level='lite' or 'deep')\n"
-        "- on a profile page: extract_site_entity(author_profile)\n"
-        "Use raw extract_page_data for low-level actions like click_card / close_note / submit_search_query."
-    )
+async def _require_xhs(bridge: ExtensionBridge | TabBridge, *, navigate_if_needed: bool = False) -> str | None:
+    """Return the current site, or an error string if not Xiaohongshu.
 
-    @property
-    def parameters(self) -> dict:
-        return {
-            "type": "object",
-            "properties": {
-                "entity_type": {
-                    "type": "string",
-                    "enum": ["search_cards", "note", "author_profile"],
-                    "description": "What to extract from the current page.",
-                },
-                "level": {
-                    "type": "string",
-                    "enum": ["card", "lite", "deep"],
-                    "description": (
-                        "Extraction depth. Use lite for body/comments/likes. "
-                        "Use deep only when the extra media cost is justified."
-                    ),
-                    "default": "lite",
-                },
-                "max_comments": {
-                    "type": "integer",
-                    "description": "Max comments to collect for note extraction.",
-                    "default": 4,
-                },
-                "max_images": {
-                    "type": "integer",
-                    "description": "Max images to enrich for image notes.",
-                    "default": 6,
-                },
-                "max_video_frames": {
-                    "type": "integer",
-                    "description": "Max frames to analyze for video notes.",
-                    "default": 4,
-                },
-                "include_comments": {
-                    "type": "boolean",
-                    "description": "Override whether note extraction collects comments.",
-                },
-                "include_media": {
-                    "type": "boolean",
-                    "description": (
-                        "Override whether note extraction runs OCR / vision / transcription. "
-                        "Set false unless image/video analysis is explicitly needed."
-                    ),
-                },
-                "include_notes": {
-                    "type": "boolean",
-                    "description": "For author_profile, whether to also extract the visible note cards.",
-                    "default": True,
-                },
-            },
-            "required": ["entity_type"],
-        }
-
-    async def execute(self, params: dict, ctx: ToolContext) -> str:
-        info = await self._bridge.get_tab_info()
-        current_url = str(info.get("url") or "")
-        site_name = detect_site(current_url)
-        if site_name != "xiaohongshu":
-            return (
-                f"Unsupported site for extract_site_entity: {site_name or 'unknown'} "
-                f"(url={current_url})"
-            )
-
-        adapter = XHSSiteAdapter(
-            self._bridge,
-            ext_bridge=self._ext_bridge,
-            media=self._media,
-            run_dir=ctx.run_dir,
-            log_fn=_make_xhs_progress_logger(ctx),
+    If navigate_if_needed is True and we are off-site, hop to the Xiaohongshu
+    explore page first — used only for search tools where starting the task
+    elsewhere is harmless.
+    """
+    site_name = await _detect_current_site(bridge)
+    if site_name != "xiaohongshu" and navigate_if_needed:
+        await bridge.navigate("https://www.xiaohongshu.com/explore", wait_ms=1500)
+        site_name = await _detect_current_site(bridge)
+    if site_name != "xiaohongshu":
+        return (
+            f"Unsupported site for this tool: {site_name or 'unknown'} "
+            f"(url={await _current_url(bridge)})"
         )
-
-        entity_type = params["entity_type"]
-        level = params.get("level", "lite")
-
-        if entity_type == "search_cards":
-            cards = await adapter.extract_search_cards()
-            payload = {
-                "site": site_name,
-                "entity_type": entity_type,
-                "ok": True,
-                "count": len(cards),
-                "cards": [card.to_tool_dict() for card in cards],
-            }
-            return _emit_payload(ctx, "xhs_search_cards", payload)
-
-        if entity_type == "author_profile":
-            author = await adapter.extract_author_profile(
-                include_notes=params.get("include_notes", True),
-            )
-            screenshot_path = ctx.next_screenshot_path("author_profile")
-            saved = await self._bridge.save_screenshot(screenshot_path)
-            author.screenshot_path = Path(saved).name if saved else ""
-            payload = {
-                "site": site_name,
-                "entity_type": entity_type,
-                "entity": author.to_tool_dict(),
-                "timing": adapter.timing.summary(),
-            }
-            return _emit_payload(ctx, "xhs_author_profile", payload)
-
-        if entity_type == "note":
-            screenshot_path = ctx.next_screenshot_path("note_detail")
-            saved = await self._bridge.save_screenshot(screenshot_path)
-            note = await adapter.extract_note(
-                level=level,
-                max_comments=int(params.get("max_comments", 4)),
-                max_images=int(params.get("max_images", 6)),
-                max_video_frames=int(params.get("max_video_frames", 4)),
-                include_comments=params.get("include_comments"),
-                include_media=params.get("include_media"),
-            )
-            note.screenshot_path = Path(saved).name if saved else ""
-            _fill_missing_note_content_from_screenshot(note, screenshot_path, self._media)
-            payload = {
-                "site": site_name,
-                "entity_type": entity_type,
-                "level": level,
-                "plan": plan_for_level(
-                    level,
-                    max_comments=int(params.get("max_comments", 4)),
-                    max_images=int(params.get("max_images", 6)),
-                    max_video_frames=int(params.get("max_video_frames", 4)),
-                    include_comments=params.get("include_comments"),
-                    include_media=params.get("include_media"),
-                ).to_dict(),
-                "entity": note.to_tool_dict(),
-                "timing": adapter.timing.summary(),
-            }
-            note_label = f"xhs_note_{note.note_id or level}"
-            artifact_rel = _write_payload_artifact(ctx, note_label, payload)
-            _record_processed_note(
-                ctx, note, artifact_rel,
-                include_media=bool(params.get("include_media")),
-            )
-            return json.dumps(
-                _payload_summary(
-                    payload,
-                    artifact_path=artifact_rel,
-                    processed_notes=ctx.processed_notes,
-                ),
-                ensure_ascii=False,
-                indent=2,
-            )
-
-        return f"Unsupported entity_type: {entity_type}"
+    return None
 
 
-class RunSiteActionTool(Tool):
-    """Execute a higher-level site action on supported sites."""
+class _XhsToolBase(Tool):
+    """Shared constructor for XHS site tools."""
 
     def __init__(
         self,
@@ -658,25 +510,33 @@ class RunSiteActionTool(Tool):
         self._ext_bridge = ext_bridge
         self._media = media
 
-    name = "run_site_action"
+    def _adapter(self, ctx: ToolContext) -> XHSSiteAdapter:
+        return _make_xhs_adapter(self._bridge, self._ext_bridge, self._media, ctx)
+
+
+def _clamp_wait(wait_seconds, *, lo: float = 0.0, hi: float = 6.0) -> float:
+    try:
+        value = float(wait_seconds or 0)
+    except (TypeError, ValueError):
+        value = 0.0
+    return max(lo, min(value, hi))
+
+
+# ── Site actions (perform a UI operation; may return cards / state) ──
+
+
+class XhsSearchNotesTool(_XhsToolBase):
+    name = "xhs_search_notes"
     description = (
-        "Run a higher-level site action on the CURRENT supported site. "
-        "Use this to reduce planning overhead on Xiaohongshu when the next step "
-        "is obvious. Supported actions:\n"
-        "- search_notes: submit a search query, self-heal once if needed, and return a compact card summary\n"
-        "- open_search_tab: switch 全部/图文/视频/用户 and return compact visible cards\n"
-        "- open_note: open a card by index or note_id\n"
-        "- read_note: open a note and extract normalized info in one call (full entity is written to disk)\n"
-        "- close_note: close the open note modal\n"
-        "Prefer read_note over manually chaining click_card + wait + extract_site_entity(note). "
-        "Prefer targeting notes by `note_id` (stable) over `index` (position-dependent and can change between searches). "
-        "Every card in tool results includes `note_id`, `title`, and an `already_analyzed` flag; "
-        "skip notes already marked `already_analyzed: true`. "
-        "read_note will short-circuit with skipped=true when the note_id was already extracted at "
-        "the same or deeper (level, include_media) — when that happens, do NOT re-read the same "
-        "note. Move on to a different note_id from `remaining_sampled_note_ids`, or produce the "
-        "final report from the prior artifacts. Only use include_media=true to upgrade a prior "
-        "media-less extraction."
+        "Submit a Xiaohongshu search query through the real search box "
+        "(human-like click + type + Enter) and return the visible result "
+        "cards in one call. Self-heals once if the first submit does not "
+        "transition to search_results. Prefer this over typing a search URL "
+        "directly — URL search navigation frequently hits anti-bot. "
+        "The returned `cards` carry `note_id` (stable across sessions), "
+        "`title`, `author`, `likes`, `position`. "
+        "`note_id` is the stable identifier — prefer it over `position` when "
+        "calling xhs_open_note / xhs_read_note afterward."
     )
 
     @property
@@ -684,200 +544,394 @@ class RunSiteActionTool(Tool):
         return {
             "type": "object",
             "properties": {
-                "action": {
-                    "type": "string",
-                    "enum": ["search_notes", "open_search_tab", "open_note", "read_note", "close_note"],
-                    "description": "The site-level action to run.",
-                },
-                "query": {
-                    "type": "string",
-                    "description": "For search_notes: the search query.",
-                },
+                "query": {"type": "string", "description": "Search keyword."},
                 "tab_label": {
                     "type": "string",
-                    "description": "For open_search_tab/search_notes: 全部, 图文, 视频, 用户, or English aliases.",
-                },
-                "index": {
-                    "type": "integer",
-                    "description": "For open_note/read_note: visible card index to open.",
-                },
-                "note_id": {
-                    "type": "string",
-                    "description": "For open_note/read_note: specific XHS note id.",
-                },
-                "level": {
-                    "type": "string",
-                    "enum": ["card", "lite", "deep"],
-                    "description": (
-                        "For read_note: extraction depth. Use lite for body/comments/likes. "
-                        "Deep may run expensive image/video enrichment unless include_media=false."
-                    ),
-                    "default": "lite",
+                    "description": "Optional: 全部 / 图文 / 视频 / 用户 (English aliases accepted).",
                 },
                 "wait_seconds": {
                     "type": "number",
-                    "description": "Wait after search/open actions. Keep this <= 2 unless retrying.",
-                    "default": 1.5,
-                },
-                "close_after": {
-                    "type": "boolean",
-                    "description": "For read_note: close the note after extraction.",
-                    "default": False,
-                },
-                "max_comments": {
-                    "type": "integer",
-                    "description": "For read_note: max comments to collect.",
-                    "default": 4,
-                },
-                "max_images": {
-                    "type": "integer",
-                    "description": "For read_note: max images to enrich.",
-                    "default": 6,
-                },
-                "max_video_frames": {
-                    "type": "integer",
-                    "description": "For read_note: max video frames to analyze.",
-                    "default": 4,
-                },
-                "include_comments": {
-                    "type": "boolean",
-                    "description": "For read_note: override comment collection.",
-                },
-                "include_media": {
-                    "type": "boolean",
-                    "description": (
-                        "For read_note: override OCR / vision / transcription. "
-                        "Set false unless image/video analysis is explicitly needed."
-                    ),
-                },
-                "force": {
-                    "type": "boolean",
-                    "description": (
-                        "For read_note: escape hatch to force a full re-extraction even "
-                        "when the note was already read at the same or deeper (level, "
-                        "include_media). Reserve for the rare case where the prior "
-                        "artifact is known to be corrupt. Do NOT use this just because a "
-                        "skipped=true response came back — that response already contains "
-                        "the correct next action. Default false."
-                    ),
-                    "default": False,
+                    "description": "Seconds to wait for the search transition. Clamped to [0, 6]. Default 3.",
+                    "default": 3.0,
                 },
             },
-            "required": ["action"],
+            "required": ["query"],
         }
 
     async def execute(self, params: dict, ctx: ToolContext) -> str:
-        action = str(params["action"])
-        site_name = await _detect_current_site(self._bridge)
-        if site_name != "xiaohongshu" and action == "search_notes":
-            await self._bridge.navigate("https://www.xiaohongshu.com/explore", wait_ms=1500)
-            site_name = await _detect_current_site(self._bridge)
-        if site_name != "xiaohongshu":
-            return (
-                f"Unsupported site for run_site_action: {site_name or 'unknown'} "
-                f"(url={await _current_url(self._bridge)})"
-            )
+        err = await _require_xhs(self._bridge, navigate_if_needed=True)
+        if err:
+            return err
+        query = str(params.get("query", "")).strip()
+        if not query:
+            return "xhs_search_notes requires query."
+        adapter = self._adapter(ctx)
+        payload = await adapter.search_notes(
+            query,
+            tab_label=params.get("tab_label"),
+            wait_seconds=_clamp_wait(params.get("wait_seconds", 3.0)),
+        )
+        payload.update({"site": "xiaohongshu", "action": self.name})
+        return _emit_payload(ctx, f"xhs_search_notes_{query}", payload)
 
-        adapter = _make_xhs_adapter(self._bridge, self._ext_bridge, self._media, ctx)
-        wait_seconds = min(max(float(params.get("wait_seconds", 1.5) or 0), 0.0), 2.0)
 
-        if action == "search_notes":
-            query = str(params.get("query", "")).strip()
-            if not query:
-                return "run_site_action(search_notes) requires query."
-            payload = await adapter.search_notes(
-                query,
-                tab_label=params.get("tab_label"),
-                wait_seconds=max(wait_seconds, 0),
-            )
-            payload.update({"site": site_name, "action": action})
-            return _emit_payload(ctx, "xhs_search_notes", payload)
+class XhsOpenSearchTabTool(_XhsToolBase):
+    name = "xhs_open_search_tab"
+    description = (
+        "Switch between Xiaohongshu search-result tabs (全部 / 图文 / 视频 / 用户) "
+        "without re-issuing the search. Returns the cards visible on the new tab. "
+        "Use after xhs_search_notes when the user wants a different slice of results."
+    )
 
-        if action == "open_search_tab":
-            label = str(params.get("tab_label", "")).strip() or "全部"
-            payload = await adapter.open_search_tab(label, wait_seconds=max(wait_seconds, 0))
-            payload.update({"site": site_name, "action": action})
-            return _emit_payload(ctx, f"xhs_search_tab_{label}", payload)
+    @property
+    def parameters(self) -> dict:
+        return {
+            "type": "object",
+            "properties": {
+                "tab_label": {"type": "string", "description": "全部 / 图文 / 视频 / 用户."},
+                "wait_seconds": {
+                    "type": "number",
+                    "description": "Seconds to wait after the tab click. Clamped to [0, 6]. Default 1.5.",
+                    "default": 1.5,
+                },
+            },
+            "required": ["tab_label"],
+        }
 
-        if action == "open_note":
-            payload = await adapter.open_note(
-                index=params.get("index"),
-                note_id=str(params.get("note_id", "")),
-                wait_seconds=max(wait_seconds, 0),
-            )
-            return _emit_payload(ctx, "xhs_open_note", {"site": site_name, "action": action, "result": payload})
+    async def execute(self, params: dict, ctx: ToolContext) -> str:
+        err = await _require_xhs(self._bridge)
+        if err:
+            return err
+        label = str(params.get("tab_label", "")).strip() or "全部"
+        adapter = self._adapter(ctx)
+        payload = await adapter.open_search_tab(label, wait_seconds=_clamp_wait(params.get("wait_seconds", 1.5)))
+        payload.update({"site": "xiaohongshu", "action": self.name})
+        return _emit_payload(ctx, f"xhs_search_tab_{label}", payload)
 
-        if action == "close_note":
-            payload = await adapter.close_note()
-            return _emit_payload(ctx, "xhs_close_note", {"site": site_name, "action": action, "result": payload})
 
-        if action == "read_note":
-            level = str(params.get("level", "lite"))
-            include_media = params.get("include_media")
-            if include_media is None:
-                include_media = False
-            short_circuit = _dedup_short_circuit(
-                ctx,
-                note_id=str(params.get("note_id", "")).strip(),
-                requested_level=level,
-                requested_include_media=bool(include_media),
-                force=bool(params.get("force", False)),
-            )
-            if short_circuit is not None:
-                return short_circuit
-            screenshot_path = ctx.next_screenshot_path("note_detail")
-            note = await adapter.read_note(
-                index=params.get("index"),
-                note_id=str(params.get("note_id", "")),
-                level=level,
+class XhsOpenNoteTool(_XhsToolBase):
+    name = "xhs_open_note"
+    description = (
+        "Click a visible note card to open its detail modal. Does NOT extract "
+        "the note body — pair with xhs_extract_note, or call xhs_read_note "
+        "directly to open + extract in one step. Prefer `note_id` (stable) "
+        "over `index` (shifts between searches)."
+    )
+
+    @property
+    def parameters(self) -> dict:
+        return {
+            "type": "object",
+            "properties": {
+                "note_id": {"type": "string", "description": "Stable note_id from an earlier xhs_search_notes result."},
+                "index": {"type": "integer", "description": "Position of the card in the current grid (0-based). Less stable than note_id."},
+                "wait_seconds": {
+                    "type": "number",
+                    "description": "Seconds to wait for the modal to appear. Clamped to [0, 6]. Default 1.5.",
+                    "default": 1.5,
+                },
+            },
+        }
+
+    async def execute(self, params: dict, ctx: ToolContext) -> str:
+        err = await _require_xhs(self._bridge)
+        if err:
+            return err
+        adapter = self._adapter(ctx)
+        result = await adapter.open_note(
+            index=params.get("index"),
+            note_id=str(params.get("note_id", "")),
+            wait_seconds=_clamp_wait(params.get("wait_seconds", 1.5)),
+        )
+        return _emit_payload(ctx, "xhs_open_note", {"site": "xiaohongshu", "action": self.name, "result": result})
+
+
+class XhsCloseNoteTool(_XhsToolBase):
+    name = "xhs_close_note"
+    description = (
+        "Close the currently open Xiaohongshu note detail modal (clicks the X "
+        "button or dispatches Escape). Always prefer this over reload or "
+        "go_back — reloading costs time, reorders results, and adds anti-bot "
+        "request pressure."
+    )
+
+    @property
+    def parameters(self) -> dict:
+        return {"type": "object", "properties": {}}
+
+    async def execute(self, params: dict, ctx: ToolContext) -> str:
+        err = await _require_xhs(self._bridge)
+        if err:
+            return err
+        adapter = self._adapter(ctx)
+        result = await adapter.close_note()
+        return _emit_payload(ctx, "xhs_close_note", {"site": "xiaohongshu", "action": self.name, "result": result})
+
+
+# ── Macros (multi-step site actions) ──────────────────────────────
+
+
+class XhsReadNoteTool(_XhsToolBase):
+    name = "xhs_read_note"
+    description = (
+        "MACRO: open a note (by note_id or index) AND extract its content in "
+        "a single call. Internally runs: xhs_open_note → wait → "
+        "xhs_extract_note. Prefer this over chaining those yourself.\n\n"
+        "Level semantics:\n"
+        "- card: cheap metadata only\n"
+        "- lite: body + engagement + a few comments (recommended default)\n"
+        "- deep: lite + OCR / vision / video transcription when "
+        "include_media=true\n\n"
+        "The tool short-circuits (skipped=true) when the note was already "
+        "extracted in this run at the same or deeper (level, include_media). "
+        "Respect `skipped=true` — move to a different `note_id` from "
+        "`remaining_sampled_note_ids` rather than passing force=true."
+    )
+
+    @property
+    def parameters(self) -> dict:
+        return {
+            "type": "object",
+            "properties": {
+                "note_id": {"type": "string", "description": "Stable note_id (preferred)."},
+                "index": {"type": "integer", "description": "Card position (less stable)."},
+                "level": {
+                    "type": "string",
+                    "enum": ["card", "lite", "deep"],
+                    "default": "lite",
+                },
+                "max_comments": {"type": "integer", "default": 4},
+                "max_images": {"type": "integer", "default": 6},
+                "max_video_frames": {"type": "integer", "default": 4},
+                "include_comments": {"type": "boolean"},
+                "include_media": {
+                    "type": "boolean",
+                    "description": "Run OCR / vision / transcription. Default false.",
+                },
+                "wait_seconds": {
+                    "type": "number",
+                    "description": "Wait after opening. Clamped to [0, 6]. Default 1.5.",
+                    "default": 1.5,
+                },
+                "close_after": {"type": "boolean", "default": False},
+                "force": {
+                    "type": "boolean",
+                    "description": "Escape hatch to bypass dedup short-circuit. Usually leave false.",
+                    "default": False,
+                },
+            },
+        }
+
+    async def execute(self, params: dict, ctx: ToolContext) -> str:
+        err = await _require_xhs(self._bridge)
+        if err:
+            return err
+        level = str(params.get("level", "lite"))
+        include_media = params.get("include_media")
+        if include_media is None:
+            include_media = False
+        short_circuit = _dedup_short_circuit(
+            ctx,
+            note_id=str(params.get("note_id", "")).strip(),
+            requested_level=level,
+            requested_include_media=bool(include_media),
+            force=bool(params.get("force", False)),
+        )
+        if short_circuit is not None:
+            return short_circuit
+        adapter = self._adapter(ctx)
+        screenshot_path = ctx.next_screenshot_path("note_detail")
+        note = await adapter.read_note(
+            index=params.get("index"),
+            note_id=str(params.get("note_id", "")),
+            level=level,
+            max_comments=int(params.get("max_comments", 4)),
+            max_images=int(params.get("max_images", 6)),
+            max_video_frames=int(params.get("max_video_frames", 4)),
+            include_comments=params.get("include_comments"),
+            include_media=include_media,
+            open_wait_seconds=_clamp_wait(params.get("wait_seconds", 1.5)),
+            close_after=False,
+        )
+        saved = await self._bridge.save_screenshot(screenshot_path)
+        note.screenshot_path = Path(saved).name if saved else ""
+        _fill_missing_note_content_from_screenshot(note, screenshot_path, self._media)
+        if bool(params.get("close_after", False)):
+            try:
+                await adapter.close_note()
+            except Exception:
+                pass
+        payload = {
+            "site": "xiaohongshu",
+            "action": self.name,
+            "level": level,
+            "plan": plan_for_level(
+                level,
                 max_comments=int(params.get("max_comments", 4)),
                 max_images=int(params.get("max_images", 6)),
                 max_video_frames=int(params.get("max_video_frames", 4)),
                 include_comments=params.get("include_comments"),
                 include_media=include_media,
-                open_wait_seconds=max(wait_seconds, 0),
-                close_after=False,
-            )
-            saved = await self._bridge.save_screenshot(screenshot_path)
-            note.screenshot_path = Path(saved).name if saved else ""
-            _fill_missing_note_content_from_screenshot(note, screenshot_path, self._media)
-            if bool(params.get("close_after", False)):
-                try:
-                    await adapter.close_note()
-                except Exception:
-                    pass
-            payload = {
-                "site": site_name,
-                "action": action,
-                "level": level,
-                "plan": plan_for_level(
-                    level,
-                    max_comments=int(params.get("max_comments", 4)),
-                    max_images=int(params.get("max_images", 6)),
-                    max_video_frames=int(params.get("max_video_frames", 4)),
-                    include_comments=params.get("include_comments"),
-                    include_media=include_media,
-                ).to_dict(),
-                "entity": note.to_tool_dict(),
-                "timing": adapter.timing.summary(),
-            }
-            note_label = f"xhs_read_note_{note.note_id or level}"
-            artifact_rel = _write_payload_artifact(ctx, note_label, payload)
-            _record_processed_note(ctx, note, artifact_rel, include_media=bool(include_media))
-            return json.dumps(
-                _payload_summary(
-                    payload,
-                    artifact_path=artifact_rel,
-                    processed_notes=ctx.processed_notes,
-                ),
-                ensure_ascii=False,
-                indent=2,
-            )
-
-        return f"Unsupported action: {action}"
+            ).to_dict(),
+            "entity": note.to_tool_dict(),
+            "timing": adapter.timing.summary(),
+        }
+        note_label = f"xhs_read_note_{note.note_id or level}"
+        artifact_rel = _write_payload_artifact(ctx, note_label, payload)
+        _record_processed_note(ctx, note, artifact_rel, include_media=bool(include_media))
+        return json.dumps(
+            _payload_summary(payload, artifact_path=artifact_rel, processed_notes=ctx.processed_notes),
+            ensure_ascii=False,
+            indent=2,
+        )
 
 
-class XHSTopicScanTool(Tool):
+# ── Extract-only (entity is already on-screen) ────────────────────
+
+
+class XhsExtractSearchCardsTool(_XhsToolBase):
+    name = "xhs_extract_search_cards"
+    description = (
+        "Extract normalized note cards from the current Xiaohongshu search / "
+        "profile grid WITHOUT submitting a new search. Use after a scroll or "
+        "when the user wants to re-rank cards already on screen."
+    )
+
+    @property
+    def parameters(self) -> dict:
+        return {"type": "object", "properties": {}}
+
+    async def execute(self, params: dict, ctx: ToolContext) -> str:
+        err = await _require_xhs(self._bridge)
+        if err:
+            return err
+        adapter = self._adapter(ctx)
+        cards = await adapter.extract_search_cards()
+        payload = {
+            "site": "xiaohongshu",
+            "action": self.name,
+            "entity_type": "search_cards",
+            "ok": True,
+            "count": len(cards),
+            "cards": [card.to_tool_dict() for card in cards],
+        }
+        return _emit_payload(ctx, "xhs_search_cards", payload)
+
+
+class XhsExtractNoteTool(_XhsToolBase):
+    name = "xhs_extract_note"
+    description = (
+        "Extract the currently OPEN Xiaohongshu note modal into a normalized "
+        "entity. Use this when a note is already open (e.g. after xhs_open_note "
+        "or the user clicked one manually). If the note isn't open yet, call "
+        "xhs_read_note instead — that macro opens + extracts in one step."
+    )
+
+    @property
+    def parameters(self) -> dict:
+        return {
+            "type": "object",
+            "properties": {
+                "level": {"type": "string", "enum": ["card", "lite", "deep"], "default": "lite"},
+                "max_comments": {"type": "integer", "default": 4},
+                "max_images": {"type": "integer", "default": 6},
+                "max_video_frames": {"type": "integer", "default": 4},
+                "include_comments": {"type": "boolean"},
+                "include_media": {"type": "boolean"},
+            },
+        }
+
+    async def execute(self, params: dict, ctx: ToolContext) -> str:
+        err = await _require_xhs(self._bridge)
+        if err:
+            return err
+        adapter = self._adapter(ctx)
+        level = str(params.get("level", "lite"))
+        screenshot_path = ctx.next_screenshot_path("note_detail")
+        saved = await self._bridge.save_screenshot(screenshot_path)
+        note = await adapter.extract_note(
+            level=level,
+            max_comments=int(params.get("max_comments", 4)),
+            max_images=int(params.get("max_images", 6)),
+            max_video_frames=int(params.get("max_video_frames", 4)),
+            include_comments=params.get("include_comments"),
+            include_media=params.get("include_media"),
+        )
+        note.screenshot_path = Path(saved).name if saved else ""
+        _fill_missing_note_content_from_screenshot(note, screenshot_path, self._media)
+        payload = {
+            "site": "xiaohongshu",
+            "action": self.name,
+            "entity_type": "note",
+            "level": level,
+            "plan": plan_for_level(
+                level,
+                max_comments=int(params.get("max_comments", 4)),
+                max_images=int(params.get("max_images", 6)),
+                max_video_frames=int(params.get("max_video_frames", 4)),
+                include_comments=params.get("include_comments"),
+                include_media=params.get("include_media"),
+            ).to_dict(),
+            "entity": note.to_tool_dict(),
+            "timing": adapter.timing.summary(),
+        }
+        note_label = f"xhs_note_{note.note_id or level}"
+        artifact_rel = _write_payload_artifact(ctx, note_label, payload)
+        _record_processed_note(ctx, note, artifact_rel, include_media=bool(params.get("include_media")))
+        return json.dumps(
+            _payload_summary(payload, artifact_path=artifact_rel, processed_notes=ctx.processed_notes),
+            ensure_ascii=False,
+            indent=2,
+        )
+
+
+class XhsExtractAuthorProfileTool(_XhsToolBase):
+    name = "xhs_extract_author_profile"
+    description = (
+        "Extract the currently open Xiaohongshu author profile page into a "
+        "normalized entity: follower / following / total_likes + the visible "
+        "note cards. Assumes the profile page is already loaded — does NOT "
+        "navigate to it."
+    )
+
+    @property
+    def parameters(self) -> dict:
+        return {
+            "type": "object",
+            "properties": {
+                "include_notes": {
+                    "type": "boolean",
+                    "description": "Also return the visible note cards. Default true.",
+                    "default": True,
+                },
+            },
+        }
+
+    async def execute(self, params: dict, ctx: ToolContext) -> str:
+        err = await _require_xhs(self._bridge)
+        if err:
+            return err
+        adapter = self._adapter(ctx)
+        author = await adapter.extract_author_profile(
+            include_notes=bool(params.get("include_notes", True)),
+        )
+        screenshot_path = ctx.next_screenshot_path("author_profile")
+        saved = await self._bridge.save_screenshot(screenshot_path)
+        author.screenshot_path = Path(saved).name if saved else ""
+        payload = {
+            "site": "xiaohongshu",
+            "action": self.name,
+            "entity_type": "author_profile",
+            "entity": author.to_tool_dict(),
+            "timing": adapter.timing.summary(),
+        }
+        return _emit_payload(ctx, "xhs_author_profile", payload)
+
+
+# ── XhsTopicScanTool (macro: search + rank + sample deep/lite + summarize) ──
+
+
+class XhsTopicScanTool(Tool):
     """Macro action for Xiaohongshu topic research."""
 
     def __init__(
@@ -1117,3 +1171,43 @@ async def _current_url(bridge: ExtensionBridge | TabBridge) -> str:
 
 async def _detect_current_site(bridge: ExtensionBridge | TabBridge) -> str | None:
     return detect_site(await _current_url(bridge))
+
+
+# ═════════════════════════════════════════════════════════════════════
+# Factory — used by both the internal agent loop and the MCP server to
+# register the same set of Xiaohongshu tools.
+# ═════════════════════════════════════════════════════════════════════
+
+
+def make_xhs_tools(
+    bridge: ExtensionBridge | TabBridge,
+    *,
+    ext_bridge: ExtensionBridge,
+    media: MediaProcessor,
+) -> list[Tool]:
+    """Return all Xiaohongshu tool instances (site actions + extract + macro)."""
+    return [
+        XhsSearchNotesTool(bridge, ext_bridge=ext_bridge, media=media),
+        XhsOpenSearchTabTool(bridge, ext_bridge=ext_bridge, media=media),
+        XhsOpenNoteTool(bridge, ext_bridge=ext_bridge, media=media),
+        XhsCloseNoteTool(bridge, ext_bridge=ext_bridge, media=media),
+        XhsReadNoteTool(bridge, ext_bridge=ext_bridge, media=media),
+        XhsExtractSearchCardsTool(bridge, ext_bridge=ext_bridge, media=media),
+        XhsExtractNoteTool(bridge, ext_bridge=ext_bridge, media=media),
+        XhsExtractAuthorProfileTool(bridge, ext_bridge=ext_bridge, media=media),
+        XhsTopicScanTool(bridge, ext_bridge=ext_bridge, media=media),
+    ]
+
+
+__all__ = [
+    "XhsSearchNotesTool",
+    "XhsOpenSearchTabTool",
+    "XhsOpenNoteTool",
+    "XhsCloseNoteTool",
+    "XhsReadNoteTool",
+    "XhsExtractSearchCardsTool",
+    "XhsExtractNoteTool",
+    "XhsExtractAuthorProfileTool",
+    "XhsTopicScanTool",
+    "make_xhs_tools",
+]

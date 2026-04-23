@@ -37,21 +37,21 @@ def dynamic_extra_instructions(task: str, site_name: str | None, page_state: str
             "Screenshots of each note are saved as evidence either way. "
             "After one representative topic scan plus a few targeted reads if needed, write "
             "the final report instead of repeatedly searching/opening more notes. Otherwise navigate to Xiaohongshu and call "
-            "`run_site_action(action='search_notes', query=...)`. Do not take a "
+            "`xhs_search_notes(query=...)`. Do not take a "
             "generic initial screenshot, do not analyze a screenshot before the "
             "first search, and never search for `小红书网页版` unless the user explicitly asks for that phrase."
         )
     if page_state in {"homepage", "search_results"}:
         parts.append(
-            "On Xiaohongshu homepage/search pages, prefer `run_site_action(search_notes)` "
-            "or `extract_site_entity(entity_type='search_cards')` over manual click/type fallbacks. "
-            "After you choose a card, prefer `run_site_action(action='read_note', ...)`. Only use low-level "
-            "manual tools if a site action explicitly returns manual_fallback_allowed=true."
+            "On Xiaohongshu homepage/search pages, prefer `xhs_search_notes(query=...)` "
+            "or `xhs_extract_search_cards()` over manual click/type fallbacks. "
+            "After you choose a card, prefer `xhs_read_note(note_id=..., level='lite'|'deep')`. "
+            "Only use low-level manual tools if a site action explicitly returns manual_fallback_allowed=true."
         )
     if _task_is_topic_research(task):
         parts.append(
             "For topic research, search first, inspect the visible cards, and then open the most relevant notes "
-            "one by one with `run_site_action(action='read_note', ...)`."
+            "one by one with `xhs_read_note(note_id=...)`."
         )
     parts.append(
         "Each card in Xiaohongshu tool results comes with `note_id`, `title`, and an "
@@ -59,7 +59,7 @@ def dynamic_extra_instructions(task: str, site_name: str | None, page_state: str
         "already marked `already_analyzed: true` or appears in the `already_analyzed_notes` "
         "list — if it does, reuse the prior result instead of re-opening. Target notes by "
         "`note_id` rather than `index` when a note_id is available; indexes shift across "
-        "searches but note_ids are stable. `run_site_action(read_note)` will also "
+        "searches but note_ids are stable. `xhs_read_note` will also "
         "server-side short-circuit (skipped=true) when the note_id was already extracted at "
         "the same or deeper level this run — respect that instead of passing force=true."
     )
@@ -77,11 +77,35 @@ def dynamic_extra_instructions(task: str, site_name: str | None, page_state: str
     return "\n".join(parts)
 
 
+_SEARCH_TOOLS = {
+    "extract_page_data",
+    "xhs_search_notes",
+    "xhs_open_search_tab",
+    "xhs_open_note",
+    "xhs_close_note",
+    "xhs_read_note",
+    "xhs_extract_search_cards",
+    "xhs_topic_scan",
+}
+_NOTE_DETAIL_TOOLS = {
+    "extract_page_data",
+    "xhs_close_note",
+    "xhs_read_note",
+    "xhs_extract_note",
+}
+_PROFILE_TOOLS = {
+    "extract_page_data",
+    "xhs_extract_author_profile",
+    "xhs_extract_search_cards",
+    "xhs_topic_scan",
+}
+
+
 def active_tool_names(page_state: str | None, *, manual_allowed: bool) -> set[str] | None:
     active_names = {"navigate", "go_back"}
 
     if page_state in {None, "", "homepage", "search_results"}:
-        active_names.update({"extract_page_data", "run_site_action", "extract_site_entity", "xhs_topic_scan"})
+        active_names.update(_SEARCH_TOOLS)
         if page_state == "search_results":
             active_names.add("scroll")
         if manual_allowed:
@@ -92,7 +116,7 @@ def active_tool_names(page_state: str | None, *, manual_allowed: bool) -> set[st
         return active_names
 
     if page_state == "note_detail":
-        active_names.update({"extract_page_data", "run_site_action", "extract_site_entity"})
+        active_names.update(_NOTE_DETAIL_TOOLS)
         if manual_allowed:
             active_names.update({
                 "click", "read_page", "run_javascript",
@@ -101,7 +125,7 @@ def active_tool_names(page_state: str | None, *, manual_allowed: bool) -> set[st
         return active_names
 
     if page_state == "profile_page":
-        active_names.update({"extract_page_data", "run_site_action", "extract_site_entity", "xhs_topic_scan"})
+        active_names.update(_PROFILE_TOOLS)
         if manual_allowed:
             active_names.update({
                 "click", "read_page", "run_javascript",

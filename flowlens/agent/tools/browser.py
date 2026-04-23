@@ -416,7 +416,7 @@ class ExtractPageDataTool(Tool):
         "Adapter actions such as `submit_search_query`, `click_card`, and `close_note` are commands, "
         "NOT separate top-level tools. Prefer higher-level site tools when available.\n"
         "Commands (format: command — description — params):\n"
-        "submit_search_query — Low-level search helper; prefer run_site_action(search_notes) at planner level — {keyword}\n"
+        "submit_search_query — Low-level search helper; prefer xhs_search_notes at planner level — {keyword}\n"
         "extract_search_cards — Get note cards from search results — {}\n"
         "click_card — Open a note card by position index — {index}\n"
         "click_note_by_id / click_note_link — Open a visible card by id or URL — {note_id} / {url}\n"

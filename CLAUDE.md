@@ -7,6 +7,8 @@ FlowLens is currently maintained as a layered browser automation framework built
 - Perception utilities in `flowlens.perception`
 - Task understanding and knowledge in `flowlens.reasoning`
 - Platform adapters in `flowlens.platforms`
+- A **unified tool registry** in `flowlens.tools` — single source of truth shared by the internal agent loop and the external MCP server
+- The external **MCP server** in `flowlens.mcp` — `flowlens-mcp` entry point, low-level `mcp.server.Server`
 - Task workflows in `flowlens.workflows`
 - A Chrome extension in `chrome_extension/`
 - A thin Tauri desktop shell in `desktop_app/`
@@ -33,6 +35,10 @@ flowlens/
 │   │   ├── recorder.py               # Session recording
 │   │   ├── reporting.py              # Shared markdown/html rendering
 │   │   └── runtime.py                # Local env / path discovery
+│   ├── tools/                        # UNIFIED TOOL REGISTRY
+│   │   └── registry.py               # build_tools() → flat Tool list shared by agent loop + MCP
+│   ├── mcp/                          # EXTERNAL MCP SERVER
+│   │   └── server.py                 # `flowlens-mcp` entry; low-level mcp.server.Server over stdio
 │   ├── observer/
 │   │   ├── cli.py                    # `python -m flowlens observer ...`
 │   │   ├── paths.py                  # Observer data root / logs / screenshot paths
@@ -52,11 +58,11 @@ flowlens/
 │   │   ├── task_agent.py             # Generic task understanding / assessment
 │   │   ├── tasks.py                  # Structured task definitions
 │   │   └── knowledge/                # Reusable knowledge extraction + loading
-│   ├── agent/                        # LLM-driven agent loop, tools, backends, knowledge-aware system prompt
+│   ├── agent/                        # Internal LLM-driven agent loop, backends, generic browser/vision/state tool classes
 │   ├── knowledge/sites/              # Per-site YAML knowledge files loaded into the agent prompt
 │   ├── platforms/
 │   │   ├── wechat/                   # WeChat macOS app helpers
-│   │   └── xhs/                      # Xiaohongshu entities, capability catalog, multimodal processor
+│   │   └── xhs/                      # Xiaohongshu adapter (processor.py) + 9 individual site Tool classes (tools.py)
 │   └── workflows/
 │       └── wechat/                   # WeChat chat-summary workflow
 ├── tests/
@@ -186,12 +192,32 @@ New generic capabilities (background windows, dedup, session recording) belong i
 
 ## Runtime Flow
 
+FlowLens has **two LLM consumers** that share a single tool surface:
+
+- **Internal agent** (`flowlens.agent.loop.run_agent`) — FlowLens provides the LLM (Anthropic / OpenAI / Kimi / Qwen / local MLX) and drives the full plan→act→report loop itself.
+- **External MCP host** (`flowlens-mcp`) — the host's LLM (Claude Desktop / Cursor / Claude Code) plans, FlowLens only executes tool calls.
+
+Both consumers enumerate the same list from `flowlens.tools.build_tools(...)`:
+25 tool classes = 11 generic browser + 3 state + 2 vision + 9 Xiaohongshu (site).
+
+### Internal agent flow
+
 1. Python starts a local WebSocket server.
 2. The Chrome extension connects from the logged-in browser profile.
-3. `flowlens.agent.loop.run_agent` builds a system prompt from generic browser/vision tools plus per-site knowledge loaded from `flowlens/knowledge/sites/*.yaml`.
-4. The agent loop drives an LLM (Anthropic Sonnet by default, or local MLX backends via `--backend qwen-local` / `--backend ui-tars-local`) through a `tool_use → execute → feed back result` cycle until the LLM returns a final text report.
-5. Tool calls go through `flowlens.core.bridge` (CDP + extension messaging) and the extension's content scripts. Low-level site helpers live behind `extract_page_data`; mid-level site actions flow through `run_site_action`; normalized per-site entities and multimodal enrichment flow through `extract_site_entity`.
-6. The agent writes screenshots, `report.md`, `agent_log.json`, `reasoning_log.jsonl`, and `resource_log.jsonl` into `task_runs/agent_<timestamp>_<slug>/` (or a custom run dir).
+3. `run_agent` builds the tool list via `flowlens.tools.build_tools(...)` plus per-site knowledge from `flowlens/knowledge/sites/*.yaml`, and composes a system prompt.
+4. The agent loop drives an LLM through a `tool_use → execute → feed back result` cycle until the LLM returns a final text report.
+5. Tool calls go through `flowlens.core.bridge` (CDP + extension messaging) and the extension's content scripts.
+   - Low-level site helpers live behind `extract_page_data`.
+   - Site-specific macros and extractors live as individual Tool classes in `flowlens/platforms/xhs/tools.py` (`xhs_topic_scan`, `xhs_read_note`, `xhs_search_notes`, `xhs_open_note`, `xhs_close_note`, `xhs_extract_note`, `xhs_extract_search_cards`, `xhs_extract_author_profile`, `xhs_open_search_tab`).
+6. The agent writes screenshots, `report.md`, `agent_log.json`, `reasoning_log.jsonl`, and `resource_log.jsonl` into `task_runs/agent_<timestamp>_<slug>/`.
+
+### External MCP flow
+
+1. Claude Desktop / Cursor spawns `flowlens-mcp` via stdio.
+2. On the first tool call, `flowlens.mcp.server` lazily starts the bridge and waits for the extension to connect (same bridge as CLI — so they cannot run simultaneously on the same port).
+3. `list_tools` returns the full tool catalog straight from each Tool's `.name / .description / .parameters` — no re-definition, no schema drift.
+4. `call_tool` invokes `Tool.execute(params, ctx)` and returns the result as MCP `TextContent`.
+5. Artifacts and screenshots land in a session run dir under the system tmpdir (`flowlens_mcp_<timestamp>/`).
 
 Observer runtime flow:
 
@@ -331,24 +357,39 @@ Backend can also be set per-instance via `MediaConfig(backend="qwen-local")` or
 
 ## Running
 
-Primary CLI — every free-form prompt now goes through the generic agent loop:
+### Internal agent (FlowLens is the LLM consumer)
 
 ```bash
 flowlens "在小红书上调研露营装备"
 flowlens agent "在小红书上调研露营装备" --backend qwen-local
+flowlens xhs search "露营装备"
+flowlens xhs note "https://www.xiaohongshu.com/explore/..."
 flowlens extension reload
 ```
 
-Equivalent module form:
+Module form also works: `python -m flowlens ...`, `python -m flowlens observer status`, etc.
+
+### External MCP server (host LLM is the consumer)
+
+Launched as a subprocess by an MCP host (Claude Desktop / Cursor / Claude Code):
+
+```json
+{
+  "mcpServers": {
+    "flowlens": {
+      "command": "flowlens-mcp"
+    }
+  }
+}
+```
+
+Override the bridge port if 8765 is in use:
 
 ```bash
-python -m flowlens "在小红书上调研露营装备"
-python -m flowlens agent "在小红书上调研露营装备"
-python -m flowlens extension reload
-python -m flowlens observer status
-python -m flowlens observer capture-once
-python -m flowlens observer install-agent
+FLOWLENS_MCP_PORT=8766 flowlens-mcp
 ```
+
+The MCP server and the internal CLI cannot run at the same time on the same port — they share the bridge.
 
 Watch-mode live debugging:
 

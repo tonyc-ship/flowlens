@@ -1,6 +1,6 @@
 """XHS agent tool helpers."""
 
-from flowlens.platforms.xhs.agent_tools import _content_from_note_ocr
+from flowlens.platforms.xhs.tools import _content_from_note_ocr
 
 
 def test_extract_note_content_from_screenshot_ocr_lines() -> None:

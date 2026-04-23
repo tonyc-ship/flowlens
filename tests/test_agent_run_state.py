@@ -216,7 +216,7 @@ class ActiveToolSelectionTest(unittest.TestCase):
     def test_site_tool_filter_keeps_always_available_state_tools(self) -> None:
         tools = [
             _DummyTool("navigate"),
-            _DummyTool("run_site_action"),
+            _DummyTool("xhs_search_notes"),
             _DummyTool("update_task_plan", always_available=True),
         ]
 
@@ -229,7 +229,7 @@ class ActiveToolSelectionTest(unittest.TestCase):
         )
 
         selected_names = {tool.name for tool in selected}
-        self.assertIn("run_site_action", selected_names)
+        self.assertIn("xhs_search_notes", selected_names)
         self.assertIn("update_task_plan", selected_names)
 
 
