@@ -363,7 +363,7 @@ class XHSSiteAdapter:
             }
         await asyncio.sleep(0.2)
         await self.bridge.press_key("Enter")
-        state = await self._wait_for_search_transition(query, timeout_s=max(1.2, min(wait_seconds, 2.0)))
+        state = await self._wait_for_search_transition(query, timeout_s=max(1.2, min(wait_seconds, 6.0)))
         if self._search_transition_ok(state, query):
             return {
                 "ok": True,
@@ -376,7 +376,7 @@ class XHSSiteAdapter:
         submit_pos = loc.get("submit") or {}
         if submit_pos.get("x") and submit_pos.get("y"):
             await self.bridge.click_at(int(submit_pos["x"]), int(submit_pos["y"]))
-            state = await self._wait_for_search_transition(query, timeout_s=max(1.2, min(wait_seconds, 2.0)))
+            state = await self._wait_for_search_transition(query, timeout_s=max(1.2, min(wait_seconds, 6.0)))
             if self._search_transition_ok(state, query):
                 return {
                     "ok": True,
@@ -402,7 +402,7 @@ class XHSSiteAdapter:
         tab_label: str | None = None,
         wait_seconds: float = 4.0,
     ) -> dict:
-        effective_wait = max(0.8, min(float(wait_seconds or 0), 2.0))
+        effective_wait = max(0.8, min(float(wait_seconds or 0), 6.0))
 
         t0 = time.time()
         submit = await self._manual_search_submit(query, wait_seconds=effective_wait)

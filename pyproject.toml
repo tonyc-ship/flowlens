@@ -48,7 +48,7 @@ dev = [
 
 [project.scripts]
 flowlens = "flowlens.cli:main"
-flowlens-mcp = "flowlens.mcp_server:main"
+flowlens-mcp = "flowlens.mcp.server:main"
 
 [build-system]
 requires = ["hatchling"]
