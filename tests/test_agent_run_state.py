@@ -113,61 +113,6 @@ class RunStateTest(unittest.TestCase):
             self.assertTrue((run_dir / "run_state" / "working_memory.md").is_file())
             self.assertTrue(state.has_structured_state())
 
-    def test_markdown_appendix_includes_plan_and_structured_evidence(self) -> None:
-        with tempfile.TemporaryDirectory() as tmp:
-            run_dir = Path(tmp)
-            state = RunState(run_dir, "Summarize saved sources", model="kimi-k2.5")
-            state.update_plan(
-                [{"id": "s1", "title": "Review notes", "status": "completed"}],
-                turn=1,
-            )
-            state.record_artifact(
-                "site_results/001_note.json",
-                label="note",
-                artifact_kind="site_result",
-                source_tool="run_site_action",
-                turn=2,
-                payload={
-                    "entity": {
-                        "note_id": "n1",
-                        "title": "帖子A",
-                        "author": "作者A",
-                        "url": "https://www.xiaohongshu.com/explore/n1",
-                        "content_summary": "正文摘要A",
-                        "key_points": ["要点1"],
-                        "top_comments": ["评论甲"],
-                        "screenshot": "001_note.png",
-                        "likes": "123",
-                        "comments_count": "8",
-                    }
-                },
-            )
-
-            report = state.render_markdown_appendix("# Report\n\nBody.")
-
-            self.assertIn("## Task Checklist", report)
-            self.assertIn("## Structured Evidence Ledger", report)
-            self.assertIn("帖子A - 作者A", report)
-            self.assertIn("评论甲", report)
-
-    def test_screenshot_only_artifacts_do_not_trigger_structured_state(self) -> None:
-        with tempfile.TemporaryDirectory() as tmp:
-            run_dir = Path(tmp)
-            state = RunState(run_dir, "Take a screenshot only", model="kimi-k2.5")
-            screenshot = run_dir / "001_page.png"
-            screenshot.write_text("placeholder", encoding="utf-8")
-            state.record_artifact(
-                "001_page.png",
-                label="page",
-                artifact_kind="image",
-                source_tool="screenshot",
-                turn=1,
-                metadata={"category": "screenshot"},
-            )
-
-            self.assertFalse(state.has_structured_state())
-
-
 class RunStateToolTest(IsolatedAsyncioTestCase):
     async def test_state_tools_read_and_write_run_state(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:

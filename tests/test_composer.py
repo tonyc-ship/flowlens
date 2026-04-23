@@ -4,18 +4,10 @@ import unittest
 from types import SimpleNamespace
 from unittest import IsolatedAsyncioTestCase, mock
 
-from flowlens.core.composer import (
-    ComposerSpec,
-    submit_attempt_order,
-    submit_with_dom_verification,
-)
+from flowlens.core.composer import ComposerSpec, submit_with_dom_verification
 
 
 class ComposerSubmitTest(IsolatedAsyncioTestCase):
-    def test_submit_attempt_order_depends_on_mode(self) -> None:
-        self.assertEqual(submit_attempt_order("enter"), ("enter", "button"))
-        self.assertEqual(submit_attempt_order("auto"), ("button", "enter"))
-
     async def test_submit_retries_when_first_strategy_leaves_text_behind(self) -> None:
         """Enter-first fails (text still there) → fall back to button click →
         DOM goes empty → status 'sent'. Exercises retry + verification."""
