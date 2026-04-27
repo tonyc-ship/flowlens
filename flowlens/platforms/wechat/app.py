@@ -57,6 +57,18 @@ def normalize_wechat_title(text: str) -> str:
     return cleaned.strip()
 
 
+def _usable_title_text(text: str) -> bool:
+    text = str(text or "").strip()
+    if not text or text.casefold() == "search":
+        return False
+    return bool(normalize_wechat_title(text))
+
+
+def _title_sort_key(item) -> tuple[int, int, float]:
+    normalized = normalize_wechat_title(item.text)
+    return (len(normalized), len(str(item.text or "").strip()), float(item.confidence or 0.0))
+
+
 class WeChatDesktopApp:
     """High-level WeChat interactions with OCR-first targeting."""
 
@@ -88,27 +100,46 @@ class WeChatDesktopApp:
     def capture_state(self) -> tuple[WindowInfo, Image.Image, OCRPage]:
         return self.session.capture_ocr_page(visible_only=True)
 
+    def _open_state(self, expected_name: str = "") -> dict:
+        _, image, page = self.capture_state()
+        title = self.read_open_conversation_title(page)
+        normalized_expected = normalize_wechat_title(expected_name)
+        normalized_title = normalize_wechat_title(title)
+        title_matches = not normalized_expected or normalized_expected in normalized_title
+        visible = self.conversation_visible(image, page)
+        return {
+            "opened": bool(visible and title_matches),
+            "visible": bool(visible),
+            "title": title,
+            "title_matches": bool(title_matches),
+        }
+
+    def _wait_for_open_state(self, expected_name: str = "", *, timeout_s: float = 3.0) -> dict:
+        deadline = time.monotonic() + timeout_s
+        last: dict = {"opened": False, "visible": False, "title": "", "title_matches": False}
+        while True:
+            last = self._open_state(expected_name)
+            if last.get("opened"):
+                return last
+            if time.monotonic() >= deadline:
+                return last
+            time.sleep(0.25)
+
     def read_open_conversation_title(self, page: OCRPage | None = None) -> str:
         if page is None:
             _, _, page = self.capture_state()
-        candidates = sorted(
-            page.within(WECHAT_HEADER_REGION),
-            key=lambda item: (-item.confidence, -(len(item.text))),
-        )
+        candidates = sorted(page.within(WECHAT_HEADER_REGION), key=_title_sort_key, reverse=True)
         for item in candidates:
             text = item.text.strip()
-            if text and text.casefold() not in {"search"}:
+            if _usable_title_text(text):
                 return text
 
         # Full-window title fallback is only safe when the right pane already
         # looks like a chat body; otherwise sidebar rows can be mistaken as titles.
-        full_candidates = sorted(
-            page.within(WECHAT_FULL_TITLE_REGION),
-            key=lambda item: (-item.confidence, -(len(item.text))),
-        )
+        full_candidates = sorted(page.within(WECHAT_FULL_TITLE_REGION), key=_title_sort_key, reverse=True)
         for item in full_candidates:
             text = item.text.strip()
-            if text and text.casefold() not in {"search"} and self._full_window_chat_like(page):
+            if _usable_title_text(text) and self._full_window_chat_like(page):
                 return text
         return ""
 
@@ -151,12 +182,37 @@ class WeChatDesktopApp:
         if not target:
             return {"opened": False, "method": "current_conversation", "match": ""}
 
+        current = self._open_state(target)
+        if current.get("opened"):
+            return {
+                "opened": True,
+                "method": "already_open",
+                "match": current.get("title", ""),
+                "title": current.get("title", ""),
+            }
+
         direct = self.session.click_text(target, region=WECHAT_SIDEBAR_REGION)
         if direct is not None:
-            time.sleep(1.0)
-            _, image, page = self.capture_state()
-            if self.conversation_visible(image, page):
-                return {"opened": True, "method": "sidebar_ocr", "match": direct.text}
+            state = self._wait_for_open_state(target, timeout_s=2.0)
+            if state.get("opened"):
+                return {
+                    "opened": True,
+                    "method": "sidebar_ocr",
+                    "match": direct.text,
+                    "title": state.get("title", ""),
+                }
+
+            # Some WeChat rows OCR as a short text fragment; clicking the text
+            # center can miss the row activation target. Retry the whole row.
+            self.session.click_relative(0.17, direct.center_y, clicks=2)
+            state = self._wait_for_open_state(target, timeout_s=2.5)
+            if state.get("opened"):
+                return {
+                    "opened": True,
+                    "method": "sidebar_row_retry",
+                    "match": direct.text,
+                    "title": state.get("title", ""),
+                }
 
         search = (
             self.session.click_text("Search", region=WECHAT_SEARCH_REGION)
@@ -167,18 +223,32 @@ class WeChatDesktopApp:
         time.sleep(0.2)
         self.controller.hotkey("command", "a")
         self.controller.paste_text(target)
-        self.controller.press_key("enter")
-        time.sleep(1.5)
+        time.sleep(0.8)
 
-        # Search can either open the chat directly or surface a result row.
-        followup = self.session.click_text(target)
+        # Search can either surface a result row or open the chat on Enter.
+        followup = self.session.click_text(target, region=WECHAT_SIDEBAR_REGION) or self.session.click_text(target)
         if followup is not None:
-            time.sleep(0.8)
-        _, image, page = self.capture_state()
+            state = self._wait_for_open_state(target, timeout_s=2.5)
+            if not state.get("opened"):
+                self.session.click_relative(0.17, followup.center_y, clicks=2)
+                state = self._wait_for_open_state(target, timeout_s=2.5)
+            if state.get("opened"):
+                return {
+                    "opened": True,
+                    "method": "search_result_ocr",
+                    "match": followup.text,
+                    "title": state.get("title", ""),
+                }
+
+        self.controller.press_key("enter")
+        state = self._wait_for_open_state(target, timeout_s=2.5)
         return {
-            "opened": self.conversation_visible(image, page) and self.ensure_conversation_title(target),
+            "opened": bool(state.get("opened")),
             "method": "search_then_ocr",
             "match": followup.text if followup is not None else target,
+            "title": state.get("title", ""),
+            "visible": state.get("visible", False),
+            "title_matches": state.get("title_matches", False),
         }
 
     def open_first_visible_conversation(self) -> dict:
@@ -264,6 +334,17 @@ class WeChatDesktopApp:
         if len(unique_hits) >= 2:
             return True
 
+        sidebar_lines = [
+            item for item in page.within(WECHAT_SIDEBAR_REGION)
+            if item.text.strip() and item.center_y < 0.93
+        ]
+        search_hit = (
+            page.best_text_match("Search", region=WECHAT_SEARCH_REGION, exact=False)
+            or page.best_text_match("搜索", region=WECHAT_SEARCH_REGION, exact=False)
+        )
+        if search_hit is not None and len(sidebar_lines) >= 3:
+            return True
+
         if self.vision is None:
             return False
         response = self.vision.analyze_page(
@@ -280,7 +361,7 @@ class WeChatDesktopApp:
     def _entry_panel_visible(self, page: OCRPage) -> bool:
         return any(page.best_text_match(token, exact=False) is not None for token in _WECHAT_ENTRY_TOKENS)
 
-    def scroll_history_up(self, *, repeats: int = 6, line_delta: int = 8) -> tuple[int, int]:
+    def scroll_history_up(self, *, repeats: int = 10, line_delta: int = 12) -> tuple[int, int]:
         return self.session.scroll_lines(
             line_delta,
             x=WECHAT_SCROLL_X,

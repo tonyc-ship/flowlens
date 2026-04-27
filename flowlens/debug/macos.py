@@ -323,10 +323,15 @@ function run(argv) {
     ) -> WindowInfo | None:
         if visible_only:
             front = self.front_window(app_name)
-            if front is None:
-                return None
-            matched = self._match_quartz_window(front, app_name=app_name)
-            return matched or front
+            matched = self._match_quartz_window(front, app_name=app_name) if front is not None else None
+            preferred = matched or front
+            if preferred is not None and preferred.width >= 500 and preferred.height >= 400:
+                return preferred
+
+            windows = self.list_windows(app_name=app_name, title_contains=title_contains)
+            if windows:
+                return windows[0]
+            return preferred
 
         windows = self.list_windows(app_name=app_name, title_contains=title_contains)
         if not windows:

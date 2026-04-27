@@ -12,6 +12,7 @@ from ...core.watch import JSONLWatchSink, MemoryWatchSink, WatchEvent, WatchRunt
 from ...perception.llm import VisionLLM
 from ...perception.media import MediaConfig, MediaProcessor
 from ...platforms.wechat import WeChatConversationParser, WeChatDesktopApp
+from ...platforms.wechat.app import normalize_wechat_title
 from ...platforms.wechat.models import WeChatMessage, WeChatParsedCapture
 from ...platforms.wechat.vision_profiles import WECHAT_PARSE_FALLBACK, WECHAT_UI_SIMPLE_CHECK
 from ...reasoning.tasks import StructuredTask
@@ -49,6 +50,15 @@ def _merge_date_markers(captures: list[WeChatParsedCapture]) -> list[str]:
     return merged
 
 
+def _best_conversation_title(captures: list[WeChatParsedCapture], fallback: str = "") -> str:
+    candidates = [str(fallback or "").strip()]
+    candidates.extend(str(item.conversation_title or "").strip() for item in captures)
+    usable = [item for item in candidates if normalize_wechat_title(item)]
+    if not usable:
+        return fallback or "未识别会话"
+    return max(usable, key=lambda item: (len(normalize_wechat_title(item)), len(item)))
+
+
 class WeChatChatSummaryRunner:
     """Execute a local-only WeChat chat summary task."""
 
@@ -56,10 +66,10 @@ class WeChatChatSummaryRunner:
         self,
         *,
         output_root: str | Path | None = None,
-        llm_backend: str = "qwen-local",
+        llm_backend: str = "sonnet",
     ):
         self.output_root = Path(output_root) if output_root is not None else (task_runs_root() / "wechat_summary")
-        self.llm_backend = "qwen-local" if llm_backend != "qwen-local" else llm_backend
+        self.llm_backend = str(llm_backend or "sonnet").strip() or "sonnet"
         self.media = MediaProcessor(
             MediaConfig(
                 backend=self.llm_backend,
@@ -73,6 +83,10 @@ class WeChatChatSummaryRunner:
         self.parser = WeChatConversationParser(vision=self.vision)
         self.agent = WeChatSummaryAgent(self.media)
         self.watch_runtime: WatchRuntime | None = None
+
+    @staticmethod
+    def _allow_9b_fallback(capture_index: int, *, fast_mode: bool = True) -> bool:
+        return (not fast_mode) or capture_index < 2 or capture_index % 3 == 0
 
     async def run(self, task: StructuredTask) -> dict:
         task_dir = self.output_root / f"{task.slug()}_{_timestamp()}"
@@ -91,7 +105,7 @@ class WeChatChatSummaryRunner:
             self._notify_user(
                 title="FlowLens 正在接管微信",
                 message="即将控制鼠标和键盘采集聊天记录，请暂时不要操作微信窗口。",
-                subtitle=conversation or "当前会话",
+                subtitle=conversation or "未识别会话",
             )
             self._watch(
                 WatchEvent(
@@ -101,19 +115,20 @@ class WeChatChatSummaryRunner:
                     metadata={"control_active": True, "conversation": conversation},
                 )
             )
-            self._watch_action("model_preload", "预热本地 Qwen 2B / 9B 模型")
-            self.vision.preload_local_model(WECHAT_UI_SIMPLE_CHECK.local_model_name)
-            self.vision.preload_local_model(WECHAT_PARSE_FALLBACK.local_model_name)
+            if self.llm_backend == "qwen-local":
+                self._watch_action("model_preload", "预热本地 Qwen 2B / 9B 模型")
+                self.vision.preload_local_model(WECHAT_UI_SIMPLE_CHECK.local_model_name)
+                self.vision.preload_local_model(WECHAT_PARSE_FALLBACK.local_model_name)
 
             if conversation:
                 self._watch_action("open_conversation", f"打开会话：{conversation}")
                 open_result = self.app.open_conversation(conversation)
             else:
                 self._watch_action("open_conversation", "复用当前已打开会话，必要时回退到首个可见会话")
-                _, image, _ = self.app.capture_state()
+                _, image, page = self.app.capture_state()
                 open_result = (
                     {"opened": False, "method": "current_conversation", "match": ""}
-                    if self.app.conversation_visible(image)
+                    if self.app.conversation_visible(image, page)
                     else self.app.open_first_visible_conversation()
                 )
 
@@ -138,7 +153,7 @@ class WeChatChatSummaryRunner:
                 _, image, ocr_page = self.app.capture_state()
                 image.save(screenshot_path, quality=95)
 
-                if not self.app.conversation_visible(image):
+                if not self.app.conversation_visible(image, ocr_page):
                     raise RuntimeError(
                         "WeChat right pane does not show an open conversation. "
                         "Pass a conversation name or open one before running the task."
@@ -149,6 +164,7 @@ class WeChatChatSummaryRunner:
                     screenshot_path=screenshot_path,
                     image=image,
                     ocr_page=ocr_page,
+                    allow_9b_fallback=self._allow_9b_fallback(capture_index),
                 )
                 self._watch_think(
                     phase="parse",
@@ -182,11 +198,36 @@ class WeChatChatSummaryRunner:
                         self.app.scroll_history_up()
                     continue
 
-                decision = self.agent.decide_collection(
-                    task,
-                    captures,
-                    consecutive_stale=consecutive_stale,
-                )
+                current_unique_messages = len(known_message_keys)
+                current_date_markers = len(_merge_date_markers(captures))
+                if consecutive_stale >= 2:
+                    break
+                if (
+                    current_unique_messages >= 48
+                    and current_date_markers >= 2
+                    and new_messages <= 2
+                ):
+                    self._watch_think(
+                        phase="collect",
+                        observation=f"capture={capture_index:02d} coverage={current_unique_messages}msgs/{current_date_markers}dates",
+                        reasoning="已覆盖较多唯一消息和多个时间分隔，当前新增内容很少。",
+                        decision="停止继续采集",
+                    )
+                    break
+
+                should_ask_agent = capture_index == (min_capture_rounds - 1) or capture_index % 2 == 1
+                if should_ask_agent:
+                    decision = self.agent.decide_collection(
+                        task,
+                        captures,
+                        consecutive_stale=consecutive_stale,
+                    )
+                else:
+                    decision = self.agent.decide_collection(
+                        task,
+                        captures[-2:],
+                        consecutive_stale=consecutive_stale,
+                    )
                 decisions.append({
                     "capture_index": capture_index,
                     "continue_collection": decision.continue_collection,
@@ -205,12 +246,13 @@ class WeChatChatSummaryRunner:
                 )
                 if consecutive_stale >= 2 or not decision.continue_collection:
                     break
-                self._watch_action("scroll", f"向上滚动 {max(4, decision.scroll_batches * 4)} 次")
-                self.app.scroll_history_up(repeats=max(4, decision.scroll_batches * 4))
+                scroll_repeats = max(8, decision.scroll_batches * 8)
+                self._watch_action("scroll", f"向上滚动 {scroll_repeats} 次")
+                self.app.scroll_history_up(repeats=scroll_repeats, line_delta=12)
 
             merged_messages = _merge_messages(captures)
             date_markers = _merge_date_markers(captures)
-            conversation_title = captures[-1].conversation_title if captures else conversation or "当前会话"
+            conversation_title = _best_conversation_title(captures, conversation or "未识别会话")
             self._watch_action("summarize", f"开始生成总结，累计消息 {len(merged_messages)} 条")
             summary_markdown = self.agent.summarize(
                 task,
@@ -297,7 +339,7 @@ class WeChatChatSummaryRunner:
             self._notify_user(
                 title="FlowLens 已释放微信控制",
                 message="聊天采集阶段已结束，现在可以恢复手动操作。",
-                subtitle=conversation or "当前会话",
+                subtitle=conversation or "未识别会话",
             )
 
     @staticmethod

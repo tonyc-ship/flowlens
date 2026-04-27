@@ -42,7 +42,7 @@ type WatchEvent = {
 };
 
 type AppMode = "xhs" | "wechat";
-type XhsModelMode = "cloud" | "local9b";
+type ModelMode = "cloud" | "local9b";
 
 type State = {
   health: HealthStatus | null;
@@ -53,7 +53,7 @@ type State = {
   recentTasks: TaskStub[];
   launchError: string;
   mode: AppMode;
-  xhsModelMode: XhsModelMode;
+  modelMode: ModelMode;
   wechatConversation: string;
   wechatLaunching: boolean;
   wechatLaunchError: string;
@@ -68,7 +68,7 @@ const state: State = {
   recentTasks: [],
   launchError: "",
   mode: "xhs",
-  xhsModelMode: "cloud",
+  modelMode: "cloud",
   wechatConversation: "",
   wechatLaunching: false,
   wechatLaunchError: "",
@@ -137,7 +137,14 @@ function renderWeChatMode(): string {
         <h1>Summarize WeChat Chat</h1>
 
         <div class="composer wechat-composer">
-          <div class="wechat-stack-pill">Local Qwen 2B UI + 9B Agent</div>
+          <div class="xhs-model-tabs">
+            <button class="model-tab ${state.modelMode === "cloud" ? "active" : ""}" data-model-mode="cloud">
+              Cloud Claude Sonnet
+            </button>
+            <button class="model-tab ${state.modelMode === "local9b" ? "active" : ""}" data-model-mode="local9b">
+              Local Qwen 3.5 9B
+            </button>
+          </div>
 
           <textarea
             id="wechat-conversation-input"
@@ -208,10 +215,10 @@ function renderXhsMode(): string {
 
         <div class="composer">
           <div class="xhs-model-tabs">
-            <button class="model-tab ${state.xhsModelMode === "cloud" ? "active" : ""}" data-xhs-model="cloud">
+            <button class="model-tab ${state.modelMode === "cloud" ? "active" : ""}" data-model-mode="cloud">
               Cloud Claude Sonnet
             </button>
-            <button class="model-tab ${state.xhsModelMode === "local9b" ? "active" : ""}" data-xhs-model="local9b">
+            <button class="model-tab ${state.modelMode === "local9b" ? "active" : ""}" data-model-mode="local9b">
               Local Qwen 3.5 9B
             </button>
           </div>
@@ -283,6 +290,13 @@ function bindCommonEvents(app: HTMLElement) {
   for (const button of app.querySelectorAll<HTMLButtonElement>("[data-mode]")) {
     button.addEventListener("click", () => {
       state.mode = button.dataset.mode as AppMode;
+      render();
+    });
+  }
+
+  for (const button of app.querySelectorAll<HTMLButtonElement>("[data-model-mode]")) {
+    button.addEventListener("click", () => {
+      state.modelMode = (button.dataset.modelMode as ModelMode) || "cloud";
       render();
     });
   }
@@ -365,13 +379,6 @@ function bindXhsEvents(app: HTMLElement) {
       state.prompt = button.dataset.preset || "";
       render();
       app.querySelector<HTMLTextAreaElement>("#task-input")?.focus();
-    });
-  }
-
-  for (const button of app.querySelectorAll<HTMLButtonElement>("[data-xhs-model]")) {
-    button.addEventListener("click", () => {
-      state.xhsModelMode = (button.dataset.xhsModel as XhsModelMode) || "cloud";
-      render();
     });
   }
 
@@ -471,7 +478,7 @@ async function startTask() {
   try {
     const task = await invoke<TaskStub>("start_task", {
       prompt: state.prompt.trim(),
-      modelMode: state.xhsModelMode,
+      modelMode: state.modelMode,
     });
     state.recentTasks = [task, ...state.recentTasks].slice(0, 4);
     state.prompt = "";
@@ -498,7 +505,7 @@ async function startWeChatTask() {
   try {
     const task = await invoke<TaskStub>("start_task", {
       prompt,
-      modelMode: "local9b",
+      modelMode: state.modelMode,
     });
     state.recentTasks = [task, ...state.recentTasks.filter((item) => item.id !== task.id)].slice(0, 8);
     startTaskPolling();

@@ -30,6 +30,7 @@ class ToolContext:
     topic_scan_note_ids: list = field(default_factory=list)
     turn: int = 0
     active_tool_name: str = ""
+    active_capability_packs: set[str] = field(default_factory=set)
 
     def next_screenshot_path(self, label: str = "screenshot") -> Path:
         self.screenshot_counter += 1

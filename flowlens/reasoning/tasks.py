@@ -137,7 +137,7 @@ def make_wechat_chat_summary_task(
     max_scroll_rounds: int = 12,
     min_capture_rounds: int = 3,
 ) -> StructuredTask:
-    target = conversation or "当前会话"
+    target = conversation or "未识别会话"
     return StructuredTask(
         kind=TaskKind.WECHAT_CHAT_SUMMARY,
         title=f"微信会话总结：{target}",

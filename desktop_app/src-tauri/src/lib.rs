@@ -384,8 +384,15 @@ fn hydrate_task_artifacts(task: &mut TaskStub) {
         task.result_kind = Some("html_report".to_string());
         task.result_path = Some(report_path.to_string_lossy().into_owned());
     } else {
-        task.result_kind = None;
-        task.result_path = None;
+        let mut report_markdowns = Vec::new();
+        collect_named_files(root, "report.md", 5, &mut report_markdowns);
+        if let Some(report_path) = choose_preferred_report(&mut report_markdowns) {
+            task.result_kind = Some("markdown_report".to_string());
+            task.result_path = Some(report_path.to_string_lossy().into_owned());
+        } else {
+            task.result_kind = None;
+            task.result_path = None;
+        }
     }
 
     let mut report_jsons = Vec::new();
@@ -569,33 +576,22 @@ fn extract_profile_url(prompt: &str) -> Option<String> {
         .map(ToOwned::to_owned)
 }
 
-fn infer_kind(prompt: &str) -> Result<&'static str, String> {
+fn classify_task_kind(prompt: &str) -> &'static str {
     let lower = prompt.to_lowercase();
-    let looks_like_wechat = (prompt.contains("微信") || lower.contains("wechat"))
-        && (prompt.contains("会话")
-            || prompt.contains("聊天")
-            || prompt.contains("聊天记录")
-            || prompt.contains("对话"))
-        && (prompt.contains("总结") || prompt.contains("摘要") || prompt.contains("梳理"));
-    if looks_like_wechat {
-        return Ok("wechat_chat_summary");
+    if prompt.contains("微信") || lower.contains("wechat") {
+        return "wechat_chat_summary";
     }
-
-    if extract_profile_url(prompt).is_some() {
-        return Ok("creator_growth_breakdown");
+    if extract_profile_url(prompt).is_some()
+        || prompt.contains("小红书")
+        || lower.contains("xiaohongshu")
+        || lower.contains("xhs")
+    {
+        return "xiaohongshu";
     }
-
-    let creator_hints = ["作者", "博主", "起号", "账号", "profile", "creator"];
-    if creator_hints.iter().any(|hint| prompt.contains(hint)) {
-        return Err(
-            "Creator tasks currently require a Xiaohongshu profile URL in the prompt.".to_string(),
-        );
-    }
-
-    Ok("topic_research")
+    "unified"
 }
 
-fn parse_xhs_model_mode(
+fn parse_model_mode(
     model_mode: &str,
 ) -> Result<(&'static str, &'static str, &'static str), String> {
     match model_mode.trim() {
@@ -616,31 +612,23 @@ fn start_task(
         return Err("Task prompt is empty".to_string());
     }
 
-    let kind = infer_kind(trimmed)?.to_string();
+    let kind = classify_task_kind(trimmed).to_string();
     let requested_model_mode = model_mode.unwrap_or_else(|| "cloud".to_string());
-    let (model_mode_value, model_label, llm_backend) = if kind == "wechat_chat_summary" {
-        ("local_qwen_wechat", "Local Qwen 2B + 9B", "qwen-local")
-    } else {
-        parse_xhs_model_mode(&requested_model_mode)?
-    };
+    let (model_mode_value, model_label, llm_backend) = parse_model_mode(&requested_model_mode)?;
 
     let task = spawn_flowlens(
         &app,
         "task",
         &kind,
         trimmed,
-        if kind == "wechat_chat_summary" {
-            "desktop_app_wechat"
-        } else {
-            "desktop_app"
-        },
+        "desktop_app",
         &[
-            OsString::from("desktop"),
             OsString::from("run"),
             OsString::from("--prompt"),
             OsString::from(trimmed),
             OsString::from("--llm-backend"),
             OsString::from(llm_backend),
+            OsString::from("--json"),
         ],
         "--output-root",
         Some(model_mode_value.to_string()),
@@ -676,7 +664,7 @@ pub fn run() {
 
 #[cfg(test)]
 mod tests {
-    use super::{extract_profile_url, infer_kind, parse_xhs_model_mode, task_status_from_log};
+    use super::{classify_task_kind, extract_profile_url, parse_model_mode, task_status_from_log};
     use std::fs;
 
     #[test]
@@ -687,14 +675,14 @@ mod tests {
     }
 
     #[test]
-    fn infers_topic_task_without_creator_url() {
-        assert_eq!(infer_kind("研究护肤干货").unwrap(), "topic_research");
+    fn classifies_generic_task_without_routing_error() {
+        assert_eq!(classify_task_kind("研究护肤干货"), "unified");
     }
 
     #[test]
-    fn infers_wechat_summary_task() {
+    fn classifies_wechat_summary_task() {
         assert_eq!(
-            infer_kind("请总结微信会话“冬虫夏草”的聊天记录").unwrap(),
+            classify_task_kind("请总结微信会话“冬虫夏草”的聊天记录"),
             "wechat_chat_summary"
         );
     }
@@ -711,9 +699,9 @@ mod tests {
     }
 
     #[test]
-    fn parses_xhs_model_modes() {
-        assert_eq!(parse_xhs_model_mode("cloud").unwrap().2, "sonnet");
-        assert_eq!(parse_xhs_model_mode("local9b").unwrap().2, "qwen-local");
-        assert!(parse_xhs_model_mode("unknown").is_err());
+    fn parses_model_modes() {
+        assert_eq!(parse_model_mode("cloud").unwrap().2, "sonnet");
+        assert_eq!(parse_model_mode("local9b").unwrap().2, "qwen-local");
+        assert!(parse_model_mode("unknown").is_err());
     }
 }

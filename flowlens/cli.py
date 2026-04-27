@@ -5,6 +5,7 @@ from __future__ import annotations
 import sys
 
 from .auth_cli import main as auth_main
+from .run_cli import main as run_main
 from .xhs_cli import main as xhs_main
 
 
@@ -16,16 +17,13 @@ def _lazy_import(module_path: str, attr: str):
         except ImportError as exc:
             print(f"\n错误: 缺少依赖 — {exc}\n")
             print("该功能需要额外依赖，请运行:")
-            print(f"  pip install -e '.[all]'\n")
+            print("  pip install -e '.[all]'\n")
             return 1
         return getattr(mod, attr)(argv)
     return wrapper
 
-
-agent_main = _lazy_import("flowlens.agent.cli", "main")
 extension_main = _lazy_import("flowlens.extension_cli", "main")
 debug_main = _lazy_import("flowlens.debug_cli", "main")
-desktop_main = _lazy_import("flowlens.desktop_cli", "main")
 observer_main = _lazy_import("flowlens.observer.cli", "main")
 
 
@@ -34,15 +32,19 @@ def main() -> None:
         raise SystemExit(auth_main(sys.argv[2:]))
     if len(sys.argv) > 1 and sys.argv[1] == "xhs":
         raise SystemExit(xhs_main(sys.argv[2:]))
-    if len(sys.argv) > 1 and sys.argv[1] == "agent":
-        raise SystemExit(agent_main(sys.argv[2:]))
     if len(sys.argv) > 1 and sys.argv[1] == "extension":
         raise SystemExit(extension_main(sys.argv[2:]))
     if len(sys.argv) > 1 and sys.argv[1] == "debug":
         raise SystemExit(debug_main(sys.argv[2:]))
-    if len(sys.argv) > 1 and sys.argv[1] == "desktop":
-        raise SystemExit(desktop_main(sys.argv[2:]))
     if len(sys.argv) > 1 and sys.argv[1] == "observer":
         raise SystemExit(observer_main(sys.argv[2:]))
-    # Default: free-form prompt → agent loop
-    raise SystemExit(agent_main(sys.argv[1:]))
+    if len(sys.argv) > 1 and sys.argv[1] == "run":
+        raise SystemExit(run_main(sys.argv[2:]))
+    if len(sys.argv) > 1 and sys.argv[1] == "agent":
+        raise SystemExit(run_main(sys.argv[2:]))
+    if len(sys.argv) > 2 and sys.argv[1] == "desktop" and sys.argv[2] == "run":
+        raise SystemExit(run_main(sys.argv[3:]))
+    if len(sys.argv) > 1 and sys.argv[1] == "desktop":
+        raise SystemExit(run_main(sys.argv[2:]))
+    # Default: free-form prompt → unified run loop
+    raise SystemExit(run_main(sys.argv[1:]))

@@ -10,7 +10,7 @@ from difflib import SequenceMatcher
 
 from PIL import Image
 
-from ...core.ocr_layout import OCRLine, OCRPage, NormalizedRegion
+from ...core.ocr_layout import OCRPage, NormalizedRegion
 from ...perception.llm import VisionLLM, VisionRequestConfig
 from .app import (
     WECHAT_FULL_TIMELINE_REGION,
@@ -18,6 +18,8 @@ from .app import (
     WECHAT_HEADER_REGION,
     WECHAT_TIMELINE_REGION,
     normalize_wechat_title,
+    _title_sort_key,
+    _usable_title_text,
 )
 from .models import WeChatMessage, WeChatParsedCapture
 from .vision_profiles import WECHAT_LAYOUT_PARSE_2B, WECHAT_PARSE_FALLBACK
@@ -84,6 +86,20 @@ def _looks_like_ui_noise(text: str) -> bool:
     return bool(_ICON_ONLY_RE.match(candidate))
 
 
+def _prefer_conversation_title(primary: str, candidate: str) -> str:
+    primary_text = str(primary or "").strip()
+    candidate_text = str(candidate or "").strip()
+    primary_normalized = normalize_wechat_title(primary_text)
+    candidate_normalized = normalize_wechat_title(candidate_text)
+    if not primary_normalized:
+        return candidate_text
+    if not candidate_normalized:
+        return primary_text
+    if len(candidate_normalized) > len(primary_normalized):
+        return candidate_text
+    return primary_text
+
+
 def _generic_speaker_name(text: str) -> bool:
     return str(text or "").strip().casefold() in {"", "other", "unknown", "left", "right", "speaker", "左侧", "右侧"}
 
@@ -139,6 +155,8 @@ class WeChatConversationParser:
         screenshot_path: str | Path,
         image: Image.Image,
         ocr_page: OCRPage,
+        allow_vision: bool = True,
+        allow_9b_fallback: bool = True,
     ) -> WeChatParsedCapture:
         conversation_title = self._read_title(ocr_page)
         ocr_capture = self._build_ocr_capture(
@@ -149,7 +167,7 @@ class WeChatConversationParser:
         )
         candidates = [ocr_capture]
 
-        if self.vision is not None:
+        if self.vision is not None and allow_vision:
             vision_2b = self._parse_with_vision(
                 capture_index=capture_index,
                 screenshot_path=screenshot_path,
@@ -164,7 +182,11 @@ class WeChatConversationParser:
                 candidates.append(vision_2b)
 
             best = self._choose_best_candidate(candidates, conversation_title=conversation_title)
-            if self._needs_9b_fallback(best, ocr_capture, conversation_title=conversation_title):
+            if allow_9b_fallback and self._needs_9b_fallback(
+                best,
+                ocr_capture,
+                conversation_title=conversation_title,
+            ):
                 vision_9b = self._parse_with_vision(
                     capture_index=capture_index,
                     screenshot_path=screenshot_path,
@@ -188,7 +210,7 @@ class WeChatConversationParser:
         return WeChatParsedCapture(
             capture_index=chosen.capture_index,
             screenshot_path=chosen.screenshot_path,
-            conversation_title=chosen.conversation_title or conversation_title,
+            conversation_title=_prefer_conversation_title(conversation_title, chosen.conversation_title),
             parser_mode=chosen.parser_mode,
             ocr_line_count=chosen.ocr_line_count,
             page_signature=chosen.page_signature,
@@ -199,12 +221,9 @@ class WeChatConversationParser:
 
     def _read_title(self, page: OCRPage) -> str:
         for region in (WECHAT_HEADER_REGION, WECHAT_FULL_TITLE_REGION):
-            candidates = sorted(
-                page.within(region),
-                key=lambda item: (-item.confidence, -len(item.text)),
-            )
+            candidates = sorted(page.within(region), key=_title_sort_key, reverse=True)
             for item in candidates:
-                if item.text.strip() and not _looks_like_ui_noise(item.text):
+                if _usable_title_text(item.text) and not _looks_like_ui_noise(item.text):
                     return item.text
         return ""
 

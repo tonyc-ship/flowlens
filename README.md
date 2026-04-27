@@ -188,17 +188,18 @@ Canonical Python packages are now:
 - `flowlens.agent`: LLM-driven agent loop, generic browser/vision tools, backend abstraction (Anthropic + local Qwen MLX)
 - `flowlens.knowledge`: per-site YAML knowledge files loaded into the agent prompt
 - `flowlens.platforms.wechat`: site-level desktop adapter
-- `flowlens.workflows.wechat`: concrete WeChat workflow CLI
+- `flowlens.workflows.wechat`: reusable WeChat collection / reporting workflow pieces
 
-The legacy hardcoded XHS workflow (`flowlens.platforms.xhs` and `flowlens.workflows.xhs`) was removed when the generic agent loop landed; XHS tasks now run through `flowlens agent` with knowledge loaded from `flowlens/knowledge/sites/xiaohongshu.yaml`.
+The legacy hardcoded XHS workflow (`flowlens.platforms.xhs` and `flowlens.workflows.xhs`) was removed when the generic agent loop landed. Free-form tasks now go through the unified `flowlens run` entrypoint, which exposes browser, desktop, Xiaohongshu, and WeChat capability packs to the same agent.
 
 ## Common Commands
 
-Run a free-form browser task through the agent loop:
+Run a free-form task through the unified agent:
 
 ```bash
 flowlens "在小红书上调研露营装备"
-flowlens agent "在小红书上调研露营装备" --backend qwen-local
+flowlens run "总结微信 x-mcp群里最近几周的用户需求和讨论话题"
+flowlens run "在小红书上调研露营装备" --llm-backend qwen-local
 ```
 
 Reload the unpacked Chrome extension through the live bridge:

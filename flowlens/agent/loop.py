@@ -45,6 +45,7 @@ from .backends import create_backend
 from .run_state import RunState
 from .tool import Tool, ToolContext
 from ..tools import build_tools
+from ..tools.capability_packs import CAPABILITY_PACKS
 from ..platforms.agent_profiles import (
     active_tool_names as profile_active_tool_names,
     append_report_extras,
@@ -55,21 +56,25 @@ from ..platforms.agent_profiles import (
 
 
 _BASE_SYSTEM_PROMPT = """\
-You are a browser automation agent. You control a real Chrome browser through \
-tools to accomplish tasks on websites.
+You are a computer-use agent. You can work in a real Chrome browser, in macOS desktop apps, or both, depending on the task and the capability packs you activate.
 
 ## How to work
 
 1. **Plan briefly**: Keep planning terse and action-oriented.
-2. **Observe efficiently**: Prefer site-specific extractors/macros when they exist. Take generic screenshots only when no site-specific tool can answer the question or when you need to debug a failed action.
-3. **Act**: Execute one action, then observe the result.
-4. **Verify**: After important actions, take a screenshot to confirm they worked.
-5. **Report**: When done, write a comprehensive, detailed report.
+2. **Select the right surface**: Decide whether the task belongs in the browser, on the desktop, or both.
+3. **Use progressive disclosure**: Start with capability-pack discovery. Inspect a pack before activating it when you need to understand its concrete tools.
+4. **Observe efficiently**: Prefer site/app-specific tools when they exist. Take generic screenshots only when a more structured tool cannot answer the question or when you need to debug a failed action.
+5. **Act**: Execute one action, then observe the result.
+6. **Verify**: After important actions, take a screenshot to confirm they worked.
+7. **Report**: When done, write a comprehensive, detailed report.
 
 ## Important rules
 
-- Do not take a generic starting screenshot when the task names a supported site and a site-specific tool can start the workflow.
-- **Before manual clicking on generic pages**: Use read_page to find exact \
+- Do not activate every capability pack up front. Activate only the packs you actually need.
+- Use `list_capability_packs` first if the task surface is unclear.
+- Use `describe_capability_pack` before activating a pack when the tool surface is not obvious from the pack summary.
+- Do not take a generic starting screenshot when a site/app-specific tool can start the workflow directly.
+- **Before manual clicking on generic browser pages**: Use `read_page` to find exact \
 element coordinates. Do NOT guess coordinates from screenshots alone — use the \
 (x,y) coordinates from read_page elements, clicking at the center of the \
 element's bounding box.
@@ -79,6 +84,11 @@ they are faster and more reliable than reading raw DOM or manually clicking UI.
 `xhs_search_notes`) over chaining navigate + click + extract_page_data. \
 The per-site tools are named with the site prefix (`xhs_*`). \
 Use raw `extract_page_data` only for low-level actions and DOM-only helpers.
+- For WeChat chat tasks, prefer `wechat_collect_history` followed by \
+`wechat_read_history_artifact`. Use `wechat_ocr_conversation_region` when \
+you need exact text from one visible screen. Do not loop over \
+`analyze_screenshot` on every saved chat screenshot unless the structured \
+WeChat tools still leave a specific ambiguity.
 - When site knowledge marks a command as PREFERRED, use that command before \
 trying read_page + click/type fallbacks.
 - Do not use standalone `wait` when a site-specific action already has a `wait_seconds` parameter. Keep waits short unless recovering from an error.
@@ -99,7 +109,7 @@ the persisted run state instead of relying only on recent chat memory.
 ## Thinking out loud
 
 At each turn, briefly explain:
-- What you observe on the page
+- What you observe on the page or in the app window
 - What you're about to do and why
 - Any concerns or alternative approaches
 
@@ -120,10 +130,14 @@ When you finish the task, write a **comprehensive final report** in markdown:
 
 def _build_system_prompt(
     tools: list[Tool],
+    capability_overview: str = "",
     site_knowledge: str = "",
     extra_instructions: str = "",
 ) -> str:
     parts = [_BASE_SYSTEM_PROMPT]
+
+    if capability_overview:
+        parts.append(f"\n## Capability Packs\n\n{capability_overview}")
 
     if site_knowledge:
         parts.append(f"\n## Site Knowledge\n\n{site_knowledge}")
@@ -132,6 +146,30 @@ def _build_system_prompt(
         parts.append(f"\n## Additional Instructions\n\n{extra_instructions}")
 
     return "\n".join(parts)
+
+
+def _capability_overview(
+    tools: list[Tool],
+    *,
+    active_packs: set[str],
+) -> str:
+    grouped: dict[str, list[str]] = {}
+    for tool in tools:
+        pack_id = str(getattr(tool, "capability_pack", "") or "").strip()
+        if not pack_id:
+            continue
+        grouped.setdefault(pack_id, []).append(tool.name)
+    lines: list[str] = []
+    for pack_id, spec in CAPABILITY_PACKS.items():
+        status = "active" if pack_id in active_packs else "inactive"
+        tool_names = ", ".join(sorted(grouped.get(pack_id, []))[:8]) or "No concrete tools available in this run."
+        dependency_text = f" Depends on: {', '.join(spec.dependencies)}." if spec.dependencies else ""
+        lines.append(
+            f"- `{pack_id}` ({status}): {spec.summary}{dependency_text} "
+            f"Use `describe_capability_pack(pack_id='{pack_id}')` to inspect tools. "
+            f"Current tools: {tool_names}"
+        )
+    return "\n".join(lines)
 
 
 _FLOWLENS_ENV_KEYS = (
@@ -426,17 +464,27 @@ def _select_active_tools(
     page_state: str | None,
     task: str,
     messages: list[dict],
+    active_capability_packs: set[str] | None = None,
 ) -> list[Tool]:
+    active_pack_ids = set(active_capability_packs or set())
+    pack_filtered = [
+        tool
+        for tool in tools
+        if tool.always_available
+        or not str(getattr(tool, "capability_pack", "") or "").strip()
+        or not active_pack_ids
+        or str(getattr(tool, "capability_pack", "") or "").strip() in active_pack_ids
+    ]
     active_names = profile_active_tool_names(
         site_name,
         page_state,
         manual_allowed=_recent_manual_fallback_allowed(messages),
     )
     if not active_names:
-        return tools
+        return pack_filtered
 
-    selected = [tool for tool in tools if tool.name in active_names or tool.always_available]
-    return selected or tools
+    selected = [tool for tool in pack_filtered if tool.name in active_names or tool.always_available]
+    return selected or pack_filtered
 
 
 async def _execute_tool(
@@ -463,6 +511,8 @@ async def run_agent(
     model: str = "claude-sonnet-4-6",
     extra_instructions: str = "",
     start_url: str | None = None,
+    use_browser: bool = True,
+    initial_capability_packs: set[str] | list[str] | tuple[str, ...] | None = None,
     media=None,
     log_callback=None,
 ) -> dict:
@@ -501,7 +551,7 @@ async def run_agent(
 
     # Setup bridge if not provided
     own_bridge = False
-    if bridge is None:
+    if bridge is None and use_browser:
         bridge = ExtensionBridge()
         await bridge.start()
         await ensure_extension_connection(bridge)
@@ -510,7 +560,7 @@ async def run_agent(
     # Create a dedicated agent window so we don't hijack the user's tabs
     agent_window_id = None
     agent_tab_id = None
-    if isinstance(bridge, ExtensionBridge):
+    if use_browser and isinstance(bridge, ExtensionBridge):
         try:
             initial_url = start_url or default_start_url_for_task(task) or "about:blank"
             win = await bridge.create_background_window(url=initial_url, focused=False)
@@ -522,7 +572,7 @@ async def run_agent(
 
     try:
         # If we created a dedicated tab, wrap bridge to scope to that tab
-        scoped_bridge: ExtensionBridge | TabBridge = bridge
+        scoped_bridge: ExtensionBridge | TabBridge | None = bridge
         if agent_tab_id and isinstance(bridge, ExtensionBridge):
             scoped_bridge = bridge.tab(agent_tab_id, window_id=agent_window_id)
 
@@ -533,6 +583,7 @@ async def run_agent(
             max_turns=max_turns,
             model=model,
             extra_instructions=extra_instructions,
+            initial_capability_packs=set(initial_capability_packs or set()),
             media=media,
             log=log,
             own_bridge=own_bridge,
@@ -568,11 +619,12 @@ async def run_agent(
 async def _agent_loop(
     *,
     task: str,
-    bridge: ExtensionBridge | TabBridge,
+    bridge: ExtensionBridge | TabBridge | None,
     run_dir: Path,
     max_turns: int,
     model: str,
     extra_instructions: str,
+    initial_capability_packs: set[str],
     media,
     log,
     own_bridge: bool = False,
@@ -580,7 +632,7 @@ async def _agent_loop(
     agent_window_id: int | None = None,
 ) -> dict:
     run_state = RunState(run_dir=run_dir, task=task, model=model)
-    ctx = ToolContext(run_dir=run_dir, run_state=run_state)
+    ctx = ToolContext(run_dir=run_dir, run_state=run_state, active_capability_packs=set(initial_capability_packs))
 
     # Downscale screenshots for local models (768px max dim → ~3s per image)
     is_local = (
@@ -604,6 +656,7 @@ async def _agent_loop(
         ext_bridge=ext_bridge,
         media=media,
         site_media=site_media,
+        include_browser=bridge is not None,
     )
 
     # ── Watch mode overlay helper ──────────────────────────────
@@ -632,7 +685,8 @@ async def _agent_loop(
     active_tools = tools
     api_tools = [t.to_api_schema() for t in active_tools]
     active_tool_names_logged: tuple[str, ...] = tuple()
-    system_prompt = _build_system_prompt(active_tools, site_knowledge, extra_instructions)
+    capability_overview = _capability_overview(tools, active_packs=ctx.active_capability_packs)
+    system_prompt = _build_system_prompt(active_tools, capability_overview, site_knowledge, extra_instructions)
 
     backend = create_backend(model)
     screenshots = []
@@ -702,8 +756,9 @@ async def _agent_loop(
 
         current_url = ""
         try:
-            info = await bridge.get_tab_info()
-            current_url = str(info.get("url") or "")
+            if bridge is not None:
+                info = await bridge.get_tab_info()
+                current_url = str(info.get("url") or "")
         except Exception:
             current_url = ""
         detected_site = detect_site(current_url) if current_url else None
@@ -726,9 +781,11 @@ async def _agent_loop(
             page_state=page_state,
             task=task,
             messages=messages,
+            active_capability_packs=ctx.active_capability_packs,
         )
         api_tools = [t.to_api_schema() for t in active_tools]
-        system_prompt = _build_system_prompt(active_tools, site_knowledge, combined_extra)
+        capability_overview = _capability_overview(tools, active_packs=ctx.active_capability_packs)
+        system_prompt = _build_system_prompt(active_tools, capability_overview, site_knowledge, combined_extra)
 
         active_tool_names = tuple(tool.name for tool in active_tools)
         if active_tool_names != active_tool_names_logged:
@@ -788,16 +845,36 @@ async def _agent_loop(
         thinking_texts = []
         visible_texts = []
         for text in text_blocks:
-            log("text", _log_excerpt(text))
             if text.startswith("[Thinking] "):
                 thinking = text[len("[Thinking] "):]
                 thinking_texts.append(thinking)
-                await watch("think", "Agent is planning the next step.", phase="thinking")
             else:
                 visible_texts.append(text)
                 final_text = text
-                await watch("think", text[:240], phase="thinking",
-                            decision=text[:500])
+
+        needs_grounding_request = (
+            not tool_use_blocks
+            and bool(visible_texts)
+            and run_state.has_structured_state()
+            and not report_grounding_requested
+            and (turn - last_state_read_turn) > 1
+        )
+
+        for _thinking in thinking_texts:
+            await watch("think", "Agent is planning the next step.", phase="thinking")
+
+        if needs_grounding_request and visible_texts:
+            draft_text = "\n".join(visible_texts)
+            log("draft_report", _log_excerpt(draft_text))
+            await watch(
+                "info",
+                "Draft report ready; grounding against saved state before finalizing.",
+                phase="grounding",
+            )
+        else:
+            for text in visible_texts:
+                log("text", _log_excerpt(text))
+                await watch("think", text[:240], phase="thinking", decision=text[:500])
 
         usage_entry: dict = {
             "input_tokens": response.input_tokens,
@@ -846,12 +923,7 @@ async def _agent_loop(
         if not tool_use_blocks:
             if visible_texts:
                 final_text = "\n".join(visible_texts)
-            if (
-                run_state.has_structured_state()
-                and final_text
-                and not report_grounding_requested
-                and (turn - last_state_read_turn) > 1
-            ):
+            if needs_grounding_request and final_text:
                 report_grounding_requested = True
                 grounding_request = _build_report_grounding_request(run_state)
                 messages.append({"role": "user", "content": grounding_request})
