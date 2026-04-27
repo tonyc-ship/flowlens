@@ -248,14 +248,24 @@ This is the preferred path for “reload the extension” because it validates t
 
 ### Install
 
+Preferred path (uv manages Python 3.11 + venv automatically):
+
 ```bash
-pip install -e .
+uv sync                  # core deps: agent loop, MCP, Apple OCR/Vision, observer capture
+uv sync --extra local    # adds local Qwen MLX models (mlx-lm / mlx-vlm / mlx-whisper)
+uv sync --extra all      # also pulls heavy vision libs (torch, paddleocr, ultralytics)
+uv sync --extra dev      # dev tooling (pytest, ruff)
 ```
 
-This default install now includes the runtime Python dependencies for OCR, local MLX vision, and observer capture. Only development tooling stays optional:
+The default `uv sync` installs everything needed for hosted-LLM runs, observer capture, and Apple-native OCR. The `local` and `vision` extras are opt-in because they pull large model/runtime packages.
+
+Pip fallback for users who manage their own Python 3.11+ environment:
 
 ```bash
-pip install -e ".[dev]"
+pip install -e .
+pip install -e ".[local]"     # optional local MLX
+pip install -e ".[all]"       # local + vision
+pip install -e ".[dev]"       # dev tooling
 ```
 
 ### Chrome Extension
