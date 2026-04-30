@@ -12,6 +12,7 @@ Socai is currently maintained as a layered browser automation framework built on
 - Task workflows in `socai.workflows`
 - A Chrome extension in `chrome_extension/`
 - A thin Tauri desktop shell in `desktop_app/`
+- A new **SocAI prototype** under `apps/socai/` for CDP-first social-platform desktop automation experiments
 
 The old screen-level MCP route has been archived under `archive/legacy_mcp/`.
 
@@ -19,6 +20,8 @@ The old screen-level MCP route has been archived under `archive/legacy_mcp/`.
 
 ```
 socai/
+├── apps/
+│   └── socai/                        # SocAI prototype: CDP-first existing-Chrome proof, Tauri shell later
 ├── chrome_extension/                 # MV3 extension: websocket, CDP, DOM extraction, watch mode
 ├── desktop_app/                      # Minimal Tauri desktop shell / future desktop control plane
 ├── socai/

@@ -1,0 +1,3 @@
+# SocAI prototype Python dependencies
+# Keep this small until the CDP/XHS proof is complete.
+cdp-use==1.4.5
