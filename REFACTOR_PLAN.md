@@ -1,7 +1,7 @@
-# SocAI Agent Architecture Refactor Plan
+# Socai Agent Architecture Refactor Plan
 
 **Created:** 2026-04-05
-**Goal:** Transform SocAI from hardcoded site-specific workflows into a generic Computer Use Agent (CUA) framework with an LLM-driven agent loop.
+**Goal:** Transform Socai from hardcoded site-specific workflows into a generic Computer Use Agent (CUA) framework with an LLM-driven agent loop.
 
 ## Problem Statement
 

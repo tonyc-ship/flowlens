@@ -1,6 +1,6 @@
-# SocAI
+# Socai
 
-SocAI is currently maintained as a layered browser automation framework built on:
+Socai is currently maintained as a layered browser automation framework built on:
 
 - Core browser/runtime primitives in `socai.core`
 - Background desktop observation in `socai.observer`
@@ -136,13 +136,13 @@ Every task run must produce:
 
 ### Self-unblock with Accessibility tools
 
-When blocked by something that needs manual browser/UI interaction (reload Chrome extension, click dialogs, navigate chrome:// pages, approve permissions), use macOS Accessibility APIs (screen.py, pyautogui, AppleScript) to do it instead of asking the user. This also serves as self-hosting validation of SocAI's own capabilities.
+When blocked by something that needs manual browser/UI interaction (reload Chrome extension, click dialogs, navigate chrome:// pages, approve permissions), use macOS Accessibility APIs (screen.py, pyautogui, AppleScript) to do it instead of asking the user. This also serves as self-hosting validation of Socai's own capabilities.
 
 For extension reload specifically:
 - Prefer the built-in runtime path first: `bridge.reload_extension()` or `python -m socai extension reload`
 - If the extension is too broken or disconnected to reload itself, then fall back to macOS Accessibility on `chrome://extensions/`
 - Any code change under `chrome_extension/` must also bump `chrome_extension/manifest.json` `version`.
-  SocAI auto-reload compares the connected extension version against the source-tree manifest version, so
+  Socai auto-reload compares the connected extension version against the source-tree manifest version, so
   extension code changes without a version bump may silently keep using stale code.
 
 ### Autonomous long-horizon work
@@ -192,10 +192,10 @@ New generic capabilities (background windows, dedup, session recording) belong i
 
 ## Runtime Flow
 
-SocAI has **two LLM consumers** that share a single tool surface:
+Socai has **two LLM consumers** that share a single tool surface:
 
-- **Internal agent** (`socai.agent.loop.run_agent`) — SocAI provides the LLM (Anthropic / OpenAI / Kimi / Qwen / local MLX) and drives the full plan→act→report loop itself.
-- **External MCP host** (`socai-mcp`) — the host's LLM (Claude Desktop / Cursor / Claude Code) plans, SocAI only executes tool calls.
+- **Internal agent** (`socai.agent.loop.run_agent`) — Socai provides the LLM (Anthropic / OpenAI / Kimi / Qwen / local MLX) and drives the full plan→act→report loop itself.
+- **External MCP host** (`socai-mcp`) — the host's LLM (Claude Desktop / Cursor / Claude Code) plans, Socai only executes tool calls.
 
 Both consumers enumerate the same list from `socai.tools.build_tools(...)`:
 25 tool classes = 11 generic browser + 3 state + 2 vision + 9 Xiaohongshu (site).
@@ -235,7 +235,7 @@ Generic extension operational commands live outside the XHS task layer.
 
 - `python -m socai extension reload`
 
-This path exercises the real SocAI bridge:
+This path exercises the real Socai bridge:
 1. Python starts a local bridge server.
 2. The running extension connects back.
 3. Python sends `reload_extension`.
@@ -303,7 +303,7 @@ Packaging helper:
 
 ### Local Config
 
-SocAI loads runtime settings in this order:
+Socai loads runtime settings in this order:
 
 1. Process env
 2. `.env.local`
@@ -341,7 +341,7 @@ SOCAI_OBSERVER_VISION_MODEL=...
 
 ### Local LLM (optional)
 
-SocAI supports local inference via MLX as an alternative to the Anthropic API:
+Socai supports local inference via MLX as an alternative to the Anthropic API:
 
 ```bash
 # Download the default lightweight observer model
@@ -367,7 +367,7 @@ Backend can also be set per-instance via `MediaConfig(backend="qwen-local")` or
 
 ## Running
 
-### Internal agent (SocAI is the LLM consumer)
+### Internal agent (Socai is the LLM consumer)
 
 ```bash
 socai "在小红书上调研露营装备"

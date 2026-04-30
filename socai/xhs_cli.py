@@ -477,7 +477,7 @@ def _handle_error(exc: Exception) -> int:
     """Print a friendly Chinese error message for common failures."""
     msg = str(exc)
     if isinstance(exc, BridgeAlreadyRunningError):
-        print("\n错误: 已有另一个 SocAI 任务正在运行。\n")
+        print("\n错误: 已有另一个 Socai 任务正在运行。\n")
         print(f"{msg}\n")
         print("当前浏览器扩展 bridge 只支持单任务占用，请等待当前任务结束后再启动新的任务。\n")
         return 1
@@ -485,7 +485,7 @@ def _handle_error(exc: Exception) -> int:
         print("\n错误: 无法连接 Chrome Extension。\n")
         print("请确认:")
         print("  1. Chrome 浏览器已打开")
-        print("  2. SocAI Extension 已加载 (chrome://extensions/)")
+        print("  2. Socai Extension 已加载 (chrome://extensions/)")
         print("  3. Extension 已启用（没有被禁用）\n")
         return 1
     if "no_note_modal_open" in msg or "error_page" in msg:

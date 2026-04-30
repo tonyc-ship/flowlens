@@ -1,4 +1,4 @@
-"""Generic Chrome extension operational commands for SocAI."""
+"""Generic Chrome extension operational commands for Socai."""
 
 from __future__ import annotations
 
@@ -61,7 +61,7 @@ def _write_report(result: ExtensionOperationResult, output_dir: Path) -> None:
 <html lang="en">
 <head>
   <meta charset="utf-8">
-  <title>SocAI Extension Operation Report</title>
+  <title>Socai Extension Operation Report</title>
   <style>
     body{{font-family:ui-sans-serif,system-ui,-apple-system,sans-serif;margin:24px;background:#f7f7f5;color:#1f2937}}
     .wrap{{max-width:960px;margin:0 auto}}
@@ -73,7 +73,7 @@ def _write_report(result: ExtensionOperationResult, output_dir: Path) -> None:
 </head>
 <body>
   <div class="wrap">
-    <h1>SocAI Extension Operation Report</h1>
+    <h1>Socai Extension Operation Report</h1>
     <div class="card">
       <h2>Summary</h2>
       {render_markdown_block(summary_md)}
@@ -97,7 +97,7 @@ async def run_extension_reload(
 ) -> ExtensionOperationResult:
     """Reload the Chrome extension through the live bridge.
 
-    This is the preferred path because it tests the actual SocAI runtime:
+    This is the preferred path because it tests the actual Socai runtime:
     Python bridge -> background service worker -> chrome.runtime.reload().
     """
     out_dir = Path(output_dir) if output_dir is not None else (

@@ -1,10 +1,10 @@
-# SocAI: Privacy-First Computer Use Agent with Local Visual Memory
+# Socai: Privacy-First Computer Use Agent with Local Visual Memory
 
-SocAI is a computer use and browser use framework with lightweight local multimodal models and observation-learning loop. These designs enable a fast, stable and privacy-first CUA compared to other frameworks. SocAI comes with a Chrome extension and a thin desktop app. Currently there are task specific knowledge for Xiaohongshu research and WeChat use.
+Socai is a computer use and browser use framework with lightweight local multimodal models and observation-learning loop. These designs enable a fast, stable and privacy-first CUA compared to other frameworks. Socai comes with a Chrome extension and a thin desktop app. Currently there are task specific knowledge for Xiaohongshu research and WeChat use.
 
 ## 📕 小红书助手
 
-SocAI 专门沉淀了小红书站点知识，并通过 Chrome 插件连接你当前登录态下的浏览器，执行小红书调研、内容抽取和自定义 agent 任务。
+Socai 专门沉淀了小红书站点知识，并通过 Chrome 插件连接你当前登录态下的浏览器，执行小红书调研、内容抽取和自定义 agent 任务。
 
 几点优势：
 1. 不使用程序化的批量爬虫，而是像人一样逐个搜索和点击，尽可能不违反小红书规则和被屏蔽
@@ -58,7 +58,7 @@ socai xhs agent "找最近高互动的露营清单帖子并总结标题套路"
 
 ### MCP：直接在 Claude Code / Cursor / Claude Cowork /Codex 等等 里用
 
-SocAI 也可以作为 MCP server，在你的 MCP 对应的 config json 文件里加：
+Socai 也可以作为 MCP server，在你的 MCP 对应的 config json 文件里加：
 
 ```json
 { "mcpServers": { "socai": { "command": "socai-mcp" } } }
@@ -121,7 +121,7 @@ PATH="$HOME/.cargo/bin:$PATH" npm run tauri dev
 
 macOS permissions you will likely need on first run:
 
-- `Screen Recording` for the Python interpreter / terminal app that launches SocAI
+- `Screen Recording` for the Python interpreter / terminal app that launches Socai
 - `Accessibility` if you later use desktop automation flows
 - `Automation` if you want browser URL capture via Apple Events
 

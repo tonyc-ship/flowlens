@@ -1,4 +1,4 @@
-"""Primary CLI for SocAI."""
+"""Primary CLI for Socai."""
 
 from __future__ import annotations
 

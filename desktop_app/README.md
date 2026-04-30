@@ -1,6 +1,6 @@
-# SocAI Desktop
+# Socai Desktop
 
-Minimal Tauri 2.x desktop shell for SocAI.
+Minimal Tauri 2.x desktop shell for Socai.
 
 This spike intentionally keeps the UI small:
 

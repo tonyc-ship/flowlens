@@ -1,5 +1,5 @@
 /**
- * SocAI Agent — Content Script (v2)
+ * Socai Agent — Content Script (v2)
  *
  * Handles generic DOM actions, watch UI, and platform adapter dispatch.
  * Communicates with background.js which relays to the external Python agent.
@@ -218,7 +218,7 @@ function ensureWatchOverlay() {
     <div class="header">
       <span class="dot" id="cvWatchDot"></span>
       <div class="grow">
-        <div class="title">SocAI Agent Status</div>
+        <div class="title">Socai Agent Status</div>
         <div class="subtitle" id="cvWatchStatus">${escapeWatchHtml(watchLocaleText('Waiting for agent activity...', '等待 Agent 步骤...'))}</div>
       </div>
       <button class="toggle" id="cvWatchToggle" title="Collapse">−</button>
@@ -738,7 +738,7 @@ function collectVideoCandidates(videoEl) {
 
 // ── Platform Adapter Support ──────────────────────────────────
 
-window.SocAICommon = {
+window.SocaiCommon = {
   $,
   $$,
   text,
@@ -751,7 +751,7 @@ window.SocAICommon = {
 };
 
 function requireXhsMethod(method) {
-  const adapter = window.SocAIXhs || {};
+  const adapter = window.SocaiXhs || {};
   const fn = adapter[method];
   if (typeof fn !== 'function') {
     throw new Error(`XHS adapter method unavailable: ${method}`);
@@ -856,14 +856,14 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
           result = {
             ok: true,
             url: window.location.href,
-            state: window.SocAIXhs?.detectState?.() || 'unknown',
+            state: window.SocaiXhs?.detectState?.() || 'unknown',
           };
           break;
 
         case 'detect_state': {
-          const detectState = window.SocAIXhs?.detectState;
-          const detectAntiBotState = window.SocAIXhs?.detectAntiBotState;
-          const detectNoteType = window.SocAIXhs?.detectNoteType;
+          const detectState = window.SocaiXhs?.detectState;
+          const detectAntiBotState = window.SocaiXhs?.detectAntiBotState;
+          const detectNoteType = window.SocaiXhs?.detectNoteType;
           result = {
             state: detectState ? detectState() : 'unknown',
             antiBotState: detectAntiBotState ? detectAntiBotState() : '',
@@ -974,4 +974,4 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
   return true;
 });
 
-console.log('[SocAI] Content script loaded:', window.location.href);
+console.log('[Socai] Content script loaded:', window.location.href);

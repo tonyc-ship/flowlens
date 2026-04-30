@@ -501,7 +501,7 @@ class ObserverCaptureService:
             image, display_stats = self._capture_display_image(main)
             return image, [display_stats]
 
-        # SocAI stitched each display side-by-side instead of trying to
+        # Socai stitched each display side-by-side instead of trying to
         # recreate the physical monitor layout. That is more robust here too,
         # because Quartz display frames are reported in points while the
         # captured images are Retina pixels.
@@ -805,7 +805,7 @@ class ObserverCaptureService:
         sys.stdout.reconfigure(line_buffering=True)
         sys.stderr.reconfigure(line_buffering=True)
 
-        print("SocAI Observer capture loop started")
+        print("Socai Observer capture loop started")
         print(f"  data_root: {self.paths.root}")
         print(f"  check_interval: {self.config.check_interval}s")
         print(f"  force_capture_interval: {self.config.force_capture_interval}s")

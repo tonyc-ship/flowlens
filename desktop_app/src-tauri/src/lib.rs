@@ -89,7 +89,7 @@ struct RuntimePaths {
 #[tauri::command]
 fn app_health() -> HealthStatus {
     HealthStatus {
-        app_name: "SocAI Desktop",
+        app_name: "Socai Desktop",
         version: env!("CARGO_PKG_VERSION"),
         os: std::env::consts::OS,
         arch: std::env::consts::ARCH,
@@ -211,7 +211,7 @@ fn resolve_runtime(app: &AppHandle) -> Result<RuntimePaths, String> {
     }
 
     let repo_root = dev_repo.ok_or_else(|| {
-        "Could not resolve a SocAI runtime. Expected either bundled runtime resources or the repo checkout.".to_string()
+        "Could not resolve a Socai runtime. Expected either bundled runtime resources or the repo checkout.".to_string()
     })?;
 
     Ok(RuntimePaths {
@@ -461,7 +461,7 @@ fn spawn_socai(
 
     let child = child.spawn().map_err(|err| {
         format!(
-            "Failed to start SocAI runtime with {:?}: {err}",
+            "Failed to start Socai runtime with {:?}: {err}",
             runtime.launcher
         )
     })?;

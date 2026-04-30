@@ -17,7 +17,7 @@ def _default_save_dir() -> Path:
 
 
 def build_parser() -> argparse.ArgumentParser:
-    parser = argparse.ArgumentParser(description="SocAI visual debugging tools")
+    parser = argparse.ArgumentParser(description="Socai visual debugging tools")
     subparsers = parser.add_subparsers(dest="command", required=True)
 
     displays = subparsers.add_parser("displays", help="List detected displays")

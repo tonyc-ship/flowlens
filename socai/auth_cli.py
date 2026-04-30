@@ -382,7 +382,7 @@ def _wait_enter() -> None:
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         prog="socai auth",
-        description="Inspect or store SocAI hosted-model credentials.",
+        description="Inspect or store Socai hosted-model credentials.",
     )
     subparsers = parser.add_subparsers(dest="command")
 
@@ -400,7 +400,7 @@ def build_parser() -> argparse.ArgumentParser:
     set_parser.add_argument(
         "--value",
         default="",
-        help="Credential value. If omitted, SocAI reads from stdin.",
+        help="Credential value. If omitted, Socai reads from stdin.",
     )
 
     model_parser = subparsers.add_parser("model", help="Set the default hosted model.")
@@ -409,7 +409,7 @@ def build_parser() -> argparse.ArgumentParser:
         "model",
         nargs="?",
         default="",
-        help="Model name. If omitted, SocAI reads from stdin.",
+        help="Model name. If omitted, Socai reads from stdin.",
     )
     model_parser.add_argument(
         "--no-default-provider",

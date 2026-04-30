@@ -1,5 +1,5 @@
 /**
- * SocAI Observer Viewer
+ * Socai Observer Viewer
  *
  * Reads observer data from chrome.storage.local and renders it
  * as timeline, click patterns, navigation flows, and page structures.

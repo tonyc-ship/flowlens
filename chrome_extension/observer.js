@@ -1,5 +1,5 @@
 /**
- * SocAI — Passive Site Observer
+ * Socai — Passive Site Observer
  *
  * Silently monitors user behavior on matched websites to learn:
  *   - Navigation patterns (how users move between pages)

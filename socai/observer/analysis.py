@@ -280,7 +280,7 @@ def generate_work_journal(
             store.upsert_project_memories(semantic["project_memories"])
 
     lines = [
-        "# SocAI Observer Review",
+        "# Socai Observer Review",
         f"Duration: {total_minutes:.0f} min | Captures: {len(activities)}",
         "",
     ]
@@ -504,7 +504,7 @@ def ask_question(paths: ObserverPaths, question: str, *, llm_backend: str = BACK
     if stats["content_summary_count"] == 0:
         raise RuntimeError("No content summaries found. Run `socai observer extract` first.")
 
-    system_prompt = f"""You are SocAI Observer, a personal workflow assistant.
+    system_prompt = f"""You are Socai Observer, a personal workflow assistant.
 
 Current time: {datetime.now().strftime("%Y-%m-%d %H:%M")}
 Total captures: {stats['capture_count']}, with summaries: {stats['content_summary_count']}
@@ -528,11 +528,11 @@ def run_query_repl(paths: ObserverPaths, *, llm_backend: str = BACKEND_SONNET) -
     if stats["content_summary_count"] == 0:
         print("No content summaries found. Run `socai observer extract` first.")
         return
-    print(f"SocAI Observer Q&A ({stats['content_summary_count']} captures indexed)")
+    print(f"Socai Observer Q&A ({stats['content_summary_count']} captures indexed)")
     print("Ask questions about your workflow. Type 'quit' to exit.\n")
 
     backend = create_backend(_observer_model_for_backend(llm_backend))
-    system_prompt = f"""You are SocAI Observer, a personal workflow assistant.
+    system_prompt = f"""You are Socai Observer, a personal workflow assistant.
 
 Current time: {datetime.now().strftime("%Y-%m-%d %H:%M")}
 Total captures: {stats['capture_count']}, with summaries: {stats['content_summary_count']}

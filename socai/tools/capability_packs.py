@@ -1,4 +1,4 @@
-"""High-level capability-pack catalog for the unified SocAI agent."""
+"""High-level capability-pack catalog for the unified Socai agent."""
 
 from __future__ import annotations
 

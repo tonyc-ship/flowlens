@@ -134,7 +134,7 @@ def task_runs_root() -> Path:
 
 
 def socai_state_root() -> Path:
-    """Return the writable local state directory shared across SocAI CLIs."""
+    """Return the writable local state directory shared across Socai CLIs."""
 
     load_runtime_env()
 

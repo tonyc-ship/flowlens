@@ -3,7 +3,7 @@ set -euo pipefail
 
 ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 APP_DIR="$ROOT_DIR/desktop_app"
-APP_NAME="SocAI Desktop.app"
+APP_NAME="Socai Desktop.app"
 BUILD_APP_PATH="$APP_DIR/src-tauri/target/release/bundle/macos/$APP_NAME"
 INSTALL_APP_PATH="/Applications/$APP_NAME"
 

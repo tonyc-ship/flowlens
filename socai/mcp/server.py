@@ -1,12 +1,12 @@
-"""SocAI MCP entry point.
+"""Socai MCP entry point.
 
-Exposes the SocAI tool registry (`socai.tools.build_tools`) over
+Exposes the Socai tool registry (`socai.tools.build_tools`) over
 the MCP stdio transport. The tool set is identical to what the internal
 agent loop sees — host models (Claude Desktop / Cursor / Claude Code)
 get the same fine + macro tools the internal agent would, so behavior
 stays consistent across internal and external consumers.
 
-SocAI itself runs no LLM here — the host plans, SocAI provides
+Socai itself runs no LLM here — the host plans, Socai provides
 browser-level capabilities backed by the user's real logged-in Chrome.
 """
 

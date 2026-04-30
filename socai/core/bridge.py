@@ -117,7 +117,7 @@ def _read_lock_metadata(path: Path) -> dict[str, object]:
 
 
 class BridgeAlreadyRunningError(RuntimeError):
-    """Raised when another live SocAI process already owns the bridge."""
+    """Raised when another live Socai process already owns the bridge."""
 
     def __init__(self, *, port: int, lock_path: Path, owner: dict[str, object] | None = None):
         self.port = port
@@ -137,7 +137,7 @@ class BridgeAlreadyRunningError(RuntimeError):
 
         summary = ", ".join(details)
         message = (
-            f"Another SocAI task is already running and owns the browser bridge on port {port}."
+            f"Another Socai task is already running and owns the browser bridge on port {port}."
         )
         if summary:
             message += f" Existing owner: {summary}."
@@ -323,7 +323,7 @@ class ExtensionBridge:
             if "address already in use" in message.lower():
                 raise RuntimeError(
                     f"Browser bridge port {self.port} is already in use by another process. "
-                    "If this is another SocAI task, wait for it to finish first."
+                    "If this is another Socai task, wait for it to finish first."
                 ) from exc
             raise
         self._log("server_started", f"Listening on ws://localhost:{self.port}")
@@ -343,14 +343,14 @@ class ExtensionBridge:
             if remaining <= 0:
                 raise RuntimeError(
                     f"Extension did not connect within {timeout}s. "
-                    "Make sure Chrome is open and the SocAI extension is loaded at chrome://extensions/."
+                    "Make sure Chrome is open and the Socai extension is loaded at chrome://extensions/."
                 )
             try:
                 await asyncio.wait_for(self._connected.wait(), remaining)
             except asyncio.TimeoutError:
                 raise RuntimeError(
                     f"Extension did not connect within {timeout}s. "
-                    "Make sure Chrome is open and the SocAI extension is loaded at chrome://extensions/."
+                    "Make sure Chrome is open and the Socai extension is loaded at chrome://extensions/."
                 )
 
             if not require_watch or self._capabilities.get("watch_mode") is True:

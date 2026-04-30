@@ -1,5 +1,5 @@
 /**
- * SocAI XHS Platform Adapter
+ * Socai XHS Platform Adapter
  *
  * Site-specific DOM extraction and actions for xiaohongshu.com. The generic
  * content script owns the extension bridge and calls this adapter by method.
@@ -10,9 +10,9 @@
     return;
   }
 
-  const common = window.SocAICommon;
+  const common = window.SocaiCommon;
   if (!common) {
-    console.warn('[SocAI XHS] Common content helpers are unavailable');
+    console.warn('[Socai XHS] Common content helpers are unavailable');
     return;
   }
 
@@ -1442,7 +1442,7 @@ async function scrollInNote(pixels = 400) {
     return { note };
   }
 
-  window.SocAIXhs = {
+  window.SocaiXhs = {
     detectAntiBotState,
     detectState,
     detectNoteType,
@@ -1469,5 +1469,5 @@ async function scrollInNote(pixels = 400) {
     } catch {}
   }, 0);
 
-  console.log('[SocAI XHS] Adapter loaded:', window.location.href);
+  console.log('[Socai XHS] Adapter loaded:', window.location.href);
 })();

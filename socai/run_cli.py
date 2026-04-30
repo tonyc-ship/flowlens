@@ -1,4 +1,4 @@
-"""Unified CLI entry point for SocAI task execution."""
+"""Unified CLI entry point for Socai task execution."""
 
 from __future__ import annotations
 
@@ -91,7 +91,7 @@ def _planner_prompt(prompt: str) -> str:
             f"- {spec.pack_id}: {spec.summary} When to use: {spec.when_to_use}.{dependency_text}{surface_text}"
         )
     pack_catalog = "\n".join(pack_lines)
-    return f"""You are the runtime capability planner for SocAI.
+    return f"""You are the runtime capability planner for Socai.
 
 Pick the high-level capability packs that should be available at the start of a run.
 Do not route to fixed task kinds. Think in terms of programs/sites/surfaces.
@@ -266,7 +266,7 @@ async def _run_plan(plan: UnifiedRunPlan, *, args) -> dict[str, Any]:
 
 
 def _build_parser() -> argparse.ArgumentParser:
-    parser = argparse.ArgumentParser(description="Unified SocAI task runner.")
+    parser = argparse.ArgumentParser(description="Unified Socai task runner.")
     parser.add_argument("task", nargs="?", help="Natural language task description")
     parser.add_argument("--prompt", help="Natural language task description")
     parser.add_argument("--max-turns", type=int, default=40, help="Maximum reasoning turns")

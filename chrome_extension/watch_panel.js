@@ -1,5 +1,5 @@
 /**
- * SocAI Watch Mode — Real-time Agent Activity Sidebar
+ * Socai Watch Mode — Real-time Agent Activity Sidebar
  *
  * Injected into the page by background.js when watch mode is enabled.
  * Uses Shadow DOM for complete isolation from the host page.

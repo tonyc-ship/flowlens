@@ -1,4 +1,4 @@
-"""Backward-compatible wrapper for the unified SocAI run CLI."""
+"""Backward-compatible wrapper for the unified Socai run CLI."""
 
 from __future__ import annotations
 

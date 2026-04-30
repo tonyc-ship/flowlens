@@ -1,7 +1,7 @@
 /**
- * SocAI Agent — Background Service Worker
+ * Socai Agent — Background Service Worker
  *
- * WebSocket client connecting to the local SocAI agent runtime.
+ * WebSocket client connecting to the local Socai agent runtime.
  * Routes commands between the agent and content scripts.
  *
  * Handles directly:

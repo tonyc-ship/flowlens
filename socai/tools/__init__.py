@@ -1,4 +1,4 @@
-"""Unified SocAI tool registry.
+"""Unified Socai tool registry.
 
 Single source of truth for the set of Tool instances available to any
 LLM consumer — the internal agent loop (`socai.agent.loop`) and the

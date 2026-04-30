@@ -1,4 +1,4 @@
-"""CLI for SocAI Observer."""
+"""CLI for Socai Observer."""
 
 from __future__ import annotations
 
@@ -26,7 +26,7 @@ from .store import ObserverStore
 
 
 def build_parser() -> argparse.ArgumentParser:
-    parser = argparse.ArgumentParser(description="Observer subsystem for SocAI.")
+    parser = argparse.ArgumentParser(description="Observer subsystem for Socai.")
     parser.add_argument("--root", default=None, help="Override observer data root.")
     subparsers = parser.add_subparsers(dest="command", required=True)
 
