@@ -1,6 +1,6 @@
-# FlowLens Desktop
+# SocAI Desktop
 
-Minimal Tauri 2.x desktop shell for FlowLens.
+Minimal Tauri 2.x desktop shell for SocAI.
 
 This spike intentionally keeps the UI small:
 

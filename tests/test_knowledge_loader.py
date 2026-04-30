@@ -2,7 +2,7 @@
 
 import unittest
 
-from flowlens.knowledge.loader import get_knowledge_for_url
+from socai.knowledge.loader import get_knowledge_for_url
 
 
 class KnowledgeLoaderTest(unittest.TestCase):

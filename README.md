@@ -1,10 +1,10 @@
-# FlowLens: Privacy-First Computer Use Agent with Local Visual Memory
+# SocAI: Privacy-First Computer Use Agent with Local Visual Memory
 
-FlowLens is a computer use and browser use framework with lightweight local multimodal models and observation-learning loop. These designs enable a fast, stable and privacy-first CUA compared to other frameworks. FlowLens comes with a Chrome extension and a thin desktop app. Currently there are task specific knowledge for Xiaohongshu research and WeChat use.
+SocAI is a computer use and browser use framework with lightweight local multimodal models and observation-learning loop. These designs enable a fast, stable and privacy-first CUA compared to other frameworks. SocAI comes with a Chrome extension and a thin desktop app. Currently there are task specific knowledge for Xiaohongshu research and WeChat use.
 
 ## 📕 小红书助手
 
-FlowLens 专门沉淀了小红书站点知识，并通过 Chrome 插件连接你当前登录态下的浏览器，执行小红书调研、内容抽取和自定义 agent 任务。
+SocAI 专门沉淀了小红书站点知识，并通过 Chrome 插件连接你当前登录态下的浏览器，执行小红书调研、内容抽取和自定义 agent 任务。
 
 几点优势：
 1. 不使用程序化的批量爬虫，而是像人一样逐个搜索和点击，尽可能不违反小红书规则和被屏蔽
@@ -14,8 +14,8 @@ FlowLens 专门沉淀了小红书站点知识，并通过 Chrome 插件连接你
 ### 安装
 
 ```bash
-git clone https://github.com/tonyc-ship/flowlens.git
-cd flowlens
+git clone https://github.com/tonyc-ship/socai.git
+cd socai
 
 uv sync
 或pip（Python >= 3.11）: pip install -e .
@@ -27,14 +27,14 @@ uv sync
 支持Anthropic, OpenAI, Kimi, Qwen：
 
 ```bash
-flowlens auth
+socai auth
 ```
 
 ### 加载 Chrome Extension
 
 1. 打开 `chrome://extensions/`
 2. 打开右上角 **开发者模式**
-3. 点击 **加载已解压的扩展程序**，选择本地`flowlens/chrome_extension/` 目录
+3. 点击 **加载已解压的扩展程序**，选择本地`socai/chrome_extension/` 目录
 
 Extension 会在运行命令时自动连接，不需要手动操作。如果遇到连接超时，确认 Chrome 已打开且 extension 已启用。
 
@@ -42,26 +42,26 @@ Extension 会在运行命令时自动连接，不需要手动操作。如果遇�
 
 ```bash
 # 话题调研 —— 搜索、阅读笔记、生成报告
-(uv装的前面加uv run，下同) flowlens xhs search "露营装备"
+(uv装的前面加uv run，下同) socai xhs search "露营装备"
 
 # 获取单篇笔记
-flowlens xhs note "https://www.xiaohongshu.com/explore/..."
+socai xhs note "https://www.xiaohongshu.com/explore/..."
 
 # 获取作者主页帖子
-flowlens xhs author "https://www.xiaohongshu.com/user/profile/..."
+socai xhs author "https://www.xiaohongshu.com/user/profile/..."
 
 # 自定义 agent 任务
-flowlens xhs agent "找最近高互动的露营清单帖子并总结标题套路"
+socai xhs agent "找最近高互动的露营清单帖子并总结标题套路"
 ```
 
 任务结果保存在 `task_runs/`，包含 `result.json`、`report.md`、截图和推理日志。
 
 ### MCP：直接在 Claude Code / Cursor / Claude Cowork /Codex 等等 里用
 
-FlowLens 也可以作为 MCP server，在你的 MCP 对应的 config json 文件里加：
+SocAI 也可以作为 MCP server，在你的 MCP 对应的 config json 文件里加：
 
 ```json
-{ "mcpServers": { "flowlens": { "command": "flowlens-mcp" } } }
+{ "mcpServers": { "socai": { "command": "socai-mcp" } } }
 ```
 
 然后就可以对CC/Cursor/Codex说 "帮我在小红书调研 XX"，它会开始调用 `xhs_topic_scan` 等工具，用你这边已登录的 Chrome 跑。MCP 和 CLI 共享同一套工具与 bridge，不能同时跑。
@@ -72,7 +72,7 @@ FlowLens 也可以作为 MCP server，在你的 MCP 对应的 config json 文件
 
 ### 交流群
 
-<img src="docs/wechat_group.jpeg" width="300" alt="微信群: flowlens小红书使用">
+<img src="docs/wechat_group.jpeg" width="300" alt="微信群: socai小红书使用">
 
 ## 💻 Computer Use Agent
 
@@ -89,7 +89,7 @@ uv sync --extra local    # add local Qwen MLX models
 uv sync --extra all      # everything (local MLX + heavy vision libs)
 ```
 
-Then prefix commands with `uv run` (e.g. `uv run flowlens ...`), or activate the venv with `source .venv/bin/activate`.
+Then prefix commands with `uv run` (e.g. `uv run socai ...`), or activate the venv with `source .venv/bin/activate`.
 
 Or with pip in your own Python 3.11+ environment (don't omit the trailing dot):
 
@@ -101,8 +101,8 @@ pip install -e ".[all]"       # everything
 
 Download Local Models:
 ```bash
-modelscope download --model mlx-community/Qwen3.5-2B-6bit --local_dir ~/.flowlens/weights/Qwen3.5-2B-6bit
-modelscope download --model mlx-community/Qwen3.5-9B-MLX-4bit --local_dir ~/.flowlens/weights/Qwen3.5-9B-MLX-4bit
+modelscope download --model mlx-community/Qwen3.5-2B-6bit --local_dir ~/.socai/weights/Qwen3.5-2B-6bit
+modelscope download --model mlx-community/Qwen3.5-9B-MLX-4bit --local_dir ~/.socai/weights/Qwen3.5-9B-MLX-4bit
 ```
 
 ## Desktop
@@ -121,7 +121,7 @@ PATH="$HOME/.cargo/bin:$PATH" npm run tauri dev
 
 macOS permissions you will likely need on first run:
 
-- `Screen Recording` for the Python interpreter / terminal app that launches FlowLens
+- `Screen Recording` for the Python interpreter / terminal app that launches SocAI
 - `Accessibility` if you later use desktop automation flows
 - `Automation` if you want browser URL capture via Apple Events
 
@@ -142,14 +142,14 @@ ANTHROPIC_API_KEY=...
 Optional keys:
 
 ```bash
-FLOWLENS_LLM_BACKEND=sonnet
-FLOWLENS_WHISPER_CLI=
-FLOWLENS_WHISPER_MODELS_DIR=
-FLOWLENS_OBSERVER_DIFF_THRESHOLD=0.30
-FLOWLENS_OBSERVER_CAPTURE_ALL_DISPLAYS=1
-FLOWLENS_OBSERVER_CAPTURE_BACKEND=screencapture
-FLOWLENS_OBSERVER_VISION_ENABLED=1
-FLOWLENS_OBSERVER_VISION_MODEL=Qwen3.5-2B-6bit
+SOCAI_LLM_BACKEND=sonnet
+SOCAI_WHISPER_CLI=
+SOCAI_WHISPER_MODELS_DIR=
+SOCAI_OBSERVER_DIFF_THRESHOLD=0.30
+SOCAI_OBSERVER_CAPTURE_ALL_DISPLAYS=1
+SOCAI_OBSERVER_CAPTURE_BACKEND=screencapture
+SOCAI_OBSERVER_VISION_ENABLED=1
+SOCAI_OBSERVER_VISION_MODEL=Qwen3.5-2B-6bit
 ```
 
 ## Observer-Only Quickstart
@@ -157,14 +157,14 @@ FLOWLENS_OBSERVER_VISION_MODEL=Qwen3.5-2B-6bit
 If you want continuous desktop capture without the desktop app, this is the shortest path:
 
 ```bash
-flowlens observer install-agent
-flowlens observer status
+socai observer install-agent
+socai observer status
 ```
 
-If you change `FLOWLENS_OBSERVER_*` environment variables, run `install-agent`
+If you change `SOCAI_OBSERVER_*` environment variables, run `install-agent`
 again so the launchd plist picks up the new values.
 
-Observer now defaults to `FLOWLENS_OBSERVER_CAPTURE_BACKEND=screencapture`
+Observer now defaults to `SOCAI_OBSERVER_CAPTURE_BACKEND=screencapture`
 because it is materially more stable than in-process Quartz capture for
 long-running multi-display sessions. Set it to `quartz` only if you need the
 lower latency and are willing to trade off stability.
@@ -191,37 +191,37 @@ Browser task run directories also accumulate per-screenshot resource snapshots i
 
 Canonical Python packages are now:
 
-- `flowlens.core`: bridge, runtime, recorder, reporting, DOM-first interaction + verification primitives
-- `flowlens.observer`: background desktop observation, storage, summarization, and recall
-- `flowlens.perception`: hosted/local vision, OCR, grounding, transcription, media preprocessing
-- `flowlens.reasoning`: task understanding, planning, evaluation, reusable knowledge extraction
-- `flowlens.agent`: LLM-driven agent loop, generic browser/vision tools, backend abstraction (Anthropic + local Qwen MLX)
-- `flowlens.knowledge`: per-site YAML knowledge files loaded into the agent prompt
-- `flowlens.platforms.wechat`: site-level desktop adapter
-- `flowlens.workflows.wechat`: reusable WeChat collection / reporting workflow pieces
+- `socai.core`: bridge, runtime, recorder, reporting, DOM-first interaction + verification primitives
+- `socai.observer`: background desktop observation, storage, summarization, and recall
+- `socai.perception`: hosted/local vision, OCR, grounding, transcription, media preprocessing
+- `socai.reasoning`: task understanding, planning, evaluation, reusable knowledge extraction
+- `socai.agent`: LLM-driven agent loop, generic browser/vision tools, backend abstraction (Anthropic + local Qwen MLX)
+- `socai.knowledge`: per-site YAML knowledge files loaded into the agent prompt
+- `socai.platforms.wechat`: site-level desktop adapter
+- `socai.workflows.wechat`: reusable WeChat collection / reporting workflow pieces
 
-The legacy hardcoded XHS workflow (`flowlens.platforms.xhs` and `flowlens.workflows.xhs`) was removed when the generic agent loop landed. Free-form tasks now go through the unified `flowlens run` entrypoint, which exposes browser, desktop, Xiaohongshu, and WeChat capability packs to the same agent.
+The legacy hardcoded XHS workflow (`socai.platforms.xhs` and `socai.workflows.xhs`) was removed when the generic agent loop landed. Free-form tasks now go through the unified `socai run` entrypoint, which exposes browser, desktop, Xiaohongshu, and WeChat capability packs to the same agent.
 
 ## Common Commands
 
 Run a free-form task through the unified agent:
 
 ```bash
-flowlens "在小红书上调研露营装备"
-flowlens run "总结微信 x-mcp群里最近几周的用户需求和讨论话题"
-flowlens run "在小红书上调研露营装备" --llm-backend qwen-local
+socai "在小红书上调研露营装备"
+socai run "总结微信 x-mcp群里最近几周的用户需求和讨论话题"
+socai run "在小红书上调研露营装备" --llm-backend qwen-local
 ```
 
 Reload the unpacked Chrome extension through the live bridge:
 
 ```bash
-flowlens extension reload
+socai extension reload
 ```
 
 Inspect the observer subsystem state:
 
 ```bash
-flowlens observer status
+socai observer status
 ```
 
 This now includes aggregate timing stats and the latest capture-stage timings (`capture_image_ms`, `diff_ms`, `ocr_ms`, `visual_ms`, `total_ms`).
@@ -229,19 +229,19 @@ This now includes aggregate timing stats and the latest capture-stage timings (`
 Capture the current desktop once into the observer database:
 
 ```bash
-flowlens observer capture-once
+socai observer capture-once
 ```
 
 Install the background observer agent:
 
 ```bash
-flowlens observer install-agent
+socai observer install-agent
 ```
 
 Generate a lightweight local journal without LLM calls:
 
 ```bash
-flowlens observer journal --no-llm
+socai observer journal --no-llm
 ```
 
 Run the local-vs-cloud web-use benchmark (text, DOM, screenshot cases):

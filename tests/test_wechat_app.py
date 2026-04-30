@@ -4,11 +4,11 @@ from __future__ import annotations
 
 import unittest
 
-from flowlens.core.ocr_layout import OCRLine, OCRPage
-from flowlens.platforms.wechat.app import WeChatDesktopApp
-from flowlens.platforms.wechat.parser import WeChatConversationParser
-from flowlens.platforms.wechat.models import WeChatParsedCapture
-from flowlens.workflows.wechat.task_runner import _best_conversation_title
+from socai.core.ocr_layout import OCRLine, OCRPage
+from socai.platforms.wechat.app import WeChatDesktopApp
+from socai.platforms.wechat.parser import WeChatConversationParser
+from socai.platforms.wechat.models import WeChatParsedCapture
+from socai.workflows.wechat.task_runner import _best_conversation_title
 
 
 class WeChatTitleParsingTest(unittest.TestCase):

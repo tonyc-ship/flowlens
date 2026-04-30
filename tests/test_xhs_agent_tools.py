@@ -1,6 +1,6 @@
 """XHS tool helpers — screenshot-OCR → note body extraction."""
 
-from flowlens.platforms.xhs.tools import _content_from_note_ocr
+from socai.platforms.xhs.tools import _content_from_note_ocr
 
 
 def test_extract_note_content_from_screenshot_ocr() -> None:

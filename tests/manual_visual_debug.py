@@ -16,8 +16,8 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
-from flowlens.core.runtime import task_runs_root
-from flowlens.debug import VisualDebugger
+from socai.core.runtime import task_runs_root
+from socai.debug import VisualDebugger
 
 
 def main() -> int:

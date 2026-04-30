@@ -8,11 +8,11 @@ mkdir -p "$RUNTIME_DIR"
 rsync -a --delete \
   --exclude '__pycache__' \
   --exclude '*.pyc' \
-  "$ROOT_DIR/flowlens/" \
-  "$RUNTIME_DIR/flowlens/"
+  "$ROOT_DIR/socai/" \
+  "$RUNTIME_DIR/socai/"
 
-if [[ -f "$ROOT_DIR/desktop_app/runtime_bundle/bin/flowlens" ]]; then
-  chmod +x "$ROOT_DIR/desktop_app/runtime_bundle/bin/flowlens"
+if [[ -f "$ROOT_DIR/desktop_app/runtime_bundle/bin/socai" ]]; then
+  chmod +x "$ROOT_DIR/desktop_app/runtime_bundle/bin/socai"
 fi
 
 echo "Prepared desktop runtime at $RUNTIME_DIR"

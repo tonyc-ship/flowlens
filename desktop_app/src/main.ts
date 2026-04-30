@@ -92,8 +92,8 @@ function render() {
     <main class="shell">
       <header class="topbar">
         <div class="brand">
-          <img class="brand-mark" src="${appIcon}" alt="FlowLens app icon" />
-          <span>FlowLens</span>
+          <img class="brand-mark" src="${appIcon}" alt="SocAI app icon" />
+          <span>SocAI</span>
         </div>
 
         <button id="status-pill" class="status-pill ${healthy ? "ready" : "idle"}">
@@ -211,7 +211,7 @@ function renderXhsMode(): string {
   return `
     <section class="hero ${xhsTasks.length ? "hero-compact" : ""}">
       <div class="composer-wrap">
-        <h1>What should FlowLens do?</h1>
+        <h1>What should SocAI do?</h1>
 
         <div class="composer">
           <div class="xhs-model-tabs">
@@ -554,7 +554,7 @@ function renderTaskOutcome(task: TaskStub): string {
 function renderWeChatMonitor(task: TaskStub | null): string {
   const events = task?.watchEvents || [];
   const caution = task?.controlActive
-    ? `<div class="control-banner">FlowLens is controlling WeChat. Do not fight for the mouse or keyboard.</div>`
+    ? `<div class="control-banner">SocAI is controlling WeChat. Do not fight for the mouse or keyboard.</div>`
     : "";
   const body = events.length
     ? events

@@ -1,8 +1,8 @@
 {
   "$schema": "https://schema.tauri.app/config/2",
-  "productName": "FlowLens Desktop",
+  "productName": "SocAI Desktop",
   "version": "0.1.0",
-  "identifier": "com.flowlens.desktop",
+  "identifier": "com.socai.desktop",
   "build": {
     "beforeDevCommand": "npm run dev",
     "devUrl": "http://localhost:1420",
@@ -13,7 +13,7 @@
     "withGlobalTauri": true,
     "windows": [
       {
-        "title": "FlowLens Desktop",
+        "title": "SocAI Desktop",
         "width": 1360,
         "height": 900,
         "minWidth": 1120,
@@ -43,7 +43,7 @@
   "plugins": {
     "deep-link": {
       "desktop": {
-        "schemes": ["flowlens"]
+        "schemes": ["socai"]
       }
     }
   }

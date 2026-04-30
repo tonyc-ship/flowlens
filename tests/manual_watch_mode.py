@@ -16,7 +16,7 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).parent.parent))
 
-from flowlens.core.bridge import ExtensionBridge
+from socai.core.bridge import ExtensionBridge
 
 
 def trigger_side_panel_shortcut() -> None:

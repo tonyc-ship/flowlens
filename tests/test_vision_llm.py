@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import unittest
 
-from flowlens.perception.llm import VisionLLM
+from socai.perception.llm import VisionLLM
 
 
 class VisionLlmBackendTest(unittest.TestCase):

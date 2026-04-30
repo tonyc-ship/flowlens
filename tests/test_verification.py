@@ -3,7 +3,7 @@
 import unittest
 from unittest import IsolatedAsyncioTestCase
 
-from flowlens.core.verification import VerificationResult, verify_dom_first
+from socai.core.verification import VerificationResult, verify_dom_first
 
 
 class DomFirstVerificationTest(IsolatedAsyncioTestCase):

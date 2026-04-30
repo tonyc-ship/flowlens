@@ -1,5 +1,5 @@
 /**
- * FlowLens Agent — Content Script (v2)
+ * SocAI Agent — Content Script (v2)
  *
  * Handles generic DOM actions, watch UI, and platform adapter dispatch.
  * Communicates with background.js which relays to the external Python agent.
@@ -16,7 +16,7 @@ function watchHighlightElement(el) {
   if (!el) return;
   const rect = el.getBoundingClientRect();
   const overlay = document.createElement('div');
-  overlay.className = 'flowlens-element-highlight';
+  overlay.className = 'socai-element-highlight';
   overlay.style.cssText = [
     'position: fixed',
     `left: ${rect.left - 3}px`,
@@ -74,7 +74,7 @@ function ensureWatchOverlay() {
   if (watchOverlayHost) return watchOverlayHost;
 
   watchOverlayHost = document.createElement('div');
-  watchOverlayHost.id = 'flowlens-watch-overlay';
+  watchOverlayHost.id = 'socai-watch-overlay';
   watchOverlayHost.style.cssText = [
     'position: fixed',
     'top: 88px',
@@ -218,7 +218,7 @@ function ensureWatchOverlay() {
     <div class="header">
       <span class="dot" id="cvWatchDot"></span>
       <div class="grow">
-        <div class="title">FlowLens Agent Status</div>
+        <div class="title">SocAI Agent Status</div>
         <div class="subtitle" id="cvWatchStatus">${escapeWatchHtml(watchLocaleText('Waiting for agent activity...', '等待 Agent 步骤...'))}</div>
       </div>
       <button class="toggle" id="cvWatchToggle" title="Collapse">−</button>
@@ -259,18 +259,18 @@ function showWatchOverlay() {
 function setWatchOverlayCaptureHidden(hidden) {
   const hosts = [
     watchOverlayHost,
-    document.getElementById('flowlens-watch-overlay'),
-    document.getElementById('flowlens-watch-root'),
+    document.getElementById('socai-watch-overlay'),
+    document.getElementById('socai-watch-root'),
   ].filter(Boolean);
   hosts.forEach((host) => {
     if (hidden) {
-      if (host.dataset.flowlensCaptureDisplay === undefined) {
-        host.dataset.flowlensCaptureDisplay = host.style.display || '';
+      if (host.dataset.socaiCaptureDisplay === undefined) {
+        host.dataset.socaiCaptureDisplay = host.style.display || '';
       }
       host.style.display = 'none';
-    } else if (host.dataset.flowlensCaptureDisplay !== undefined) {
-      host.style.display = host.dataset.flowlensCaptureDisplay;
-      delete host.dataset.flowlensCaptureDisplay;
+    } else if (host.dataset.socaiCaptureDisplay !== undefined) {
+      host.style.display = host.dataset.socaiCaptureDisplay;
+      delete host.dataset.socaiCaptureDisplay;
     } else {
       host.style.display = '';
     }
@@ -538,21 +538,21 @@ function recordMediaRequest(entry) {
 function installMediaRequestHook() {
   window.addEventListener('message', (event) => {
     if (event.source !== window) return;
-    if (event.data?.type !== 'flowlens_media_request') return;
+    if (event.data?.type !== 'socai_media_request') return;
     recordMediaRequest(event.data.payload);
   });
 
   const script = document.createElement('script');
-  script.dataset.flowlensMediaHook = 'true';
+  script.dataset.socaiMediaHook = 'true';
   script.textContent = `
     (() => {
-      if (window.__flowlensMediaHookInstalled) return;
-      window.__flowlensMediaHookInstalled = true;
+      if (window.__socaiMediaHookInstalled) return;
+      window.__socaiMediaHookInstalled = true;
 
       const emit = (payload) => {
         try {
           window.postMessage({
-            type: 'flowlens_media_request',
+            type: 'socai_media_request',
             payload: { ...payload, ts: Date.now(), href: location.href }
           }, '*');
         } catch {}
@@ -738,7 +738,7 @@ function collectVideoCandidates(videoEl) {
 
 // ── Platform Adapter Support ──────────────────────────────────
 
-window.FlowLensCommon = {
+window.SocAICommon = {
   $,
   $$,
   text,
@@ -751,7 +751,7 @@ window.FlowLensCommon = {
 };
 
 function requireXhsMethod(method) {
-  const adapter = window.FlowLensXhs || {};
+  const adapter = window.SocAIXhs || {};
   const fn = adapter[method];
   if (typeof fn !== 'function') {
     throw new Error(`XHS adapter method unavailable: ${method}`);
@@ -800,7 +800,7 @@ setTimeout(() => {
 }, 0);
 
 chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
-  if (msg.type === 'flowlens_capture_overlay') {
+  if (msg.type === 'socai_capture_overlay') {
     setWatchOverlayCaptureHidden(!!msg.hidden);
     try { sendResponse({ ok: true }); } catch {}
     return;
@@ -809,7 +809,7 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
   if (msg.type === 'watch_highlight') {
     if (msg.mode === 'coords') {
       const overlay = document.createElement('div');
-      overlay.className = 'flowlens-element-highlight';
+      overlay.className = 'socai-element-highlight';
       overlay.style.cssText = [
         'position: fixed',
         `left: ${(msg.x || 0) - 14}px`,
@@ -856,14 +856,14 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
           result = {
             ok: true,
             url: window.location.href,
-            state: window.FlowLensXhs?.detectState?.() || 'unknown',
+            state: window.SocAIXhs?.detectState?.() || 'unknown',
           };
           break;
 
         case 'detect_state': {
-          const detectState = window.FlowLensXhs?.detectState;
-          const detectAntiBotState = window.FlowLensXhs?.detectAntiBotState;
-          const detectNoteType = window.FlowLensXhs?.detectNoteType;
+          const detectState = window.SocAIXhs?.detectState;
+          const detectAntiBotState = window.SocAIXhs?.detectAntiBotState;
+          const detectNoteType = window.SocAIXhs?.detectNoteType;
           result = {
             state: detectState ? detectState() : 'unknown',
             antiBotState: detectAntiBotState ? detectAntiBotState() : '',
@@ -974,4 +974,4 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
   return true;
 });
 
-console.log('[FlowLens] Content script loaded:', window.location.href);
+console.log('[SocAI] Content script loaded:', window.location.href);

@@ -1,5 +1,5 @@
 /**
- * FlowLens Observer Viewer
+ * SocAI Observer Viewer
  *
  * Reads observer data from chrome.storage.local and renders it
  * as timeline, click patterns, navigation flows, and page structures.
@@ -351,7 +351,7 @@
       const url = URL.createObjectURL(blob);
       const a = document.createElement('a');
       a.href = url;
-      a.download = `flowlens_observer_${new Date().toISOString().slice(0, 10)}.json`;
+      a.download = `socai_observer_${new Date().toISOString().slice(0, 10)}.json`;
       a.click();
       URL.revokeObjectURL(url);
     });

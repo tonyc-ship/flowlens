@@ -6,10 +6,10 @@ import unittest
 from pathlib import Path
 from unittest import IsolatedAsyncioTestCase
 
-from flowlens.agent.loop import _select_active_tools
-from flowlens.agent.run_state import RunState
-from flowlens.agent.tool import Tool, ToolContext
-from flowlens.agent.tools.state import (
+from socai.agent.loop import _select_active_tools
+from socai.agent.run_state import RunState
+from socai.agent.tool import Tool, ToolContext
+from socai.agent.tools.state import (
     ReadRunStateTool,
     ReadSavedArtifactTool,
     UpdateTaskPlanTool,

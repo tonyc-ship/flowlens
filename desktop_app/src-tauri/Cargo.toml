@@ -1,7 +1,7 @@
 [package]
-name = "flowlens_desktop"
+name = "socai_desktop"
 version = "0.1.0"
-description = "Minimal Tauri desktop shell for FlowLens"
+description = "Minimal Tauri desktop shell for SocAI"
 authors = ["Tony Chong"]
 edition = "2021"
 
