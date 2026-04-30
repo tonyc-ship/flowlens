@@ -177,7 +177,7 @@ class MediaProcessor:
         return self._openai_compat_client
 
     def _openai_compat_extra_body(self) -> dict:
-        if self.backend == BACKEND_KIMI and self.config.model.startswith("kimi-k2.5"):
+        if self.backend == BACKEND_KIMI and self.config.model.startswith("kimi-k2.6"):
             return {"thinking": {"type": "disabled"}}
         if self.backend == BACKEND_QWEN_CLOUD:
             return {"enable_thinking": False}

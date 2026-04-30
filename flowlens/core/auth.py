@@ -39,7 +39,7 @@ CODEX_AUTH_FILE = Path.home() / ".codex" / "auth.json"
 
 DEFAULT_ANTHROPIC_MODEL = "claude-sonnet-4-6"
 DEFAULT_OPENAI_MODEL = "gpt-5.4"
-DEFAULT_KIMI_MODEL = "kimi-k2.5"                    # Kimi K2.5: native multimodal (text + image + video)
+DEFAULT_KIMI_MODEL = "kimi-k2.6"                    # Kimi K2.6: native multimodal (text + image + video)
 DEFAULT_QWEN_MODEL = "qwen3.6-plus"                # Qwen3.6-Plus: current hosted Qwen default (multimodal)
 
 

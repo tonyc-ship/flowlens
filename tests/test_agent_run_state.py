@@ -45,7 +45,7 @@ class RunStateTest(unittest.TestCase):
     def test_run_state_dedupes_evidence_and_updates_working_memory(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             run_dir = Path(tmp)
-            state = RunState(run_dir, "Compare two track-day notes", model="kimi-k2.5")
+            state = RunState(run_dir, "Compare two track-day notes", model="kimi-k2.6")
 
             (run_dir / "site_results").mkdir(parents=True, exist_ok=True)
             (run_dir / "site_results" / "001_note.json").write_text("{}", encoding="utf-8")

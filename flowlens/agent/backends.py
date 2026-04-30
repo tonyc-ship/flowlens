@@ -673,7 +673,7 @@ class KimiBackend(OpenAICompatibleBackend):
     def _request_extra_body(self, *, has_tools: bool) -> dict:
         if not has_tools:
             return {}
-        if self.model.startswith("kimi-k2.5"):
+        if self.model.startswith("kimi-k2.6"):
             return {"thinking": {"type": "disabled"}}
         return {}
 
