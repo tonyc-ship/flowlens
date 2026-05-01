@@ -40,7 +40,7 @@ struct PrototypeCommandResult {
 #[tauri::command]
 fn app_health() -> HealthStatus {
     HealthStatus {
-        app_name: "SocAI Prototype",
+        app_name: "Socai Prototype",
         version: env!("CARGO_PKG_VERSION"),
         os: std::env::consts::OS,
         arch: std::env::consts::ARCH,
@@ -74,7 +74,10 @@ fn capture_test_screenshot(app: tauri::AppHandle) -> Result<PrototypeCommandResu
     run_prototype_action(&app, "capture_test_screenshot")
 }
 
-fn run_prototype_action(app: &tauri::AppHandle, action: &str) -> Result<PrototypeCommandResult, String> {
+fn run_prototype_action(
+    app: &tauri::AppHandle,
+    action: &str,
+) -> Result<PrototypeCommandResult, String> {
     let repo_root = repo_root()?;
     let (script, extra_args): (&str, &[&str]) = match action {
         "connect_chrome" => ("chrome_discovery.py", &["--json"]),
@@ -82,12 +85,15 @@ fn run_prototype_action(app: &tauri::AppHandle, action: &str) -> Result<Prototyp
         "controlled_tab" => ("cdp_controlled_tab.py", &["--json", "--timeout", "30"]),
         "capture_test_screenshot" => ("cdp_controlled_tab.py", &["--json", "--timeout", "30"]),
         "xhs_probe" => ("cdp_xhs_probe.py", &["--json", "--timeout", "30"]),
-        _ => return Err(format!("Unknown SocAI prototype action: {action}")),
+        _ => return Err(format!("Unknown Socai prototype action: {action}")),
     };
 
-    let script_path = repo_root.join("apps").join("socai").join("prototype").join(script);
+    let script_path = repo_root.join("app").join("prototype").join(script);
     if !script_path.exists() {
-        return Err(format!("Prototype script not found: {}", script_path.display()));
+        return Err(format!(
+            "Prototype script not found: {}",
+            script_path.display()
+        ));
     }
 
     let output = if script == "chrome_discovery.py" {
@@ -143,9 +149,9 @@ fn run_prototype_action(app: &tauri::AppHandle, action: &str) -> Result<Prototyp
 
 fn repo_root() -> Result<PathBuf, String> {
     Path::new(env!("CARGO_MANIFEST_DIR"))
-        .join("../../..")
+        .join("../..")
         .canonicalize()
-        .map_err(|err| format!("Failed to resolve repo root from SocAI Tauri app: {err}"))
+        .map_err(|err| format!("Failed to resolve repo root from Socai Tauri app: {err}"))
 }
 
 fn parse_json_stdout(stdout: &str) -> Option<Value> {
@@ -171,7 +177,8 @@ fn collect_screenshot_artifacts(value: &Value) -> Result<Vec<ScreenshotArtifact>
 }
 
 fn read_screenshot_artifact(label: &str, path: &str) -> Result<ScreenshotArtifact, String> {
-    let bytes = std::fs::read(path).map_err(|err| format!("Failed to read screenshot {path}: {err}"))?;
+    let bytes =
+        std::fs::read(path).map_err(|err| format!("Failed to read screenshot {path}: {err}"))?;
     Ok(ScreenshotArtifact {
         label: label.to_string(),
         path: path.to_string(),
@@ -190,5 +197,5 @@ pub fn run() {
             capture_test_screenshot
         ])
         .run(tauri::generate_context!())
-        .expect("error while running SocAI prototype");
+        .expect("error while running Socai prototype");
 }

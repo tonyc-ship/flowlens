@@ -1,11 +1,11 @@
 #!/usr/bin/env python3
-"""Create a marked SocAI-controlled tab and exercise basic CDP primitives.
+"""Create a marked Socai-controlled tab and exercise basic CDP primitives.
 
 Session 3 scope:
 - connect to existing Chrome through the Session 1/2 discovery path
 - create a new page target
 - attach to that target
-- mark its title with `🟢 SocAI`
+- mark its title with `🟢 Socai`
 - exercise navigate/evaluate/screenshot/click/type/key/scroll primitives
 
 This is still a technical prototype. It does not open XHS and does not expose
@@ -28,13 +28,13 @@ from typing import Any
 from chrome_discovery import INSPECT_URL, discover_chrome_cdp, open_inspect_page
 from cdp_targets import cdp_use_install_help, exception_message
 
-SOCAI_TITLE_PREFIX = "🟢 SocAI"
+SOCAI_TITLE_PREFIX = "🟢 Socai"
 
 TEST_PAGE_HTML = """<!doctype html>
 <html>
 <head>
   <meta charset="utf-8">
-  <title>SocAI Primitive Test</title>
+  <title>Socai Primitive Test</title>
   <style>
     body { font-family: -apple-system, BlinkMacSystemFont, sans-serif; margin: 40px; min-height: 1400px; }
     button, input { font-size: 18px; padding: 10px 14px; }
@@ -42,9 +42,9 @@ TEST_PAGE_HTML = """<!doctype html>
   </style>
 </head>
 <body>
-  <h1>SocAI Primitive Test</h1>
-  <p>This page is created by the SocAI CDP prototype.</p>
-  <button id="click-target" onclick="document.body.dataset.clicked='yes'; this.textContent='Clicked by SocAI';">Click me</button>
+  <h1>Socai Primitive Test</h1>
+  <p>This page is created by the Socai CDP prototype.</p>
+  <button id="click-target" onclick="document.body.dataset.clicked='yes'; this.textContent='Clicked by Socai';">Click me</button>
   <input id="type-target" placeholder="Type target" />
   <div id="spacer">Scroll target area</div>
   <script>
@@ -71,7 +71,7 @@ class RuntimeResult:
     type: str | None = None
 
 
-class SocAICDPPage:
+class SocaiCDPPage:
     def __init__(self, client: Any, session_id: str, target_id: str):
         self.client = client
         self.session_id = session_id
@@ -152,11 +152,11 @@ class SocAICDPPage:
         await self.send("Input.dispatchKeyEvent", {"type": "keyUp", **payload})
 
 
-async def create_controlled_tab(client: Any, initial_url: str) -> SocAICDPPage:
+async def create_controlled_tab(client: Any, initial_url: str) -> SocaiCDPPage:
     created = await client.send_raw("Target.createTarget", {"url": initial_url})
     target_id = created["targetId"]
     attached = await client.send_raw("Target.attachToTarget", {"targetId": target_id, "flatten": True})
-    page = SocAICDPPage(client=client, session_id=attached["sessionId"], target_id=target_id)
+    page = SocaiCDPPage(client=client, session_id=attached["sessionId"], target_id=target_id)
     await page.enable()
     return page
 
@@ -179,7 +179,7 @@ async def run(args: argparse.Namespace) -> dict[str, Any]:
     except ModuleNotFoundError as exc:
         return {
             "status": "dependency_missing",
-            "reason": cdp_use_install_help("apps/socai/prototype/cdp_controlled_tab.py"),
+            "reason": cdp_use_install_help("app/prototype/cdp_controlled_tab.py"),
         }
 
     endpoint = discovery["endpoint"]
@@ -244,7 +244,7 @@ async def run(args: argparse.Namespace) -> dict[str, Any]:
 
         return {
             "status": "controlled_tab_ready",
-            "reason": "Created and exercised a marked SocAI-controlled Chrome tab.",
+            "reason": "Created and exercised a marked Socai-controlled Chrome tab.",
             "endpoint": endpoint,
             "target_id": page.target_id,
             "session_id": page.session_id,
@@ -290,7 +290,7 @@ def default_screenshot_path() -> Path:
 
 
 def print_human(result: dict[str, Any]) -> None:
-    print(f"SocAI controlled-tab status: {result['status']}")
+    print(f"Socai controlled-tab status: {result['status']}")
     print(f"Reason: {result.get('reason')}")
 
     if result["status"] == "setup_required":

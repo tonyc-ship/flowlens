@@ -1,20 +1,20 @@
-# SocAI Desktop + CDP Design Plan
+# Socai Desktop + CDP Design Plan
 
 Status: planning draft
-Product name: **SocAI** — pronounced like “social AI” / “soc-ai”
+Product name: **Socai** — pronounced like “social AI” / “soc-ai”
 Created: 2026-04-29
-Inputs: current FlowLens architecture, current `desktop_app/` spike, current Chrome extension bridge, local `../browser-harness`, and local browser-control framework notes.
+Inputs: current Socai architecture, current `archive/legacy_desktop_app/` spike, current Chrome extension bridge, local `../browser-harness`, and local browser-control framework notes.
 
 ## 1. One-sentence direction
 
-Build **SocAI**, a new desktop agent app for social-platform work, powered by the FlowLens runtime. SocAI should own setup, runtime orchestration, browser connection, task progress, and reports; migrate browser automation from the current Chrome-extension bridge toward a CDP-based browser controller inspired by `browser-harness`, while keeping the existing FlowLens agent/tool/XHS knowledge layers reusable.
+Build **Socai**, a new desktop agent app for social-platform work, powered by the Socai runtime. Socai should own setup, runtime orchestration, browser connection, task progress, and reports; migrate browser automation from the current Chrome-extension bridge toward a CDP-based browser controller inspired by `browser-harness`, while keeping the existing Socai agent/tool/XHS knowledge layers reusable.
 
 ## 2. Product goals
 
 ### Product identity and scope
 
-- **SocAI** is the user-facing desktop app.
-- **FlowLens** remains the underlying automation/runtime framework unless we later decide to rename packages.
+- **Socai** is the user-facing desktop app.
+- **Socai** remains the underlying automation/runtime framework unless we later decide to rename packages.
 - Product category: a social-platform agent that helps users understand, analyze, summarize, and eventually operate across social platforms.
 - First vertical: Xiaohongshu / 小红书 (XHS).
 - First high-value jobs: analyze posts, creators, comments, trends, content patterns, and engagement signals.
@@ -22,7 +22,7 @@ Build **SocAI**, a new desktop agent app for social-platform work, powered by th
 
 ### Primary goals
 
-- Make SocAI usable by non-technical users without asking them to:
+- Make Socai usable by non-technical users without asking them to:
   - `pip install` dependencies manually
   - run CLI commands
   - load an unpacked Chrome extension
@@ -38,7 +38,7 @@ Build **SocAI**, a new desktop agent app for social-platform work, powered by th
   - stop/retry/debug
 - Replace or reduce dependence on the Chrome extension by using CDP for browser control.
 - Make XHS social analysis feel like a product workflow, not a developer automation script.
-- Preserve the existing high-value FlowLens intelligence:
+- Preserve the existing high-value Socai intelligence:
   - XHS-specific tools
   - XHS anti-bot knowledge
   - note/profile/comment/media extraction
@@ -52,26 +52,24 @@ Build **SocAI**, a new desktop agent app for social-platform work, powered by th
 - Do not optimize for App Store distribution first.
 - Do not make local LLM packaging the default first-run path unless it is already reliable.
 - Do not build every desktop-observer feature into the first desktop product.
-- Do not broaden SocAI beyond XHS until the first XHS vertical proves the full desktop + CDP experience.
+- Do not broaden Socai beyond XHS until the first XHS vertical proves the full desktop + CDP experience.
 
-## 3. Important product decision: SocAI is a new app, not the existing spike
+## 3. Important product decision: Socai is a new app, not the existing spike
 
-The current `desktop_app/` is a useful spike and reference, but SocAI should be treated as a new product surface.
+The old top-level `desktop_app/` spike has been deprecated and moved to `archive/legacy_desktop_app/` for reference. The active Socai desktop application path is now `app/`.
 
-Recommended stance:
+Current stance:
 
-- Keep `desktop_app/` as legacy/reference until SocAI is real.
-- Start a new desktop application path after design approval, for example:
-  - `apps/socai/`, or
-  - `socai_app/`
-- Reuse code/concepts from the current Tauri app only when they help:
+- Keep `archive/legacy_desktop_app/` as legacy/reference only.
+- Keep new desktop work in `app/`.
+- Reuse code/concepts from the archived Tauri app only when they help:
   - runtime bundle resolution
   - task spawning
   - report path discovery
   - stop-task handling
 - Do not let old UI assumptions constrain the new product.
 
-Open decision: use Tauri again, or evaluate another shell. Tauri remains a strong default because FlowLens is already Python-heavy and wants a lightweight native wrapper.
+Tauri remains the shell for the active prototype because Socai is already Python-heavy and wants a lightweight native wrapper.
 
 ## 4. Current architecture summary
 
@@ -79,8 +77,8 @@ Today, a browser task works roughly like this:
 
 ```text
 CLI / desktop spike / MCP host
-  -> flowlens.agent.loop
-  -> flowlens.tools.registry
+  -> socai.agent.loop
+  -> socai.tools.registry
   -> XHS / browser tools
   -> ExtensionBridge WebSocket server
   -> Chrome extension background.js
@@ -90,12 +88,12 @@ CLI / desktop spike / MCP host
 
 Key assets to preserve:
 
-- `flowlens.agent.loop.run_agent`
-- `flowlens.tools.build_tools`
-- `flowlens.platforms.xhs.tools`
-- `flowlens.platforms.xhs.processor.XHSSiteAdapter`
+- `socai.agent.loop.run_agent`
+- `socai.tools.build_tools`
+- `socai.platforms.xhs.tools`
+- `socai.platforms.xhs.processor.XHSSiteAdapter`
 - `chrome_extension/content_xhs.js` XHS DOM/site adapter logic
-- `flowlens.knowledge/sites/xiaohongshu.yaml`
+- `socai.knowledge/sites/xiaohongshu.yaml`
 - run artifacts under `task_runs/`
 
 Main UX problems:
@@ -133,15 +131,15 @@ Things not to copy directly:
 
 - The “agent edits helpers.py mid-task” philosophy is good for a coding-agent harness, not for a user-facing product.
 - The CLI-only UX is not the target UX.
-- The “attach to existing Chrome after chrome://inspect Allow” path is acceptable for SocAI because reusing the user’s real social-platform login state is more important than avoiding the one-time permission ceremony. SocAI should wrap this flow with clear UI guidance instead of exposing it as a developer setup task.
+- The “attach to existing Chrome after chrome://inspect Allow” path is acceptable for Socai because reusing the user’s real social-platform login state is more important than avoiding the one-time permission ceremony. Socai should wrap this flow with clear UI guidance instead of exposing it as a developer setup task.
 
-## 5.1. Browser-harness `helpers.py` model vs SocAI model
+## 5.1. Browser-harness `helpers.py` model vs Socai model
 
 Your understanding of browser-harness is correct: it gives a coding agent a small Python helper library, pre-imports that library into `browser-harness -c`, and lets the agent write arbitrary Python code that calls those helpers. If a primitive is missing, the coding agent can edit `helpers.py` itself and then use the new helper immediately.
 
-That is an excellent fit for Claude Code / Codex-style agents because the agent already has a code execution environment and the user expects it to edit files. It is not the right default product model for SocAI because SocAI is a consumer desktop app handling a real logged-in social profile. Letting the model freely write and execute Python, mutate the shipped helper library, or call unrestricted raw CDP would make consent, safety, reproducibility, support, and packaging much harder.
+That is an excellent fit for Claude Code / Codex-style agents because the agent already has a code execution environment and the user expects it to edit files. It is not the right default product model for Socai because Socai is a consumer desktop app handling a real logged-in social profile. Letting the model freely write and execute Python, mutate the shipped helper library, or call unrestricted raw CDP would make consent, safety, reproducibility, support, and packaging much harder.
 
-SocAI should copy the **technical substrate** of browser-harness, not the full coding-agent interaction model:
+Socai should copy the **technical substrate** of browser-harness, not the full coding-agent interaction model:
 
 - Copy/adapt:
   - CDP connection to the user’s real Chrome profile.
@@ -155,11 +153,11 @@ SocAI should copy the **technical substrate** of browser-harness, not the full c
   - Runtime edits to `helpers.py` / shipped product code.
   - Unbounded raw CDP exposed directly to the user-facing agent.
 
-Instead, SocAI should use audited tools and skills:
+Instead, Socai should use audited tools and skills:
 
 ```text
 LLM planner
-  -> fixed SocAI/FlowLens tool schemas
+  -> fixed Socai/Socai tool schemas
   -> XHS-specific macros and extractors
   -> CDP browser kernel
   -> injected XHS JavaScript adapter
@@ -172,22 +170,22 @@ A future advanced/dev mode could allow sandboxed codegen experiments, but that i
 
 ## 6. Browser strategy
 
-Decision: SocAI should **default to the user’s existing Chrome profile**.
+Decision: Socai should **default to the user’s existing Chrome profile**.
 
-The first product vertical is XHS, and XHS may restrict or heavily complicate multiple simultaneous logged-in devices/sessions. A separate managed SocAI Chrome profile could force the user to log in again, potentially displacing or breaking their normal browser login. That is worse than asking the user to approve Chrome’s remote-debugging / inspect permission once.
+The first product vertical is XHS, and XHS may restrict or heavily complicate multiple simultaneous logged-in devices/sessions. A separate managed Socai Chrome profile could force the user to log in again, potentially displacing or breaking their normal browser login. That is worse than asking the user to approve Chrome’s remote-debugging / inspect permission once.
 
-Therefore, SocAI should reuse the user’s default Chrome profile as much as possible and attach through CDP, following the browser-harness-style permission flow.
+Therefore, Socai should reuse the user’s default Chrome profile as much as possible and attach through CDP, following the browser-harness-style permission flow.
 
 ### Mode A — attach to existing Chrome via CDP (recommended default)
 
-SocAI connects to the user’s already-running Chrome profile via CDP.
+Socai connects to the user’s already-running Chrome profile via CDP.
 
 ```text
-SocAI Desktop
+Socai Desktop
   -> detect running Chrome / default user profile
   -> guide user through chrome://inspect/#remote-debugging if needed
   -> connect to existing Chrome DevTools endpoint
-  -> create a SocAI-controlled tab in the existing Chrome profile/window
+  -> create a Socai-controlled tab in the existing Chrome profile/window
   -> reuse the user’s existing XHS login/session/cookies
 ```
 
@@ -204,51 +202,51 @@ Cons:
 
 - Requires a one-time `chrome://inspect/#remote-debugging` permission/Allow flow on some machines.
 - The permission flow must be explained carefully because it grants powerful browser access.
-- SocAI must avoid interfering with the user’s active browsing.
+- Socai must avoid interfering with the user’s active browsing.
 - Google/Chrome CDP restrictions may change.
 
 Required mitigations:
 
 - Make the permission flow explicit and user-consented.
-- Be honest that CDP permission is broad: technically SocAI can inspect/control Chrome targets in that profile, even though the product will scope itself to the SocAI-controlled tab.
-- Create a new SocAI-controlled tab in the existing Chrome profile/window instead of taking over the current foreground tab.
+- Be honest that CDP permission is broad: technically Socai can inspect/control Chrome targets in that profile, even though the product will scope itself to the Socai-controlled tab.
+- Create a new Socai-controlled tab in the existing Chrome profile/window instead of taking over the current foreground tab.
 - Pin all automation to that tab.
-- Visibly mark the controlled tab. Desired: put it in a Chrome tab group named “SocAI” if feasible. If Chrome tab grouping is not reliably exposed over CDP, use a clear title prefix such as “🟢 SocAI” for the prototype.
-- Clearly show when SocAI is connected and which window it controls.
+- Visibly mark the controlled tab. Desired: put it in a Chrome tab group named “Socai” if feasible. If Chrome tab grouping is not reliably exposed over CDP, use a clear title prefix such as “🟢 Socai” for the prototype.
+- Clearly show when Socai is connected and which window it controls.
 - Provide a disconnect/stop control.
 - Never copy or mutate Chrome profile files directly.
 
 ### No fallback for prototype / v1 happy path
 
-For the SocAI prototype and v1 happy path, do **not** spend product/engineering effort on fallback browser modes.
+For the Socai prototype and v1 happy path, do **not** spend product/engineering effort on fallback browser modes.
 
 Out of scope:
 
-- Managed SocAI Chrome/Chromium profile.
+- Managed Socai Chrome/Chromium profile.
 - Existing Chrome extension backend as a user-facing fallback.
 - Remote/browser-cloud mode.
 
-The SocAI product path should be exactly:
+The Socai product path should be exactly:
 
 ```text
-existing user Chrome profile -> Chrome inspect/remote-debugging permission -> CDP attach -> SocAI-controlled tab -> XHS task
+existing user Chrome profile -> Chrome inspect/remote-debugging permission -> CDP attach -> Socai-controlled tab -> XHS task
 ```
 
 If this path does not work reliably enough, that is a core product risk to solve directly rather than hiding behind fallback UX.
 
 ## 6.1. Prototype principle
 
-The prototype should be built from the ground up and should **not** try to integrate every existing FlowLens skill/tool/workflow.
+The prototype should be built from the ground up and should **not** try to integrate every existing Socai skill/tool/workflow.
 
 Prototype goal:
 
 ```text
-Prove SocAI can connect to the user’s existing Chrome profile through CDP, after explicit inspect permission, and operate a Xiaohongshu session already logged in there.
+Prove Socai can connect to the user’s existing Chrome profile through CDP, after explicit inspect permission, and operate a Xiaohongshu session already logged in there.
 ```
 
 The prototype does not need:
 
-- full FlowLens agent integration
+- full Socai agent integration
 - full XHS skill integration
 - all current `xhs_*` tools
 - MCP support
@@ -258,12 +256,12 @@ The prototype does not need:
 
 Recommended prototype scope:
 
-1. A new minimal SocAI desktop shell.
+1. A new minimal Socai desktop shell.
 2. A guided “Connect Chrome” flow.
 3. A CDP connection to existing Chrome after inspect permission.
-4. Creation of a SocAI-controlled Chrome tab in the existing profile/window.
+4. Creation of a Socai-controlled Chrome tab in the existing profile/window.
 5. Navigation to Xiaohongshu.
-6. Proof that SocAI can operate the page:
+6. Proof that Socai can operate the page:
    - read current URL/title
    - capture screenshot
    - perform a simple click/scroll/key action in the controlled tab
@@ -275,7 +273,7 @@ No LLM and no XHS product functions are required for the first proof. Once CDP +
 ## 7. Target architecture
 
 ```text
-SocAI Desktop
+Socai Desktop
   ├─ UI shell
   │   ├─ onboarding
   │   ├─ browser/login manager
@@ -291,7 +289,7 @@ SocAI Desktop
   │   ├─ streams logs/events to UI
   │   └─ manages run history
   │
-  ├─ FlowLens Python runtime
+  ├─ Socai Python runtime
   │   ├─ agent loop
   │   ├─ unified tool registry
   │   ├─ XHS tools
@@ -299,7 +297,7 @@ SocAI Desktop
   │   └─ report/artifact generation
   │
   └─ Browser backend abstraction
-      └─ CDP backend, new SocAI happy path
+      └─ CDP backend, new Socai happy path
           ├─ CDP connection/session manager
           ├─ target/window/profile manager
           ├─ browser primitives
@@ -363,9 +361,9 @@ Current `ExtensionBridge` can be adapted to this interface. New `CDPBridge` shou
 Option 1: vendor/adapt browser-harness style code using `cdp-use`.
 
 - Pros: proven locally, small, fast to spike.
-- Cons: FlowLens needs async integration, structured logging, app lifecycle, tests.
+- Cons: Socai needs async integration, structured logging, app lifecycle, tests.
 
-Option 2: implement direct WebSocket CDP client in FlowLens.
+Option 2: implement direct WebSocket CDP client in Socai.
 
 - Pros: no extra abstraction, full control.
 - Cons: more work, must handle request IDs, sessions, events, reconnects.
@@ -373,7 +371,7 @@ Option 2: implement direct WebSocket CDP client in FlowLens.
 Option 3: use Playwright only for CDP plumbing.
 
 - Pros: stable high-level browser lifecycle.
-- Cons: heavier dependency, may fight FlowLens’s raw-CDP needs, adds its own model of pages/contexts.
+- Cons: heavier dependency, may fight Socai’s raw-CDP needs, adds its own model of pages/contexts.
 
 Prototype decision: use `cdp-use`, matching browser-harness’s thin CDP client approach. We can replace it later only if the prototype exposes a concrete reason.
 
@@ -388,7 +386,7 @@ XHSSiteAdapter
   -> ext_bridge.send_command("extract_note_content")
   -> background.js
   -> content.js
-  -> window.FlowLensXhs.extractNoteContentCommand()
+  -> window.SocaiXhs.extractNoteContentCommand()
 ```
 
 Future CDP path:
@@ -397,7 +395,7 @@ Future CDP path:
 XHSSiteAdapter
   -> cdp_bridge.send_command("extract_note_content")
   -> ensure XHS adapter JS injected
-  -> Runtime.evaluate("window.FlowLensXhs.extractNoteContentCommand(params)")
+  -> Runtime.evaluate("window.SocaiXhs.extractNoteContentCommand(params)")
 ```
 
 Recommended work:
@@ -407,10 +405,10 @@ Recommended work:
   - XHS adapter
 - Make them injectable without relying on Chrome extension APIs.
 - Provide a Python command mapping:
-  - `extract_search_cards` -> `FlowLensXhs.extractSearchCards()`
-  - `submit_search_query` -> `FlowLensXhs.submitSearchQuery(keyword)`
-  - `click_note_by_id` -> `FlowLensXhs.clickNoteById(note_id)`
-  - `extract_note_content` -> `FlowLensXhs.extractNoteContentCommand(params)`
+  - `extract_search_cards` -> `SocaiXhs.extractSearchCards()`
+  - `submit_search_query` -> `SocaiXhs.submitSearchQuery(keyword)`
+  - `click_note_by_id` -> `SocaiXhs.clickNoteById(note_id)`
+  - `extract_note_content` -> `SocaiXhs.extractNoteContentCommand(params)`
   - etc.
 
 Potential improvement from browser-harness XHS skill:
@@ -422,14 +420,14 @@ Potential improvement from browser-harness XHS skill:
   - comments if present
 - Do this carefully. For anti-bot safety, still prefer human-like search and card clicks for navigation.
 
-## 11. SocAI UX plan
+## 11. Socai UX plan
 
 ### First-run onboarding
 
 Screens:
 
 1. Welcome
-   - What SocAI does for social-platform work
+   - What Socai does for social-platform work
    - Privacy explanation
    - Local/browser/model choices
 
@@ -441,7 +439,7 @@ Screens:
 3. Browser setup
    - recommended: connect to the user’s existing Chrome profile
    - guide the user through `chrome://inspect/#remote-debugging` if needed
-   - create a SocAI-controlled Chrome tab in the same profile/window
+   - create a Socai-controlled Chrome tab in the same profile/window
    - test connection
    - show status: connected, controlled tab, XHS session maybe unknown/verified
 
@@ -503,7 +501,7 @@ Recommended initial path:
 - Desktop app owns an app data directory:
 
 ```text
-~/Library/Application Support/SocAI/
+~/Library/Application Support/Socai/
   runtime/
   task_runs/
   logs/
@@ -520,11 +518,11 @@ Deliverable: agreed design choices before code.
 Tasks:
 
 - [x] Decide desktop shell: Tauri v2 for prototype.
-- [x] Decide new app path: `apps/socai/`.
+- [x] Decide new app path: `app/`.
 - [x] Decide browser default: existing user Chrome profile via CDP / inspect permission flow.
 - [x] No fallback browser modes in prototype/v1 happy path.
 - [x] Decide CDP client implementation for prototype: `cdp-use`, matching browser-harness’s thin CDP client approach.
-- [x] Prototype is ground-up; do not reuse current `desktop_app/` UI/runtime structure.
+- [x] Prototype is ground-up; do not reuse current `archive/legacy_desktop_app/` UI/runtime structure.
 - [x] Defer packaging strategy for Python runtime; not required for prototype proof.
 
 Acceptance criteria:
@@ -534,14 +532,14 @@ Acceptance criteria:
 
 ### Phase 1 — CDP spike outside the product UI
 
-Deliverable: command-line/internal proof that FlowLens can control the user’s existing Chrome profile via CDP without the extension.
+Deliverable: command-line/internal proof that Socai can control the user’s existing Chrome profile via CDP without the extension.
 
 Tasks:
 
 - [ ] Detect an existing running Chrome profile / DevTools endpoint.
 - [ ] If needed, guide through the `chrome://inspect/#remote-debugging` permission flow.
 - [ ] Connect to CDP endpoint.
-- [ ] Create a SocAI-controlled Chrome tab/page target in the existing profile/window.
+- [ ] Create a Socai-controlled Chrome tab/page target in the existing profile/window.
 - [ ] Implement basic primitives:
   - [ ] navigate
   - [ ] get tab info
@@ -557,7 +555,7 @@ Tasks:
 
 Acceptance criteria:
 
-- Script opens a SocAI-controlled tab in the user’s existing Chrome profile/window.
+- Script opens a Socai-controlled tab in the user’s existing Chrome profile/window.
 - Script opens XHS/explore in that window.
 - Script captures screenshot.
 - Script can run JS and return `document.title` / current URL.
@@ -565,17 +563,17 @@ Acceptance criteria:
 
 ### Phase 2 — browser backend abstraction
 
-Deliverable: FlowLens tools can target CDP through a browser backend interface while preserving existing extension code for legacy paths.
+Deliverable: Socai tools can target CDP through a browser backend interface while preserving existing extension code for legacy paths.
 
 Tasks:
 
 - [ ] Define backend protocol/interface.
-- [ ] Implement initial `CDPBridge` for SocAI happy path.
-- [ ] Do not integrate `ExtensionBridge` into SocAI prototype/v1 UX.
+- [ ] Implement initial `CDPBridge` for Socai happy path.
+- [ ] Do not integrate `ExtensionBridge` into Socai prototype/v1 UX.
 - [ ] Update browser tools to depend on the interface, not extension-specific types where possible.
 - [ ] Preserve existing extension behavior.
 - [ ] Add internal backend selection config for development:
-  - `FLOWLENS_BROWSER_BACKEND=cdp` for SocAI happy path
+  - `SOCAI_BROWSER_BACKEND=cdp` for Socai happy path
 
 Acceptance criteria:
 
@@ -620,7 +618,7 @@ Acceptance criteria:
 
 ### Phase 4 — XHS parity and improvements
 
-Deliverable: CDP backend can complete representative XHS research tasks well enough for the SocAI happy path.
+Deliverable: CDP backend can complete representative XHS research tasks well enough for the Socai happy path.
 
 Tasks:
 
@@ -643,9 +641,9 @@ Acceptance criteria:
 - CDP report includes note screenshots and structured note summaries.
 - No intentional changes to extension legacy path during this phase.
 
-### Phase 5 — SocAI desktop shell
+### Phase 5 — Socai desktop shell
 
-Deliverable: new SocAI app skeleton that can start and monitor a FlowLens run.
+Deliverable: new Socai app skeleton that can start and monitor a Socai run.
 
 Tasks:
 
@@ -657,7 +655,7 @@ Tasks:
   - [ ] result viewer placeholder
   - [ ] settings placeholder
 - [ ] Implement runtime supervisor:
-  - [ ] launch FlowLens runtime
+  - [ ] launch Socai runtime
   - [ ] stream logs/events
   - [ ] stop task
   - [ ] locate report/artifacts
@@ -666,12 +664,12 @@ Tasks:
 
 Acceptance criteria:
 
-- User can start a task from SocAI.
+- User can start a task from Socai.
 - User can see running status.
 - User can stop a task.
 - User can open/view generated report.
 
-### Phase 6 — browser onboarding in SocAI
+### Phase 6 — browser onboarding in Socai
 
 Deliverable: existing Chrome profile connection works from the UI.
 
@@ -681,9 +679,9 @@ Tasks:
 - [ ] Detect whether Chrome is running.
 - [ ] Detect whether a DevTools endpoint is available.
 - [ ] If unavailable, open and guide the user through `chrome://inspect/#remote-debugging`.
-- [ ] Explain clearly what permission is being granted and why SocAI needs it.
+- [ ] Explain clearly what permission is being granted and why Socai needs it.
 - [ ] After approval, connect to the existing Chrome profile.
-- [ ] Create a SocAI-controlled Chrome tab in the existing profile/window.
+- [ ] Create a Socai-controlled Chrome tab in the existing profile/window.
 - [ ] Show connection status and controlled-tab status.
 - [ ] Provide XHS session/check screen using the existing profile.
 - [ ] Persist connection diagnostics, not profile data.
@@ -691,10 +689,10 @@ Tasks:
 
 Acceptance criteria:
 
-- Fresh user can connect SocAI to their existing Chrome profile from UI.
+- Fresh user can connect Socai to their existing Chrome profile from UI.
 - User can approve the inspect/remote-debugging flow with clear guidance.
-- SocAI creates and controls a marked Chrome tab without taking over the current foreground tab.
-- FlowLens can run an XHS task using the existing profile/session without extension install.
+- Socai creates and controls a marked Chrome tab without taking over the current foreground tab.
+- Socai can run an XHS task using the existing profile/session without extension install.
 
 ### Phase 7 — polished run UX
 
@@ -721,7 +719,7 @@ Deliverable: a distributable macOS app build.
 
 Tasks:
 
-- [ ] Package SocAI app.
+- [ ] Package Socai app.
 - [ ] Bundle or bootstrap Python runtime.
 - [ ] Bundle minimal required dependencies for cloud-backed XHS tasks.
 - [ ] Add first-run config migration.
@@ -737,21 +735,21 @@ Acceptance criteria:
 
 ### Phase 9 — migration/deprecation strategy
 
-Deliverable: clear path from extension-first FlowLens to SocAI/CDP-first FlowLens.
+Deliverable: clear path from extension-first Socai to Socai/CDP-first Socai.
 
 Tasks:
 
-- [ ] Keep extension backend code outside SocAI prototype/v1 UX.
+- [ ] Keep extension backend code outside Socai prototype/v1 UX.
 - [ ] Add diagnostics for the CDP happy path.
 - [ ] Update README and docs.
-- [ ] Later, decide when extension becomes optional/legacy for non-SocAI paths.
+- [ ] Later, decide when extension becomes optional/legacy for non-Socai paths.
 - [ ] Remove extension assumptions from agent prompts where inappropriate.
 - [ ] Preserve MCP support if useful, backed by same browser backend abstraction.
 
 Acceptance criteria:
 
 - Existing CLI/MCP users are not broken.
-- New users are directed to SocAI.
+- New users are directed to Socai.
 - Extension install is no longer part of primary onboarding.
 
 ## 14. Testing strategy
@@ -819,7 +817,7 @@ Mitigation:
 
 Mitigation:
 
-- Be explicit that this grants SocAI powerful access to the Chrome profile, not just a single webpage.
+- Be explicit that this grants Socai powerful access to the Chrome profile, not just a single webpage.
 - Require user consent.
 - Show connection status and a clear disconnect/stop button.
 - Create a marked controlled tab and avoid the user’s active tabs.
@@ -829,10 +827,10 @@ Mitigation:
 
 Mitigation:
 
-- Create a marked SocAI automation tab in the same Chrome profile/window.
+- Create a marked Socai automation tab in the same Chrome profile/window.
 - Pin automation to that tab.
 - Never use the active foreground tab as the target unless the user explicitly chooses it.
-- Close or release the SocAI-controlled tab at task end.
+- Close or release the Socai-controlled tab at task end.
 
 ### Risk: Chrome CDP restrictions change
 
@@ -871,24 +869,24 @@ Mitigation:
 
 Prototype decisions already made:
 
-1. SocAI prototype uses Tauri.
-2. New app path is `apps/socai/`.
+1. Socai prototype uses Tauri.
+2. New app path is `app/`.
 3. Browser path is existing user Chrome profile via CDP and Chrome inspect/remote-debugging permission.
 4. No fallback browser modes in prototype/v1 happy path.
 5. CDP client for prototype is `cdp-use`, matching browser-harness’s thin CDP client approach.
-6. Prototype is ground-up and does not reuse current `desktop_app/` UI/runtime structure.
+6. Prototype is ground-up and does not reuse current `archive/legacy_desktop_app/` UI/runtime structure.
 7. No LLM, MCP, extension, managed profile, or full XHS tool integration is required for the first proof.
 8. Prototype proof target: connect to existing Chrome, create/mark controlled tab, open XHS, operate page, capture screenshot, show result.
 
 Deferred until after prototype proof:
 
 1. Exact production copy/UX for Chrome inspect permission.
-2. How much production SocAI should expose browser internals vs hide them.
-3. Whether SocAI should support MCP server mode.
+2. How much production Socai should expose browser internals vs hide them.
+3. Whether Socai should support MCP server mode.
 4. Python runtime packaging strategy.
 5. API key storage strategy.
 6. Full XHS social-analysis task design.
-7. Whether/when extension backend becomes legacy for non-SocAI paths.
+7. Whether/when extension backend becomes legacy for non-Socai paths.
 
 ## 17. Implementation procedure
 
@@ -896,18 +894,18 @@ Execute in small sessions. Each session should finish with tested artifacts befo
 
 General rules:
 
-- Keep prototype code under `apps/socai/`.
-- Do not modify or depend on the old `desktop_app/`.
+- Keep prototype code under `app/`.
+- Do not modify or depend on the old `archive/legacy_desktop_app/`.
 - Do not integrate the LLM, MCP, extension backend, managed browser, or full XHS tools in the first prototype.
 - Use `cdp-use` for the CDP client.
 - Target macOS + Google Chrome + existing default profile only.
-- Use a marked SocAI-controlled tab, not the user’s active tab.
+- Use a marked Socai-controlled tab, not the user’s active tab.
 - After every task, record what was tested and what command/manual step verifies it.
 
 Recommended session breakdown:
 
 1. **Session 1 — prototype scaffold + Chrome discovery**
-   - Create `apps/socai/`.
+   - Create `app/`.
    - Add prototype README.
    - Add a Python Chrome discovery script.
    - Verify it reports CDP available vs setup required.
@@ -919,8 +917,8 @@ Recommended session breakdown:
    - Verify connection after Chrome inspect permission is granted.
 
 3. **Session 3 — controlled tab + primitives**
-   - Create a new SocAI-controlled tab.
-   - Mark the title with `🟢 SocAI`.
+   - Create a new Socai-controlled tab.
+   - Mark the title with `🟢 Socai`.
    - Implement navigate, JS evaluate, screenshot, scroll/key/click basics.
    - Verify with a screenshot and `document.title`.
 
@@ -932,7 +930,7 @@ Recommended session breakdown:
    - Optionally navigate to a supplied XHS profile URL.
 
 5. **Session 5 — minimal Tauri shell**
-   - Create the SocAI Tauri app in `apps/socai/`.
+   - Create the Socai Tauri app in `app/`.
    - Add buttons for Connect Chrome, Create Controlled Tab, Open XHS, Capture Screenshot.
    - Wire buttons to the Python prototype logic.
 
@@ -945,9 +943,9 @@ Recommended session breakdown:
 
 Completed:
 
-1. **Session 1** — created `apps/socai/`, added a prototype README, and added Chrome CDP discovery.
+1. **Session 1** — created `app/`, added a prototype README, and added Chrome CDP discovery.
 2. **Session 2** — added `cdp-use`, connected to Chrome CDP, and called `Target.getTargets`.
-3. **Session 3** — created a marked SocAI-controlled tab and verified browser primitives.
+3. **Session 3** — created a marked Socai-controlled tab and verified browser primitives.
 4. **Session 4** — opened Xiaohongshu in the controlled tab, captured screenshots, scrolled, and read runtime state.
 5. **Session 5** — created the minimal Tauri shell, built the packaged app, and verified Connect Chrome + Create Controlled Tab from the UI.
 6. **Session 5 follow-up** — added CDP connection retry logic; XHS probe now works end-to-end from the packaged app UI.
@@ -960,7 +958,7 @@ Session 6 — demo bundle + manual checklist.
 
 ## 19. Prototype task breakdown
 
-This is the concrete small-task backlog for the ground-up SocAI prototype. Each task should be independently testable before moving to the next.
+This is the concrete small-task backlog for the ground-up Socai prototype. Each task should be independently testable before moving to the next.
 
 ### Milestone A — CDP attach proof, no app UI
 
@@ -968,9 +966,9 @@ Goal: prove we can attach to the user’s existing Chrome and operate a controll
 
 A1. **Create prototype folder**
 
-- [x] Create `apps/socai/`.
+- [x] Create `app/`.
 - [x] Add a minimal README explaining prototype scope.
-- [x] Do not modify existing `desktop_app/`.
+- [x] Do not modify existing `archive/legacy_desktop_app/`.
 
 Acceptance:
 
@@ -1000,12 +998,12 @@ A4. **Create controlled tab**
 
 - [x] Use CDP to create a new tab/page target.
 - [x] Attach to that target.
-- [x] Mark the tab title with `🟢 SocAI`.
+- [x] Mark the tab title with `🟢 Socai`.
 - [x] Investigate tab grouping only as a non-blocking note; do not depend on it for prototype.
 
 Acceptance:
 
-- User can see a newly created SocAI-marked tab in their existing Chrome. Verified with `cdp_controlled_tab.py --json` and marked title `🟢 SocAI — SocAI Primitive Test`.
+- User can see a newly created Socai-marked tab in their existing Chrome. Verified with `cdp_controlled_tab.py --json` and marked title `🟢 Socai — Socai Primitive Test`.
 
 A5. **Browser primitives**
 
@@ -1020,7 +1018,7 @@ A5. **Browser primitives**
 
 Acceptance:
 
-- Script navigates the marked tab, reads `document.title`, and saves a screenshot. Verified on the local SocAI primitive test page with all primitive checks returning true.
+- Script navigates the marked tab, reads `document.title`, and saves a screenshot. Verified on the local Socai primitive test page with all primitive checks returning true.
 
 ### Milestone B — XHS session proof, no LLM
 
@@ -1038,7 +1036,7 @@ Acceptance:
 
 B2. **Operate XHS page**
 
-- [x] Prove SocAI can interact with the controlled XHS tab using CDP:
+- [x] Prove Socai can interact with the controlled XHS tab using CDP:
   - [x] capture screenshot
   - [x] scroll the page
   - [x] read URL/title after interaction
@@ -1055,21 +1053,21 @@ B3. **Optional profile/page proof**
 
 Acceptance:
 
-- Script can show that SocAI can access a real XHS profile/page from the existing Chrome session.
+- Script can show that Socai can access a real XHS profile/page from the existing Chrome session.
 
-### Milestone C — minimal SocAI desktop shell
+### Milestone C — minimal Socai desktop shell
 
 Goal: wrap the proven CDP/XHS proof in a desktop UI.
 
 C1. **Create new Tauri shell**
 
-- [x] Create a new SocAI app path.
+- [x] Create a new Socai app path.
 - [x] Minimal window with title/logo placeholder.
 - [x] No old desktop app UI reuse unless intentionally copied.
 
 Acceptance:
 
-- SocAI Tauri shell builds and opens as `/apps/socai/src-tauri/target/release/bundle/macos/SocAI Prototype.app`.
+- Socai Tauri shell builds and opens as `/app/src-tauri/target/release/bundle/macos/Socai Prototype.app`.
 
 C2. **Connect Chrome button**
 
@@ -1091,14 +1089,14 @@ Acceptance:
 
 - Partial: guidance is visible in the app; direct inspect-page open/polling remains a future UI polish task.
 
-C4. **Open controlled SocAI tab**
+C4. **Open controlled Socai tab**
 
-- [x] UI button creates/marks a SocAI-controlled tab.
+- [x] UI button creates/marks a Socai-controlled tab.
 - [x] UI displays controlled-tab command status and JSON; screenshot artifacts are rendered when available.
 
 Acceptance:
 
-- User sees the controlled tab in Chrome and its metadata in SocAI. Verified in the packaged app with status `controlled_tab — controlled_tab_ready`.
+- User sees the controlled tab in Chrome and its metadata in Socai. Verified in the packaged app with status `controlled_tab — controlled_tab_ready`.
 
 C5. **Open XHS + screenshot**
 
@@ -1109,7 +1107,7 @@ C5. **Open XHS + screenshot**
 
 Acceptance:
 
-- SocAI displays screenshots from the controlled XHS tab. Verified in the packaged app.
+- Socai displays screenshots from the controlled XHS tab. Verified in the packaged app.
 
 C6. **Operate XHS proof**
 
@@ -1119,7 +1117,7 @@ C6. **Operate XHS proof**
 
 Acceptance:
 
-- SocAI proves from the UI that it can operate the XHS tab. Verified in the packaged app with JSON diagnostics and screenshot artifacts.
+- Socai proves from the UI that it can operate the XHS tab. Verified in the packaged app with JSON diagnostics and screenshot artifacts.
 
 ### Milestone D — prototype report
 
@@ -1136,7 +1134,7 @@ Acceptance:
 D2. **Manual demo checklist**
 
 - [ ] Document exact demo steps:
-  1. Open SocAI.
+  1. Open Socai.
   2. Connect Chrome.
   3. Approve inspect permission if needed.
   4. Create marked tab.
@@ -1152,8 +1150,8 @@ Acceptance:
 
 Only after Milestones A-D pass:
 
-- [ ] Decide which prototype code becomes the SocAI CDP kernel.
+- [ ] Decide which prototype code becomes the Socai CDP kernel.
 - [ ] Decide whether to reuse current `content_xhs.js` by making it injectable.
-- [ ] Add fixed audited SocAI/FlowLens tools on top of CDP.
+- [ ] Add fixed audited Socai/Socai tools on top of CDP.
 - [ ] Add the LLM planner.
 - [ ] Add XHS social-analysis report generation.

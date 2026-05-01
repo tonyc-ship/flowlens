@@ -246,7 +246,7 @@ def setup_instructions() -> list[str]:
         "Open Google Chrome using the profile that is already logged in to Xiaohongshu.",
         f"Open {INSPECT_URL} in Chrome.",
         "If Chrome shows a remote-debugging permission prompt, approve it. Tick the checkbox if Chrome offers one.",
-        "Re-run: python3 apps/socai/prototype/chrome_discovery.py",
+        "Re-run: python3 app/prototype/chrome_discovery.py",
     ]
 
 
@@ -262,7 +262,7 @@ def open_inspect_page() -> None:
 
 
 def print_human(result: dict[str, Any]) -> None:
-    print(f"SocAI Chrome discovery status: {result['status']}")
+    print(f"Socai Chrome discovery status: {result['status']}")
     print(f"Reason: {result.get('reason')}")
 
     if result["status"] == "cdp_available":

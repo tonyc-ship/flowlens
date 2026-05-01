@@ -11,19 +11,16 @@ Socai is currently maintained as a layered browser automation framework built on
 - The external **MCP server** in `socai.mcp` — `socai-mcp` entry point, low-level `mcp.server.Server`
 - Task workflows in `socai.workflows`
 - A Chrome extension in `chrome_extension/`
-- A thin Tauri desktop shell in `desktop_app/`
-- A new **SocAI prototype** under `apps/socai/` for CDP-first social-platform desktop automation experiments
+- The active **Socai desktop app prototype** under `app/` for CDP-first social-platform desktop automation experiments
 
-The old screen-level MCP route has been archived under `archive/legacy_mcp/`.
+The old screen-level MCP route has been archived under `archive/legacy_mcp/`. The old top-level `desktop_app/` Tauri spike has been deprecated and moved to `archive/legacy_desktop_app/`.
 
 ## Current Architecture
 
 ```
 socai/
-├── apps/
-│   └── socai/                        # SocAI prototype: CDP-first existing-Chrome proof, Tauri shell later
+├── app/                              # Active Socai desktop app prototype: Tauri + CDP-first existing-Chrome proof
 ├── chrome_extension/                 # MV3 extension: websocket, CDP, DOM extraction, watch mode
-├── desktop_app/                      # Minimal Tauri desktop shell / future desktop control plane
 ├── socai/
 │   ├── cli.py                        # Primary CLI entry
 │   ├── __main__.py                   # `python -m socai`
@@ -76,6 +73,7 @@ socai/
 │   ├── test_observer.py              # Observer capture / storage / diff tests
 │   └── test_reporting.py             # Shared report rendering tests
 └── archive/
+    ├── legacy_desktop_app/           # Deprecated Tauri desktop spike retained for reference
     └── legacy_mcp/                   # Archived screen-level MCP route
 ```
 
@@ -95,14 +93,14 @@ When a change materially affects architecture, runtime flow, testing entry point
 
 ### Always rebuild and reinstall the desktop app after relevant changes
 
-Whenever you modify the Tauri app under `desktop_app/` **or** any Python code that the installed app bundles (the `runtime_bundle/` copy of `socai/`), produce a fresh macOS `.app` bundle and install it in the same working session.
+Whenever you modify the Tauri app under `app/`, produce a fresh macOS `.app` bundle and install it in the same working session.
 
 - Do not stop at `cargo check` / `npm run build` alone for Tauri changes.
-- Do not stop at editing Python source — the installed `.app` bundles its own copy under `Contents/Resources/_up_/runtime_bundle/`, so source edits only take effect after a rebuild.
 - Run the repo packaging path so the real desktop artifact exists after the change.
-- Prefer `bash scripts/build_desktop_app.sh` unless the user explicitly asks for a different packaging flow.
+- Prefer `bash scripts/build_app.sh` unless the user explicitly asks for a different packaging flow.
+- `scripts/build_desktop_app.sh` is a deprecated compatibility wrapper around `scripts/build_app.sh`.
 
-After changes that affect the installed app + Chrome extension workflow together (for example `desktop_app/`, `chrome_extension/`, `socai/core/bridge.py`, or `socai/agent/`), rebuild the packaged app and smoke-test it manually.
+After changes that affect the installed app + Chrome extension workflow together (for example `app/`, `chrome_extension/`, `socai/core/bridge.py`, or `socai/agent/`), rebuild the packaged app and smoke-test it manually.
 
 > Note: the previous `scripts/verify_packaged_xhs_overlay.py` regression script targeted the legacy hardcoded XHS workflow and was removed when the workflow was deleted. A new agent-loop verification script needs to be written before this can be reinstated as an automated regression check.
 
@@ -278,30 +276,24 @@ pip install -e ".[dev]"       # dev tooling
 3. Load `chrome_extension/` as an unpacked extension
 4. Open the extension popup and connect it to the local port when running scripts
 
-### Desktop Shell (Spike)
+### Desktop App Prototype
 
-`desktop_app/` is a standalone Tauri 2.x shell used to explore a future local
-desktop companion app.
+`app/` is the active Tauri 2.x desktop app prototype for the CDP-first Socai path. It replaces the old `desktop_app/` spike, which now lives under `archive/legacy_desktop_app/` for reference only.
 
 Current scope:
 
-- Basic navigation shell
-- One Rust health-check command invoked from the frontend
-- Placeholder views for XHS tasks, WeChat summaries, live runs, and settings
-
-This path is intentionally separate from the Python runtime for now; treat it as
-an app-shell spike, not the final packaging architecture.
-
-The current bridge path is:
-
-`desktop_app` -> Tauri command `start_task` -> `python -m socai desktop run ...`
+- Minimal Tauri/Vite shell
+- Rust commands that launch Python CDP prototype scripts
+- Existing Chrome profile discovery and CDP target listing
+- Creation of a marked Socai-controlled Chrome tab
+- XHS technical probe with screenshot artifacts
 
 Packaging helper:
 
-`bash scripts/build_desktop_app.sh`
+`bash scripts/build_app.sh`
 
-- stages `desktop_app/runtime_bundle/`
-- runs `npm run tauri build`
+- runs `npm install`
+- runs `npm run tauri build -- --bundles app`
 - copies the finished `.app` into `/Applications/`
 
 ### Local Config

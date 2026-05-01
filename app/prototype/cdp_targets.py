@@ -35,14 +35,14 @@ def exception_message(exc: BaseException) -> str:
     return exc.__class__.__name__
 
 
-def cdp_use_install_help(script: str = "apps/socai/prototype/cdp_targets.py") -> str:
+def cdp_use_install_help(script: str = "app/prototype/cdp_targets.py") -> str:
     return "\n".join(
         [
             "Missing Python package: cdp-use",
             "Run with uv without changing the project environment:",
             f"  uv run --no-project --with cdp-use==1.4.5 --python 3.11 python {script}",
             "Or install prototype requirements into a Python 3.11 environment:",
-            "  python3.11 -m pip install -r apps/socai/requirements.txt",
+            "  python3.11 -m pip install -r app/requirements.txt",
         ]
     )
 
@@ -134,7 +134,7 @@ async def run(args: argparse.Namespace) -> dict[str, Any]:
 
 
 def print_human(result: dict[str, Any]) -> None:
-    print(f"SocAI CDP target listing status: {result['status']}")
+    print(f"Socai CDP target listing status: {result['status']}")
     print(f"Reason: {result.get('reason')}")
 
     if result["status"] == "setup_required":

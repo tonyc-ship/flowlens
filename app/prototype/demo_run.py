@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Run the full SocAI prototype demo and save a reproducible artifact bundle.
+"""Run the full Socai prototype demo and save a reproducible artifact bundle.
 
 Session 6 scope:
 - Run each prototype step in sequence: discovery → targets → controlled tab → XHS probe
@@ -61,7 +61,7 @@ async def run_targets(browser_ws_url: str, timeout: float) -> dict[str, Any]:
 
 async def run_controlled_tab(browser_ws_url: str, timeout: float, run_dir: Path) -> dict[str, Any]:
     from cdp_connect import connect_cdp_with_retry
-    from cdp_controlled_tab import SocAICDPPage, SOCAI_TITLE_PREFIX, create_controlled_tab
+    from cdp_controlled_tab import SocaiCDPPage, SOCAI_TITLE_PREFIX, create_controlled_tab
 
     screenshot_path = run_dir / "controlled_tab.png"
     client = await connect_cdp_with_retry(browser_ws_url, per_attempt_timeout=timeout)
@@ -88,7 +88,7 @@ async def run_controlled_tab(browser_ws_url: str, timeout: float, run_dir: Path)
 
 async def run_xhs_probe(browser_ws_url: str, timeout: float, run_dir: Path) -> dict[str, Any]:
     from cdp_connect import connect_cdp_with_retry
-    from cdp_controlled_tab import SocAICDPPage, SOCAI_TITLE_PREFIX, create_controlled_tab
+    from cdp_controlled_tab import SocaiCDPPage, SOCAI_TITLE_PREFIX, create_controlled_tab
     from cdp_xhs_probe import read_page_probe
 
     before_path = run_dir / "xhs_before_scroll.png"
@@ -213,11 +213,11 @@ def finish(steps: list[StepResult], run_dir: Path) -> dict[str, Any]:
 
 def default_run_dir() -> str:
     stamp = time.strftime("%Y%m%d-%H%M%S")
-    return str(Path("apps/socai/demo_runs") / f"demo_{stamp}")
+    return str(Path("app/demo_runs") / f"demo_{stamp}")
 
 
 def print_human(result: dict[str, Any]) -> None:
-    print(f"SocAI demo run: {result['overall']}")
+    print(f"Socai demo run: {result['overall']}")
     print(f"Run dir: {result['run_dir']}")
     print()
     for step in result.get("steps", []):

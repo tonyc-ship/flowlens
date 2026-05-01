@@ -64,7 +64,7 @@ const actions: ActionConfig[] = [
     id: "createControlledTab",
     label: "Create Controlled Tab",
     command: "create_controlled_tab",
-    description: "Create a new tab, mark it with 🟢 SocAI, and verify primitives.",
+    description: "Create a new tab, mark it with 🟢 Socai, and verify primitives.",
   },
   {
     id: "openXhsProbe",
@@ -100,7 +100,7 @@ function render() {
       <header class="topbar">
         <div>
           <p class="eyebrow">CDP-first social automation prototype</p>
-          <h1>SocAI Prototype</h1>
+          <h1>Socai Prototype</h1>
         </div>
         <button id="refresh-health" class="status-pill ${state.health?.ready ? "ready" : "idle"}">
           <span class="status-dot"></span>
@@ -110,7 +110,7 @@ function render() {
 
       <section class="notice">
         <strong>Permission note:</strong>
-        SocAI connects only after Chrome remote-debugging permission is enabled. If Chrome shows
+        Socai connects only after Chrome remote-debugging permission is enabled. If Chrome shows
         <em>Allow remote debugging?</em>, click <strong>Allow</strong> while the current action is running.
       </section>
 

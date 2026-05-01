@@ -1,8 +1,8 @@
 #!/usr/bin/env python3
-"""Open Xiaohongshu in a SocAI-controlled tab and prove basic operation.
+"""Open Xiaohongshu in a Socai-controlled tab and prove basic operation.
 
 Session 4 scope:
-- create a marked SocAI-controlled tab in the user's existing Chrome profile
+- create a marked Socai-controlled tab in the user's existing Chrome profile
 - navigate to Xiaohongshu
 - capture screenshots
 - scroll the page
@@ -22,7 +22,7 @@ from pathlib import Path
 from typing import Any
 
 from chrome_discovery import INSPECT_URL, discover_chrome_cdp, open_inspect_page
-from cdp_controlled_tab import SOCAI_TITLE_PREFIX, SocAICDPPage, create_controlled_tab
+from cdp_controlled_tab import SOCAI_TITLE_PREFIX, SocaiCDPPage, create_controlled_tab
 from cdp_targets import cdp_use_install_help, exception_message
 
 DEFAULT_XHS_URL = "https://www.xiaohongshu.com/explore"
@@ -36,7 +36,7 @@ async def connect_client() -> tuple[Any, dict[str, Any]]:
     try:
         from cdp_use.client import CDPClient
     except ModuleNotFoundError as exc:
-        raise RuntimeError(cdp_use_install_help("apps/socai/prototype/cdp_xhs_probe.py")) from exc
+        raise RuntimeError(cdp_use_install_help("app/prototype/cdp_xhs_probe.py")) from exc
 
     endpoint = discovery["endpoint"]
     browser_ws_url = endpoint.get("browser_ws_url")
@@ -46,7 +46,7 @@ async def connect_client() -> tuple[Any, dict[str, Any]]:
     return CDPClient(browser_ws_url), discovery
 
 
-async def read_page_probe(page: SocAICDPPage) -> dict[str, Any]:
+async def read_page_probe(page: SocaiCDPPage) -> dict[str, Any]:
     result = await page.evaluate_js(
         """
 (() => {
@@ -86,7 +86,7 @@ async def run(args: argparse.Namespace) -> dict[str, Any]:
     except ModuleNotFoundError:
         return {
             "status": "dependency_missing",
-            "reason": cdp_use_install_help("apps/socai/prototype/cdp_xhs_probe.py"),
+            "reason": cdp_use_install_help("app/prototype/cdp_xhs_probe.py"),
         }
 
     endpoint = discovery["endpoint"]
@@ -140,7 +140,7 @@ async def run(args: argparse.Namespace) -> dict[str, Any]:
 
         return {
             "status": "xhs_probe_ready" if operated else "xhs_probe_inconclusive",
-            "reason": "Opened and operated a Xiaohongshu page in a SocAI-controlled Chrome tab." if operated else "Could not confirm XHS operation from URL/screenshot diagnostics.",
+            "reason": "Opened and operated a Xiaohongshu page in a Socai-controlled Chrome tab." if operated else "Could not confirm XHS operation from URL/screenshot diagnostics.",
             "endpoint": endpoint,
             "target_id": page.target_id,
             "session_id": page.session_id,
@@ -182,7 +182,7 @@ def default_output_dir() -> Path:
 
 
 def print_human(result: dict[str, Any]) -> None:
-    print(f"SocAI XHS probe status: {result['status']}")
+    print(f"Socai XHS probe status: {result['status']}")
     print(f"Reason: {result.get('reason')}")
 
     if result["status"] == "setup_required":

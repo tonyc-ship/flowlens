@@ -105,18 +105,24 @@ modelscope download --model mlx-community/Qwen3.5-2B-6bit --local_dir ~/.socai/w
 modelscope download --model mlx-community/Qwen3.5-9B-MLX-4bit --local_dir ~/.socai/weights/Qwen3.5-9B-MLX-4bit
 ```
 
-## Desktop
+## Desktop App
 
-Only needed if you want the Tauri desktop app:
+The active Tauri desktop app lives in `app/`. The old `desktop_app/` spike has been archived under `archive/legacy_desktop_app/`.
 
 ```bash
 # Install Node.js and Rust however you prefer
 npm --version
 cargo --version
 
-cd desktop_app
+cd app
 npm install
 PATH="$HOME/.cargo/bin:$PATH" npm run tauri dev
+```
+
+To build and install the macOS app bundle:
+
+```bash
+bash scripts/build_app.sh
 ```
 
 macOS permissions you will likely need on first run:
