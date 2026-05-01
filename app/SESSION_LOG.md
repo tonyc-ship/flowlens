@@ -290,3 +290,36 @@ Verification:
 Visual report:
 
 - `task_runs/onboarding_combined_20260501_120800/report.html`
+
+## 2026-05-01 — Onboarding connection test now opens Xiaohongshu
+
+Completed:
+
+- Changed the onboarding connection test from generic controlled-tab validation to a real Xiaohongshu open/login test.
+- Added Tauri command `xhs_connection_test`, backed by `app/prototype/cdp_xhs_probe.py`.
+- Updated the Connect Chrome onboarding copy and state machine:
+  - idle: `Test with Xiaohongshu`
+  - ready-to-test: `Open XHS and test`
+  - running: opening Xiaohongshu in a marked 🟢 Socai tab
+  - login required: prompts the user to scan/login in Chrome and re-test
+  - ready: XHS is reachable and setup can continue
+- Extended the XHS probe with `--login-wait` / `--login-poll-interval` so setup can wait while a user scans/logs in if XHS asks for it.
+- Added explicit statuses from the probe:
+  - `xhs_probe_ready`
+  - `xhs_login_required`
+  - `xhs_security_verification`
+  - `xhs_probe_inconclusive`
+
+Verification:
+
+- `pnpm --dir app run build`
+- `cd app/src-tauri && cargo fmt --check && cargo check`
+- `python3 -m py_compile app/prototype/*.py scripts/generate_icons.py scripts/benchmark_webuse_models.py`
+- `uv run --extra dev pytest tests/test_package_layout.py tests/test_desktop_cli.py`
+- `bash scripts/build_app.sh`
+- Direct live XHS probe with real Chrome profile returned `xhs_probe_ready` in ~17s and captured before/after-scroll screenshots.
+- Packaged app smoke verified the updated Connect Chrome UI, Chrome settings transition, real Chrome remote-debugging prompt, and needs-attention state when the prompt is canceled.
+
+Visual report:
+
+- `task_runs/xhs_connection_onboarding_20260501_135240/report.html`

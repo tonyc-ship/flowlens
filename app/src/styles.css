@@ -883,6 +883,15 @@ button:disabled {
   background: #10b981;
 }
 
+.connection-badge.warning {
+  background: #fff7ed;
+  color: #c2410c;
+}
+
+.connection-badge.warning i {
+  background: #f97316;
+}
+
 .connection-badge.error {
   background: #fff1f2;
   color: #9f1239;
@@ -899,6 +908,11 @@ button:disabled {
 .connect-test-button.connected {
   background: #10b981;
   box-shadow: 0 8px 18px rgba(16, 185, 129, 0.22);
+}
+
+.connect-test-button.warning {
+  background: #f97316;
+  box-shadow: 0 8px 18px rgba(249, 115, 22, 0.22);
 }
 
 .connect-gate-hint {
@@ -1100,6 +1114,10 @@ button:disabled {
   background: #10b981;
 }
 
+.fake-tabs .socai-tab.warning i {
+  background: #f97316;
+}
+
 .fake-page-state {
   height: 130px;
   display: grid;
@@ -1133,6 +1151,12 @@ button:disabled {
   border-color: rgba(16, 185, 129, 0.25);
   background: #ecfdf5;
   color: #065f46;
+}
+
+.phase-hint.warning {
+  border-color: rgba(249, 115, 22, 0.24);
+  background: #fff7ed;
+  color: #9a3412;
 }
 
 .phase-hint.error {

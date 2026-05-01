@@ -41,7 +41,7 @@ type ActionConfig = {
 
 type OnboardingStepId = "welcome" | "connect" | "model" | "ready";
 type ViewMode = "onboarding" | "app";
-type ConnectionPhase = "idle" | "ready_to_test" | "scanning" | "found" | "creating" | "ready" | "error";
+type ConnectionPhase = "idle" | "ready_to_test" | "scanning" | "found" | "opening_xhs" | "login_required" | "ready" | "error";
 type PermissionStatus = "idle" | "opening" | "opened" | "error";
 type AuthMode = "oauth" | "key";
 type OAuthStatus = "idle" | "waiting" | "connected";
@@ -55,7 +55,7 @@ type OnboardingState = {
   connectionStarted: boolean;
   connectionError: string;
   discoveryResult: PrototypeCommandResult | null;
-  controlledTabResult: PrototypeCommandResult | null;
+  xhsProbeResult: PrototypeCommandResult | null;
   selectedModelId: ModelId;
   authMode: AuthMode;
   oauthStatus: OAuthStatus;
@@ -222,7 +222,7 @@ const state: State = {
     connectionStarted: false,
     connectionError: "",
     discoveryResult: null,
-    controlledTabResult: null,
+    xhsProbeResult: null,
     selectedModelId: "sonnet",
     authMode: "oauth",
     oauthStatus: "idle",
@@ -409,19 +409,21 @@ function renderInspectMock(): string {
 function renderConnectStep(): string {
   const phase = state.onboarding.connectionPhase;
   const settingsOpened = state.onboarding.permissionStatus === "opened" || phase !== "idle";
-  const testing = phase === "scanning" || phase === "found" || phase === "creating";
+  const testing = phase === "scanning" || phase === "found" || phase === "opening_xhs";
   const steps = [
     { id: "scanning", label: "Looking for Chrome on port 9222", detail: "Probing localhost:9222 …" },
     { id: "found", label: "Chrome detected", detail: "Default profile · existing tabs untouched" },
-    { id: "creating", label: "Creating controlled tab", detail: "Opening a clearly marked 🟢 Socai tab" },
-    { id: "ready", label: "Connection ready", detail: "Socai is now talking to Chrome" },
+    { id: "opening_xhs", label: "Opening Xiaohongshu", detail: "Opening xiaohongshu.com in a clearly marked 🟢 Socai tab" },
+    { id: "ready", label: "Xiaohongshu ready", detail: "XHS opened and Socai can continue with the first task" },
   ];
-  const phaseIdx = phase === "idle" || phase === "ready_to_test" || phase === "error"
-    ? -1
-    : Math.max(
-        -1,
-        steps.findIndex((step) => step.id === phase),
-      );
+  const phaseIdx = phase === "login_required"
+    ? 2
+    : phase === "idle" || phase === "ready_to_test" || phase === "error"
+      ? -1
+      : Math.max(
+          -1,
+          steps.findIndex((step) => step.id === phase),
+        );
 
   return `
     <section class="ob-grid connect-grid combined-connect-grid">
@@ -431,7 +433,7 @@ function renderConnectStep(): string {
         <p class="ob-muted">
           Socai uses Chrome's built-in <strong>remote debugging</strong> interface —
           the same protocol DevTools uses. Check the box once, then we'll create a
-          dedicated <strong>🟢 Socai</strong> tab for automation.
+          dedicated <strong>🟢 Socai</strong> tab and open Xiaohongshu as the real connection test.
         </p>
 
         <div class="capability-callout">
@@ -475,11 +477,12 @@ function renderConnectStep(): string {
           ${renderConnectionStatusBadge(phase)}
         </div>
 
-        <button class="ob-btn primary full connect-test-button ${phase === "ready" ? "connected" : ""}" data-start-connect ${!settingsOpened || testing ? "disabled" : ""}>
-          ${phase === "idle" ? "Test connection" : ""}
-          ${phase === "ready_to_test" ? "Test connection →" : ""}
-          ${testing ? `${renderSpinner(true)} Testing connection…` : ""}
-          ${phase === "ready" ? "✓ Connected · re-test" : ""}
+        <button class="ob-btn primary full connect-test-button ${phase === "ready" ? "connected" : ""} ${phase === "login_required" ? "warning" : ""}" data-start-connect ${!settingsOpened || testing ? "disabled" : ""}>
+          ${phase === "idle" ? "Test with Xiaohongshu" : ""}
+          ${phase === "ready_to_test" ? "Open XHS and test →" : ""}
+          ${testing ? `${renderSpinner(true)} Opening Xiaohongshu…` : ""}
+          ${phase === "ready" ? "✓ XHS ready · re-test" : ""}
+          ${phase === "login_required" ? "I've logged in · re-test" : ""}
           ${phase === "error" ? "Try again" : ""}
         </button>
         ${!settingsOpened ? `<p class="connect-gate-hint">Open Chrome settings first ↖</p>` : ""}
@@ -487,8 +490,8 @@ function renderConnectStep(): string {
         <div class="connect-steps ${phaseIdx < 0 ? "dimmed" : ""}">
           ${steps
             .map((step, index) => {
-              const done = phase === "ready" ? index < steps.length - 1 : index < phaseIdx;
-              const live = index === phaseIdx && phase !== "ready" && phase !== "error";
+              const done = phase === "ready" ? index < steps.length - 1 : phase === "login_required" ? index <= phaseIdx : index < phaseIdx;
+              const live = index === phaseIdx && phase !== "ready" && phase !== "error" && phase !== "login_required";
               const finished = phase === "ready" && index === steps.length - 1;
               const queued = phaseIdx === -1 || index > phaseIdx;
               return `
@@ -510,7 +513,8 @@ function renderConnectStep(): string {
 
 function renderConnectionStatusBadge(phase: ConnectionPhase): string {
   const connected = phase === "ready";
-  const connecting = phase === "scanning" || phase === "found" || phase === "creating";
+  const connecting = phase === "scanning" || phase === "found" || phase === "opening_xhs";
+  const needsLogin = phase === "login_required";
   const errored = phase === "error";
   const label = connected
     ? "connected"
@@ -518,12 +522,14 @@ function renderConnectionStatusBadge(phase: ConnectionPhase): string {
       ? "connecting"
       : phase === "ready_to_test"
         ? "ready to test"
-        : errored
-          ? "needs attention"
-          : "not started";
+        : needsLogin
+          ? "login needed"
+          : errored
+            ? "needs attention"
+            : "not started";
 
   return `
-    <span class="connection-badge ${connected ? "connected" : ""} ${connecting ? "connecting" : ""} ${errored ? "error" : ""}">
+    <span class="connection-badge ${connected ? "connected" : ""} ${connecting ? "connecting" : ""} ${needsLogin ? "warning" : ""} ${errored ? "error" : ""}">
       <i></i>${label}
     </span>
   `;
@@ -534,7 +540,7 @@ function renderConnectStatus(): string {
   if (phase === "ready") {
     return `
       <div class="phase-hint success">
-        <strong>Connected.</strong>
+        <strong>Xiaohongshu is reachable.</strong>
         <p>Click Continue below to pick your AI model.</p>
       </div>
     `;
@@ -559,7 +565,7 @@ function renderConnectStatus(): string {
     return `
       <div class="phase-hint">
         <strong>Step 2.</strong>
-        <p>Once you've checked the box in Chrome, click <strong>Test connection</strong> above.</p>
+        <p>Once you've checked the box in Chrome, click <strong>Open XHS and test</strong> above. If Xiaohongshu asks you to log in, scan the QR code in the Socai tab.</p>
       </div>
     `;
   }
@@ -575,20 +581,28 @@ function renderConnectStatus(): string {
     return `
       <div class="phase-hint active">
         <strong>Found it.</strong>
-        <p>Chrome profile detected. Existing tabs stay untouched.</p>
+        <p>Chrome profile detected. Existing tabs stay untouched; Socai opens Xiaohongshu in its own tab next.</p>
+      </div>
+    `;
+  }
+  if (phase === "opening_xhs") {
+    return `
+      <div class="phase-hint active">
+        <strong>Opening Xiaohongshu…</strong>
+        <p>If a login QR appears in Chrome, scan it while this test is running. Socai waits up to 90 seconds.</p>
       </div>
     `;
   }
   return `
-    <div class="phase-hint active">
-      <strong>Creating Socai tab…</strong>
-      <p>The controlled tab appears in Chrome with a visible 🟢 marker.</p>
+    <div class="phase-hint warning">
+      <strong>Xiaohongshu needs login.</strong>
+      <p>${escapeHtml(state.onboarding.connectionError || "Scan the QR code in the 🟢 Socai Chrome tab, then click “I've logged in · re-test”.")}</p>
     </div>
   `;
 }
 
 function renderChromeTabMock(phaseIdx: number, phase: ConnectionPhase): string {
-  const showSocaiTab = phaseIdx >= 2 || phase === "ready";
+  const showSocaiTab = phaseIdx >= 2 || phase === "ready" || phase === "login_required";
   return `
     <div class="chrome-mock">
       <div class="fake-browser-bar compact"><i></i><i></i><i></i></div>
@@ -596,12 +610,12 @@ function renderChromeTabMock(phaseIdx: number, phase: ConnectionPhase): string {
         <span>Inbox – Gmail</span>
         <span>Linear · Sprint 24</span>
         <span>小红书</span>
-        <span class="socai-tab ${showSocaiTab ? "visible" : ""} ${phase === "ready" ? "ready" : ""}">
+        <span class="socai-tab ${showSocaiTab ? "visible" : ""} ${phase === "ready" ? "ready" : ""} ${phase === "login_required" ? "warning" : ""}">
           <i></i>🟢 Socai
         </span>
       </div>
       <div class="fake-page-state">
-        ${phase === "ready" ? "ready · awaiting first task" : showSocaiTab ? "loading…" : phase === "ready_to_test" ? "settings opened · click test connection" : phase === "idle" ? "open Chrome settings to begin" : "(no controlled tab yet)"}
+        ${phase === "ready" ? "xiaohongshu.com ready · awaiting first task" : phase === "login_required" ? "xiaohongshu.com login needed · scan QR in Chrome" : showSocaiTab ? "opening xiaohongshu.com…" : phase === "ready_to_test" ? "settings opened · click XHS test" : phase === "idle" ? "open Chrome settings to begin" : "(no controlled tab yet)"}
       </div>
     </div>
   `;
@@ -782,9 +796,10 @@ function renderReadyStep(): string {
 }
 
 function setupBrowserSummary(): string {
-  const status = getJsonStatus(state.onboarding.controlledTabResult?.json ?? null);
-  if (status === "controlled_tab_ready") return "Chrome · controlled tab ready";
-  if (state.onboarding.connectionPhase === "ready") return "Chrome · CDP connected";
+  const status = getJsonStatus(state.onboarding.xhsProbeResult?.json ?? null);
+  if (status === "xhs_probe_ready") return "Chrome · Xiaohongshu ready";
+  if (status === "xhs_login_required") return "Chrome · XHS login required";
+  if (state.onboarding.connectionPhase === "ready") return "Chrome · XHS connected";
   return "Chrome · setup can be completed later";
 }
 
@@ -1126,7 +1141,7 @@ async function startConnectionTest() {
   if (
     state.onboarding.connectionPhase === "scanning" ||
     state.onboarding.connectionPhase === "found" ||
-    state.onboarding.connectionPhase === "creating"
+    state.onboarding.connectionPhase === "opening_xhs"
   ) {
     return;
   }
@@ -1135,7 +1150,7 @@ async function startConnectionTest() {
   state.onboarding.connectionPhase = "scanning";
   state.onboarding.connectionError = "";
   state.onboarding.discoveryResult = null;
-  state.onboarding.controlledTabResult = null;
+  state.onboarding.xhsProbeResult = null;
   render();
 
   try {
@@ -1155,16 +1170,28 @@ async function startConnectionTest() {
     render();
     await delay(450);
 
-    state.onboarding.connectionPhase = "creating";
+    state.onboarding.connectionPhase = "opening_xhs";
     render();
 
-    const controlledTab = await invoke<PrototypeCommandResult>("create_controlled_tab");
-    state.onboarding.controlledTabResult = controlledTab;
-    const controlledStatus = getJsonStatus(controlledTab.json);
+    const xhsProbe = await invoke<PrototypeCommandResult>("xhs_connection_test");
+    state.onboarding.xhsProbeResult = xhsProbe;
+    const xhsStatus = getJsonStatus(xhsProbe.json);
+    const xhsDiagnostics = getJsonObjectField(xhsProbe.json, "diagnostics");
 
-    if (!controlledTab.ok || controlledStatus !== "controlled_tab_ready") {
+    if (xhsStatus === "xhs_login_required" || xhsDiagnostics?.possibleLoginPrompt === true) {
+      state.onboarding.connectionPhase = "login_required";
+      state.onboarding.connectionError = "Xiaohongshu opened in the 🟢 Socai tab, but it needs login. Scan the QR code in Chrome, then re-test.";
+      render();
+      return;
+    }
+
+    if (xhsStatus === "xhs_security_verification" || xhsDiagnostics?.possibleSecurityVerification === true) {
+      throw new Error("Xiaohongshu opened, but it is showing a security verification state. Complete the verification in Chrome, then retry.");
+    }
+
+    if (!xhsProbe.ok || xhsStatus !== "xhs_probe_ready") {
       throw new Error(
-        controlledTab.stderr || `Controlled tab returned status: ${controlledStatus || "unknown"}`,
+        xhsProbe.stderr || `Xiaohongshu connection test returned status: ${xhsStatus || "unknown"}`,
       );
     }
 
@@ -1226,7 +1253,7 @@ function resetOnboarding() {
   state.onboarding.connectionStarted = false;
   state.onboarding.connectionError = "";
   state.onboarding.discoveryResult = null;
-  state.onboarding.controlledTabResult = null;
+  state.onboarding.xhsProbeResult = null;
   render();
 }
 
@@ -1269,6 +1296,12 @@ function getJsonStatus(json: unknown): string {
   if (!json || typeof json !== "object") return "";
   const value = (json as Record<string, unknown>).status;
   return typeof value === "string" ? value : "";
+}
+
+function getJsonObjectField(json: unknown, field: string): Record<string, unknown> | null {
+  if (!json || typeof json !== "object") return null;
+  const value = (json as Record<string, unknown>)[field];
+  return value && typeof value === "object" ? (value as Record<string, unknown>) : null;
 }
 
 function formatError(error: unknown): string {

@@ -52,6 +52,8 @@ async def read_page_probe(page: SocaiCDPPage) -> dict[str, Any]:
 (() => {
   const text = document.body ? document.body.innerText || '' : '';
   const lower = text.toLowerCase();
+  const hasLoginText = text.includes('登录') || text.includes('扫码') || text.includes('二维码') ||
+    text.includes('请扫码') || text.includes('手机') || lower.includes('login') || lower.includes('sign in');
   return {
     title: document.title,
     url: location.href,
@@ -59,8 +61,8 @@ async def read_page_probe(page: SocaiCDPPage) -> dict[str, Any]:
     scrollY: Math.round(window.scrollY),
     bodyTextLength: text.length,
     hasXiaohongshuText: text.includes('小红书') || lower.includes('xiaohongshu'),
-    possibleSecurityVerification: text.includes('安全验证') || lower.includes('verify') || lower.includes('captcha'),
-    possibleLoginPrompt: text.includes('登录') || lower.includes('login')
+    possibleSecurityVerification: text.includes('安全验证') || text.includes('验证') || lower.includes('verify') || lower.includes('captcha'),
+    possibleLoginPrompt: hasLoginText
   };
 })()
 """
@@ -115,6 +117,18 @@ async def run(args: argparse.Namespace) -> dict[str, Any]:
         before_state = await read_page_probe(page)
         await page.capture_screenshot(before_screenshot)
 
+        login_prompt_initial = bool(before_state.get("possibleLoginPrompt"))
+        login_wait_started = time.monotonic()
+        login_waited_seconds = 0.0
+        if login_prompt_initial and args.login_wait > 0:
+            deadline = time.monotonic() + args.login_wait
+            while time.monotonic() < deadline:
+                await asyncio.sleep(args.login_poll_interval)
+                before_state = await read_page_probe(page)
+                if not before_state.get("possibleLoginPrompt"):
+                    break
+            login_waited_seconds = round(time.monotonic() - login_wait_started, 2)
+
         scroll_y = await page.scroll(args.scroll_delta)
         await asyncio.sleep(args.after_scroll_wait)
         after_state = await read_page_probe(page)
@@ -130,6 +144,9 @@ async def run(args: argparse.Namespace) -> dict[str, Any]:
             "hasXiaohongshuText": bool(after_state.get("hasXiaohongshuText") or before_state.get("hasXiaohongshuText")),
             "possibleSecurityVerification": bool(after_state.get("possibleSecurityVerification") or before_state.get("possibleSecurityVerification")),
             "possibleLoginPrompt": bool(after_state.get("possibleLoginPrompt") or before_state.get("possibleLoginPrompt")),
+            "loginPromptInitial": login_prompt_initial,
+            "loginWaitSeconds": float(args.login_wait),
+            "loginWaitedSeconds": login_waited_seconds,
         }
 
         operated = bool(
@@ -137,10 +154,25 @@ async def run(args: argparse.Namespace) -> dict[str, Any]:
             and "xiaohongshu.com" in diagnostics["landed_url"]
             and Path(after_screenshot).exists()
         )
+        login_required = operated and diagnostics["possibleLoginPrompt"]
+        security_verification = operated and diagnostics["possibleSecurityVerification"]
+
+        if not operated:
+            status = "xhs_probe_inconclusive"
+            reason = "Could not confirm XHS operation from URL/screenshot diagnostics."
+        elif security_verification:
+            status = "xhs_security_verification"
+            reason = "Opened Xiaohongshu, but the page appears to be in a security verification state."
+        elif login_required:
+            status = "xhs_login_required"
+            reason = "Opened Xiaohongshu in a Socai-controlled tab, but the user still needs to log in."
+        else:
+            status = "xhs_probe_ready"
+            reason = "Opened Xiaohongshu in a Socai-controlled Chrome tab and confirmed the page is reachable."
 
         return {
-            "status": "xhs_probe_ready" if operated else "xhs_probe_inconclusive",
-            "reason": "Opened and operated a Xiaohongshu page in a Socai-controlled Chrome tab." if operated else "Could not confirm XHS operation from URL/screenshot diagnostics.",
+            "status": status,
+            "reason": reason,
             "endpoint": endpoint,
             "target_id": page.target_id,
             "session_id": page.session_id,
@@ -191,7 +223,7 @@ def print_human(result: dict[str, Any]) -> None:
             print("Opened Chrome inspect permission page.")
         return
 
-    if result["status"] not in {"xhs_probe_ready", "xhs_probe_inconclusive"}:
+    if result["status"] not in {"xhs_probe_ready", "xhs_probe_inconclusive", "xhs_login_required", "xhs_security_verification"}:
         if result.get("inspect_url"):
             print(f"Inspect URL: {result['inspect_url']}")
         return
@@ -204,6 +236,7 @@ def print_human(result: dict[str, Any]) -> None:
     print(f"Scrolled to Y: {diagnostics.get('scrollY')}")
     print(f"Security verification detected: {diagnostics.get('possibleSecurityVerification')}")
     print(f"Login prompt detected: {diagnostics.get('possibleLoginPrompt')}")
+    print(f"Login wait: {diagnostics.get('loginWaitedSeconds')} / {diagnostics.get('loginWaitSeconds')} seconds")
     print("Screenshots:")
     for name, path in (result.get("screenshots") or {}).items():
         print(f"- {name}: {path}")
@@ -221,6 +254,8 @@ def parse_args(argv: list[str]) -> argparse.Namespace:
     )
     parser.add_argument("--timeout", type=float, default=10.0, help="CDP connection timeout in seconds")
     parser.add_argument("--load-wait", type=float, default=6.0, help="Seconds to wait after navigating to XHS")
+    parser.add_argument("--login-wait", type=float, default=0.0, help="Seconds to wait for the user to scan/login if XHS asks for login")
+    parser.add_argument("--login-poll-interval", type=float, default=2.0, help="Seconds between XHS login-state checks")
     parser.add_argument("--scroll-delta", type=int, default=650, help="Pixels to scroll during the proof")
     parser.add_argument("--after-scroll-wait", type=float, default=1.5, help="Seconds to wait after scrolling")
     return parser.parse_args(argv)
@@ -235,7 +270,7 @@ def main(argv: list[str] | None = None) -> int:
     else:
         print_human(result)
 
-    return 0 if result["status"] in {"xhs_probe_ready", "xhs_probe_inconclusive", "setup_required"} else 1
+    return 0 if result["status"] in {"xhs_probe_ready", "xhs_probe_inconclusive", "xhs_login_required", "xhs_security_verification", "setup_required"} else 1
 
 
 if __name__ == "__main__":

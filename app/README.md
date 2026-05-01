@@ -151,17 +151,19 @@ Smoke-tested UI actions:
 - `Connect Chrome` → expected status `connect_chrome — cdp_available`.
 - `Create Controlled Tab` → expected status `controlled_tab — controlled_tab_ready` and a marked Chrome tab.
 
-Known Session 5 follow-up:
+Current XHS connection behavior:
 
-- `Open XHS Probe` is wired to the Python XHS proof script, but the packaged-app UI path needs one more reliability pass around Chrome's per-connection **Allow remote debugging?** dialog / XHS login timing before it is marked complete. The script-level XHS proof remains verified via the Session 4 command above.
+- `Open XHS Probe` runs the Python XHS proof script.
+- First-run onboarding uses the same XHS proof as its connection test, so setup verifies the real target site instead of only opening a generic test page.
+- If Xiaohongshu asks for login, the test waits while the user scans/logs in from the marked 🟢 Socai Chrome tab, then reports whether XHS is ready, login is still required, or security verification appeared.
 
 ## Session 6 onboarding UI
 
 The packaged app now opens into a four-step first-run onboarding wizard adapted from the external design prototype:
 
 1. Welcome
-2. Connect Chrome — combined Chrome remote-debugging permission guidance and live CDP/controlled-tab test
+2. Connect Chrome — combined Chrome remote-debugging permission guidance and live Xiaohongshu open/login test
 3. Model selection and placeholder auth choices
 4. Ready / starter task choices
 
-The Connect Chrome step calls the Tauri command `open_chrome_inspect`, which opens `chrome://inspect/#remote-debugging` in Google Chrome, then can run the existing `connect_chrome` and `create_controlled_tab` commands from the same screen. Completing onboarding stores a local `socaiOnboardingComplete=1` flag in the app WebView local storage; the main prototype screen includes **Run setup again** to revisit the wizard.
+The Connect Chrome step calls the Tauri command `open_chrome_inspect`, which opens `chrome://inspect/#remote-debugging` in Google Chrome, then runs a real `xhs_connection_test` from the same screen. That test opens Xiaohongshu in a marked 🟢 Socai tab and waits briefly for the user to scan/login if XHS asks for it. Completing onboarding stores a local `socaiOnboardingComplete=1` flag in the app WebView local storage; the main prototype screen includes **Run setup again** to revisit the wizard.

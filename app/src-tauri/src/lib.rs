@@ -70,6 +70,11 @@ fn open_xhs_probe(app: tauri::AppHandle) -> Result<PrototypeCommandResult, Strin
 }
 
 #[tauri::command]
+fn xhs_connection_test(app: tauri::AppHandle) -> Result<PrototypeCommandResult, String> {
+    run_prototype_action(&app, "xhs_connection_test")
+}
+
+#[tauri::command]
 fn capture_test_screenshot(app: tauri::AppHandle) -> Result<PrototypeCommandResult, String> {
     run_prototype_action(&app, "capture_test_screenshot")
 }
@@ -114,6 +119,20 @@ fn run_prototype_action(
         "controlled_tab" => ("cdp_controlled_tab.py", &["--json", "--timeout", "30"]),
         "capture_test_screenshot" => ("cdp_controlled_tab.py", &["--json", "--timeout", "30"]),
         "xhs_probe" => ("cdp_xhs_probe.py", &["--json", "--timeout", "30"]),
+        "xhs_connection_test" => (
+            "cdp_xhs_probe.py",
+            &[
+                "--json",
+                "--timeout",
+                "30",
+                "--load-wait",
+                "8",
+                "--login-wait",
+                "90",
+                "--login-poll-interval",
+                "2",
+            ],
+        ),
         _ => return Err(format!("Unknown Socai prototype action: {action}")),
     };
 
@@ -223,6 +242,7 @@ pub fn run() {
             list_chrome_targets,
             create_controlled_tab,
             open_xhs_probe,
+            xhs_connection_test,
             capture_test_screenshot,
             open_chrome_inspect
         ])
