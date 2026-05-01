@@ -74,6 +74,35 @@ fn capture_test_screenshot(app: tauri::AppHandle) -> Result<PrototypeCommandResu
     run_prototype_action(&app, "capture_test_screenshot")
 }
 
+#[tauri::command]
+fn open_chrome_inspect() -> Result<(), String> {
+    let inspect_url = "chrome://inspect/#remote-debugging";
+    let status = if cfg!(target_os = "macos") {
+        Command::new("open")
+            .arg("-a")
+            .arg("Google Chrome")
+            .arg(inspect_url)
+            .status()
+    } else if cfg!(target_os = "windows") {
+        Command::new("cmd")
+            .arg("/C")
+            .arg("start")
+            .arg(inspect_url)
+            .status()
+    } else {
+        Command::new("xdg-open").arg(inspect_url).status()
+    }
+    .map_err(|err| format!("Failed to open Chrome inspect page: {err}"))?;
+
+    if status.success() {
+        Ok(())
+    } else {
+        Err(format!(
+            "Opening Chrome inspect page exited with status: {status}"
+        ))
+    }
+}
+
 fn run_prototype_action(
     app: &tauri::AppHandle,
     action: &str,
@@ -194,7 +223,8 @@ pub fn run() {
             list_chrome_targets,
             create_controlled_tab,
             open_xhs_probe,
-            capture_test_screenshot
+            capture_test_screenshot,
+            open_chrome_inspect
         ])
         .run(tauri::generate_context!())
         .expect("error while running Socai prototype");

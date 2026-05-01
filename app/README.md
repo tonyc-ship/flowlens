@@ -154,3 +154,15 @@ Smoke-tested UI actions:
 Known Session 5 follow-up:
 
 - `Open XHS Probe` is wired to the Python XHS proof script, but the packaged-app UI path needs one more reliability pass around Chrome's per-connection **Allow remote debugging?** dialog / XHS login timing before it is marked complete. The script-level XHS proof remains verified via the Session 4 command above.
+
+## Session 6 onboarding UI
+
+The packaged app now opens into a five-step first-run onboarding wizard adapted from the external design prototype:
+
+1. Welcome
+2. Chrome remote-debugging permission
+3. Chrome CDP connection / controlled-tab setup
+4. Model selection and placeholder auth choices
+5. Ready / starter task choices
+
+The permission step calls the Tauri command `open_chrome_inspect`, which opens `chrome://inspect/#remote-debugging` in Google Chrome. The connection step can run the existing `connect_chrome` and `create_controlled_tab` commands. Completing onboarding stores a local `socaiOnboardingComplete=1` flag in the app WebView local storage; the main prototype screen includes **Run setup again** to revisit the wizard.

@@ -191,3 +191,22 @@ All Milestone A, B, and C tasks are now verified.
 Next session:
 
 - Session 6: demo bundle + manual checklist.
+
+## 2026-05-01 — Session 6: onboarding prototype implementation
+
+Completed:
+
+- Read the external design prototype at `/Users/goldiemacbookpro/Downloads/Socali/socai/v1-onboarding.jsx` and adapted the five-step flow into the active Tauri app under `app/`.
+- Replaced the initial app surface with a first-run onboarding wizard: Welcome, Permission, Connect, Model, Ready.
+- Added `open_chrome_inspect` Tauri command to open `chrome://inspect/#remote-debugging` from the Permission step.
+- Wired the Connect step to the existing real `connect_chrome` and `create_controlled_tab` commands while keeping the user in control via an explicit Start connection test button.
+- Kept the existing CDP prototype control panel as the post-onboarding app screen with a Run setup again entry point.
+
+Verification:
+
+- `npm --prefix app run build`
+- `cd app/src-tauri && cargo fmt --check && cargo check`
+- `python3 -m py_compile app/prototype/*.py`
+- `uv run --extra dev pytest tests/test_package_layout.py tests/test_desktop_cli.py`
+- `bash scripts/build_app.sh`
+- Opened `/Applications/Socai Prototype.app`, clicked through Welcome → Permission → Connect → Model → Ready → Open Socai, and captured screenshots under `task_runs/onboarding_smoke/`.
