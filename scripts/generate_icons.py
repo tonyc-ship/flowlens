@@ -16,6 +16,7 @@ from PIL import Image
 
 ROOT = Path(__file__).resolve().parents[1]
 SOURCE = ROOT / "branding" / "icon_source.png"
+APP_SOURCE = ROOT / "branding" / "app_icon_source.png"
 CHROME_ICONS = ROOT / "chrome_extension" / "icons"
 APP_SRC = ROOT / "app" / "src"
 APP_TAURI = ROOT / "app" / "src-tauri"
@@ -41,7 +42,7 @@ def generate_desktop_frontend_icon(img: Image.Image) -> None:
 
 def generate_tauri_icons() -> None:
     subprocess.run(
-        ["npm", "run", "tauri", "icon", str(SOURCE)],
+        ["npm", "run", "tauri", "icon", str(APP_SOURCE)],
         cwd=ROOT / "app",
         check=True,
     )
@@ -66,10 +67,13 @@ def generate_tauri_icons() -> None:
 def main() -> None:
     if not SOURCE.exists():
         raise SystemExit(f"Missing source icon: {SOURCE}")
+    if not APP_SOURCE.exists():
+        raise SystemExit(f"Missing app source icon: {APP_SOURCE}")
 
-    img = Image.open(SOURCE).convert("RGBA")
-    generate_chrome_icons(img)
-    generate_desktop_frontend_icon(img)
+    chrome_img = Image.open(SOURCE).convert("RGBA")
+    app_img = Image.open(APP_SOURCE).convert("RGBA")
+    generate_chrome_icons(chrome_img)
+    generate_desktop_frontend_icon(app_img)
     generate_tauri_icons()
 
 

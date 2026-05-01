@@ -210,3 +210,21 @@ Verification:
 - `uv run --extra dev pytest tests/test_package_layout.py tests/test_desktop_cli.py`
 - `bash scripts/build_app.sh`
 - Opened `/Applications/Socai Prototype.app`, clicked through Welcome → Permission → Connect → Model → Ready → Open Socai, and captured screenshots under `task_runs/onboarding_smoke/`.
+
+## 2026-05-01 — App icon refresh
+
+Completed:
+
+- Replaced the packaged desktop app icon with a clean Socai mark based on the design-system `SocaiLogo` motif instead of the pixel-art creature.
+- Added `branding/app_icon_source.png` as the app-specific icon source.
+- Updated `scripts/generate_icons.py` so Chrome extension icons still use `branding/icon_source.png`, while the Tauri desktop app uses `branding/app_icon_source.png`.
+- Regenerated `app/src-tauri/icons/*` and added `app/src/app-icon.png` for future frontend use.
+
+Verification:
+
+- `python3 scripts/generate_icons.py`
+- `python3 -m py_compile scripts/generate_icons.py`
+- `npm --prefix app run build`
+- `cd app/src-tauri && cargo check`
+- `bash scripts/build_app.sh`
+- Confirmed `/Applications/Socai Prototype.app/Contents/Resources/icon.icns` matches the regenerated app icon.
