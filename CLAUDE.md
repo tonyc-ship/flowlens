@@ -283,7 +283,7 @@ pip install -e ".[dev]"       # dev tooling
 Current scope:
 
 - Minimal Tauri/Vite shell
-- First-run onboarding wizard for browser permission, Chrome connection, model choice, and starter tasks
+- First-run onboarding wizard with a combined Chrome permission/connection step, model choice, and starter tasks
 - Rust commands that launch Python CDP prototype scripts
 - Rust command to open Chrome's `chrome://inspect/#remote-debugging` setup page
 - Existing Chrome profile discovery and CDP target listing

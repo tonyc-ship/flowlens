@@ -250,3 +250,43 @@ Verification:
 - `bash scripts/build_app.sh`
 - `uv run --extra dev pytest tests/test_package_layout.py tests/test_desktop_cli.py`
 - Opened `/Applications/Socai Prototype.app` and confirmed `socai_app` launched.
+
+## 2026-05-01 — Combined Chrome permission + connection onboarding
+
+Completed:
+
+- Read the updated external design prototype at `/Users/goldiemacbookpro/Downloads/Socali (1)/socai/v1-onboarding.jsx`.
+- Updated the packaged Tauri onboarding flow from five steps to four steps:
+  1. Welcome
+  2. Connect Chrome — combined permission guidance and live connection test
+  3. Model
+  4. Ready
+- Merged the former Permission and Connect screens into one Connect Chrome step with:
+  - can/can't permission explainer
+  - highlighted `chrome://inspect/#remote-debugging` mock
+  - real `open_chrome_inspect` action
+  - ready-to-test state after settings open
+  - real `connect_chrome` + `create_controlled_tab` test action
+  - needs-attention/error state when Chrome permission is not approved
+- Removed the large post-onboarding in-app header that said `Socai Prototype`; the main screen now starts with compact utility controls only.
+- Set Tauri `hiddenTitle: true` for the main window so the macOS titlebar does not show the centered `Socai Prototype` title.
+
+Verification:
+
+- `pnpm --dir app run build`
+- `cd app/src-tauri && cargo fmt --check && cargo check`
+- `bash scripts/build_app.sh`
+- `uv run --extra dev pytest tests/test_package_layout.py tests/test_desktop_cli.py`
+- `git diff --check`
+- Opened `/Applications/Socai Prototype.app` and smoke-tested:
+  - main app has no large header
+  - onboarding Welcome shows 4 steps
+  - Connect Chrome combines permission guidance and connection test
+  - `Open Chrome settings` opens the real Chrome remote-debugging settings page and returns the app to ready-to-test state
+  - real Chrome permission prompt cancellation returns the app to needs-attention state
+  - Model and Ready steps remain reachable
+  - completing onboarding returns to the headerless main app
+
+Visual report:
+
+- `task_runs/onboarding_combined_20260501_120800/report.html`

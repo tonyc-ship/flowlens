@@ -157,12 +157,11 @@ Known Session 5 follow-up:
 
 ## Session 6 onboarding UI
 
-The packaged app now opens into a five-step first-run onboarding wizard adapted from the external design prototype:
+The packaged app now opens into a four-step first-run onboarding wizard adapted from the external design prototype:
 
 1. Welcome
-2. Chrome remote-debugging permission
-3. Chrome CDP connection / controlled-tab setup
-4. Model selection and placeholder auth choices
-5. Ready / starter task choices
+2. Connect Chrome — combined Chrome remote-debugging permission guidance and live CDP/controlled-tab test
+3. Model selection and placeholder auth choices
+4. Ready / starter task choices
 
-The permission step calls the Tauri command `open_chrome_inspect`, which opens `chrome://inspect/#remote-debugging` in Google Chrome. The connection step can run the existing `connect_chrome` and `create_controlled_tab` commands. Completing onboarding stores a local `socaiOnboardingComplete=1` flag in the app WebView local storage; the main prototype screen includes **Run setup again** to revisit the wizard.
+The Connect Chrome step calls the Tauri command `open_chrome_inspect`, which opens `chrome://inspect/#remote-debugging` in Google Chrome, then can run the existing `connect_chrome` and `create_controlled_tab` commands from the same screen. Completing onboarding stores a local `socaiOnboardingComplete=1` flag in the app WebView local storage; the main prototype screen includes **Run setup again** to revisit the wizard.

@@ -39,9 +39,9 @@ type ActionConfig = {
   description: string;
 };
 
-type OnboardingStepId = "welcome" | "permission" | "connect" | "model" | "ready";
+type OnboardingStepId = "welcome" | "connect" | "model" | "ready";
 type ViewMode = "onboarding" | "app";
-type ConnectionPhase = "idle" | "scanning" | "found" | "creating" | "ready" | "error";
+type ConnectionPhase = "idle" | "ready_to_test" | "scanning" | "found" | "creating" | "ready" | "error";
 type PermissionStatus = "idle" | "opening" | "opened" | "error";
 type AuthMode = "oauth" | "key";
 type OAuthStatus = "idle" | "waiting" | "connected";
@@ -87,8 +87,7 @@ type ModelOption = {
 const onboardingStorageKey = "socaiOnboardingComplete";
 const obSteps: { id: OnboardingStepId; label: string }[] = [
   { id: "welcome", label: "Welcome" },
-  { id: "permission", label: "Permission" },
-  { id: "connect", label: "Connect" },
+  { id: "connect", label: "Connect Chrome" },
   { id: "model", label: "Model" },
   { id: "ready", label: "Ready" },
 ];
@@ -292,8 +291,6 @@ function renderCurrentOnboardingStep(): string {
   switch (state.onboarding.stepId) {
     case "welcome":
       return renderWelcomeStep();
-    case "permission":
-      return renderPermissionStep();
     case "connect":
       return renderConnectStep();
     case "model":
@@ -374,58 +371,11 @@ function renderHeroDiagram(): string {
   `;
 }
 
-function renderPermissionStep(): string {
-  return `
-    <section class="ob-grid permission-grid">
-      <article class="ob-card">
-        <p class="ob-eyebrow">Browser permission</p>
-        <h2>Let Socai talk to your Chrome.</h2>
-        <p class="ob-muted">
-          Socai uses Chrome's built-in remote debugging interface to drive the browser.
-          This is the same protocol Chrome DevTools uses, and it only works while Socai is open.
-        </p>
-        <div class="permission-callout">
-          <p class="ob-eyebrow">What Socai can do</p>
-          ${[
-            ["✓", "Read URL, DOM and screenshots of the 🟢 Socai tab", true],
-            ["✓", "Click, scroll, and type inside the 🟢 Socai tab", true],
-            ["✓", "Open new tabs that it created itself", true],
-            ["✕", "Touch your other tabs, history, or saved passwords", false],
-            ["✕", "Run anything when Socai is closed", false],
-          ]
-            .map(
-              ([mark, text, ok]) => `
-                <div class="permission-row ${ok ? "allowed" : "blocked"}">
-                  <span>${mark}</span><p>${escapeHtml(text)}</p>
-                </div>`,
-            )
-            .join("")}
-        </div>
-        <div class="ob-actions">
-          <button class="ob-btn primary" data-open-inspect>
-            ${state.onboarding.permissionStatus === "opening" ? "Opening Chrome…" : "Open Chrome settings"}
-          </button>
-          <button class="ob-btn">Read full security note</button>
-        </div>
-        ${renderPermissionStatus()}
-      </article>
-      <article class="ob-card inspect-card">
-        <p class="ob-eyebrow">What you'll do in Chrome</p>
-        <p class="ob-muted">
-          We'll open <code>chrome://inspect</code> and walk you through Chrome's remote-debugging prompt.
-        </p>
-        ${renderInspectMock()}
-        <p class="ob-small">You only need to approve this once. Socai checks the connection every launch.</p>
-      </article>
-    </section>
-  `;
-}
-
 function renderPermissionStatus(): string {
   const status = state.onboarding.permissionStatus;
   if (status === "idle") return "";
   if (status === "opened") {
-    return `<div class="inline-status success">Chrome settings opened. Approve the prompt, then continue.</div>`;
+    return `<div class="inline-status success">Chrome settings opened. Check the highlighted remote-debugging row, then test the connection.</div>`;
   }
   if (status === "error") {
     return `<div class="inline-status error">${escapeHtml(state.onboarding.permissionError)}</div>`;
@@ -440,14 +390,14 @@ function renderInspectMock(): string {
         <i></i><i></i><i></i><span>chrome://inspect/#remote-debugging</span>
       </div>
       <div class="inspect-content">
-        <strong>DevTools</strong>
-        <small>Devices · Pages · Extensions · Apps · Workers</small>
+        <strong>Remote debugging</strong>
+        <small>Chrome will show the one row Socai needs.</small>
         <div class="inspect-toggle">
-          <b>CLICK THIS</b>
-          <div class="toggle-on"><span></span></div>
+          <b>CHECK THIS ✓</b>
+          <div class="inspect-checkbox">✓</div>
           <div>
-            <strong>Discover network targets</strong>
-            <small>Allow Socai to connect at localhost:9222</small>
+            <strong>Allow remote debugging for this browser instance</strong>
+            <small>Lets Socai connect to localhost:9222 while the app is open.</small>
           </div>
         </div>
         <pre>localhost:9222 <span>✓ allowed</span></pre>
@@ -458,23 +408,83 @@ function renderInspectMock(): string {
 
 function renderConnectStep(): string {
   const phase = state.onboarding.connectionPhase;
+  const settingsOpened = state.onboarding.permissionStatus === "opened" || phase !== "idle";
+  const testing = phase === "scanning" || phase === "found" || phase === "creating";
   const steps = [
     { id: "scanning", label: "Looking for Chrome on port 9222", detail: "Probing localhost:9222 …" },
     { id: "found", label: "Chrome detected", detail: "Default profile · existing tabs untouched" },
     { id: "creating", label: "Creating controlled tab", detail: "Opening a clearly marked 🟢 Socai tab" },
     { id: "ready", label: "Connection ready", detail: "Socai is now talking to Chrome" },
   ];
-  const phaseIdx = Math.max(
-    -1,
-    steps.findIndex((step) => step.id === phase),
-  );
+  const phaseIdx = phase === "idle" || phase === "ready_to_test" || phase === "error"
+    ? -1
+    : Math.max(
+        -1,
+        steps.findIndex((step) => step.id === phase),
+      );
 
   return `
-    <section class="ob-grid connect-grid">
-      <article class="ob-card">
-        <p class="ob-eyebrow">Connecting</p>
-        <h2>${phase === "ready" ? "All set." : phase === "error" ? "Connection needs attention." : "Connect to Chrome."}</h2>
-        <div class="connect-steps">
+    <section class="ob-grid connect-grid combined-connect-grid">
+      <article class="ob-card connect-permission-card">
+        <p class="ob-eyebrow">Connect Chrome</p>
+        <h2>Let Socai talk to your Chrome.</h2>
+        <p class="ob-muted">
+          Socai uses Chrome's built-in <strong>remote debugging</strong> interface —
+          the same protocol DevTools uses. Check the box once, then we'll create a
+          dedicated <strong>🟢 Socai</strong> tab for automation.
+        </p>
+
+        <div class="capability-callout">
+          <div>
+            <p class="ob-eyebrow can-do">Can do</p>
+            ${["Read the 🟢 Socai tab", "Click, scroll, type in it", "Open tabs it created"]
+              .map(
+                (text) => `
+                  <div class="permission-row allowed"><span>✓</span><p>${escapeHtml(text)}</p></div>
+                `,
+              )
+              .join("")}
+          </div>
+          <div>
+            <p class="ob-eyebrow cant-do">Can't do</p>
+            ${["Touch your other tabs", "Read profile / passwords", "Run when Socai is closed"]
+              .map(
+                (text) => `
+                  <div class="permission-row blocked"><span>✕</span><p>${escapeHtml(text)}</p></div>
+                `,
+              )
+              .join("")}
+          </div>
+        </div>
+
+        ${renderInspectMock()}
+
+        <div class="ob-actions connect-permission-actions">
+          <button class="ob-btn primary" data-open-inspect ${state.onboarding.permissionStatus === "opening" ? "disabled" : ""}>
+            ${state.onboarding.permissionStatus === "opening" ? "Opening Chrome…" : settingsOpened ? "Settings opened ✓" : "Open Chrome settings →"}
+          </button>
+          <button class="ob-btn">Troubleshoot</button>
+          <span>One-time setup</span>
+        </div>
+        ${renderPermissionStatus()}
+      </article>
+
+      <article class="ob-card chrome-create-card connection-status-card">
+        <div class="connection-status-heading">
+          <p class="ob-eyebrow">Connection status</p>
+          ${renderConnectionStatusBadge(phase)}
+        </div>
+
+        <button class="ob-btn primary full connect-test-button ${phase === "ready" ? "connected" : ""}" data-start-connect ${!settingsOpened || testing ? "disabled" : ""}>
+          ${phase === "idle" ? "Test connection" : ""}
+          ${phase === "ready_to_test" ? "Test connection →" : ""}
+          ${testing ? `${renderSpinner(true)} Testing connection…` : ""}
+          ${phase === "ready" ? "✓ Connected · re-test" : ""}
+          ${phase === "error" ? "Try again" : ""}
+        </button>
+        ${!settingsOpened ? `<p class="connect-gate-hint">Open Chrome settings first ↖</p>` : ""}
+
+        <div class="connect-steps ${phaseIdx < 0 ? "dimmed" : ""}">
           ${steps
             .map((step, index) => {
               const done = phase === "ready" ? index < steps.length - 1 : index < phaseIdx;
@@ -490,23 +500,32 @@ function renderConnectStep(): string {
             })
             .join("")}
         </div>
-        ${renderConnectStatus()}
-        <div class="ob-actions">
-          <button class="ob-btn primary" data-start-connect ${phase === "scanning" || phase === "creating" ? "disabled" : ""}>
-            ${phase === "ready" ? "Re-test connection" : state.onboarding.connectionStarted ? "Try again" : "Start connection test"}
-          </button>
-          <button class="ob-btn" data-open-inspect>Troubleshoot</button>
-        </div>
-      </article>
-      <article class="ob-card chrome-create-card">
-        <p class="ob-eyebrow">What's happening in Chrome</p>
+
         ${renderChromeTabMock(phaseIdx, phase)}
-        <div class="phase-hint ${phase === "ready" ? "success" : phase === "error" ? "error" : ""}">
-          <strong>${connectHintTitle(phase)}</strong>
-          <p>${connectHintBody(phase)}</p>
-        </div>
+        ${renderConnectStatus()}
       </article>
     </section>
+  `;
+}
+
+function renderConnectionStatusBadge(phase: ConnectionPhase): string {
+  const connected = phase === "ready";
+  const connecting = phase === "scanning" || phase === "found" || phase === "creating";
+  const errored = phase === "error";
+  const label = connected
+    ? "connected"
+    : connecting
+      ? "connecting"
+      : phase === "ready_to_test"
+        ? "ready to test"
+        : errored
+          ? "needs attention"
+          : "not started";
+
+  return `
+    <span class="connection-badge ${connected ? "connected" : ""} ${connecting ? "connecting" : ""} ${errored ? "error" : ""}">
+      <i></i>${label}
+    </span>
   `;
 }
 
@@ -514,28 +533,58 @@ function renderConnectStatus(): string {
   const phase = state.onboarding.connectionPhase;
   if (phase === "ready") {
     return `
-      <div class="connect-success">
-        <span>✓</span>
-        <div><strong>Chrome connected</strong><p>You can continue to model setup.</p></div>
+      <div class="phase-hint success">
+        <strong>Connected.</strong>
+        <p>Click Continue below to pick your AI model.</p>
       </div>
     `;
   }
   if (phase === "error") {
     return `
-      <div class="inline-status error">
-        ${escapeHtml(state.onboarding.connectionError || "Could not connect to Chrome. Open Chrome settings and retry.")}
+      <div class="phase-hint error">
+        <strong>Connection was not completed.</strong>
+        <p>${escapeHtml(state.onboarding.connectionError || "Open Chrome settings, approve remote debugging, then retry the connection test.")}</p>
       </div>
     `;
   }
   if (phase === "idle") {
     return `
-      <p class="ob-muted connect-copy">
-        Click Start connection test after approving Chrome's remote-debugging prompt.
-        Socai will discover Chrome and create a marked controlled tab.
-      </p>
+      <div class="phase-hint">
+        <strong>Step 1.</strong>
+        <p>Click <strong>Open Chrome settings →</strong> on the left. We'll pop open chrome://inspect so you can check the box.</p>
+      </div>
     `;
   }
-  return `<p class="ob-muted connect-copy">If Chrome asks to allow remote debugging, approve it while this test is running.</p>`;
+  if (phase === "ready_to_test") {
+    return `
+      <div class="phase-hint">
+        <strong>Step 2.</strong>
+        <p>Once you've checked the box in Chrome, click <strong>Test connection</strong> above.</p>
+      </div>
+    `;
+  }
+  if (phase === "scanning") {
+    return `
+      <div class="phase-hint active">
+        <strong>Looking…</strong>
+        <p>If this hangs, approve Chrome's remote-debugging prompt while this test is running.</p>
+      </div>
+    `;
+  }
+  if (phase === "found") {
+    return `
+      <div class="phase-hint active">
+        <strong>Found it.</strong>
+        <p>Chrome profile detected. Existing tabs stay untouched.</p>
+      </div>
+    `;
+  }
+  return `
+    <div class="phase-hint active">
+      <strong>Creating Socai tab…</strong>
+      <p>The controlled tab appears in Chrome with a visible 🟢 marker.</p>
+    </div>
+  `;
 }
 
 function renderChromeTabMock(phaseIdx: number, phase: ConnectionPhase): string {
@@ -552,28 +601,10 @@ function renderChromeTabMock(phaseIdx: number, phase: ConnectionPhase): string {
         </span>
       </div>
       <div class="fake-page-state">
-        ${phase === "ready" ? "ready · awaiting first task" : showSocaiTab ? "loading…" : "(no controlled tab yet)"}
+        ${phase === "ready" ? "ready · awaiting first task" : showSocaiTab ? "loading…" : phase === "ready_to_test" ? "settings opened · click test connection" : phase === "idle" ? "open Chrome settings to begin" : "(no controlled tab yet)"}
       </div>
     </div>
   `;
-}
-
-function connectHintTitle(phase: ConnectionPhase): string {
-  if (phase === "idle") return "Ready to test?";
-  if (phase === "scanning") return "Scanning your existing Chrome.";
-  if (phase === "found") return "Detected your Chrome.";
-  if (phase === "creating") return "Creating the Socai tab now…";
-  if (phase === "ready") return "Tab is alive and ready for instructions.";
-  return "Connection was not completed.";
-}
-
-function connectHintBody(phase: ConnectionPhase): string {
-  if (phase === "idle") return "Socai will not touch your current tab until you start the test.";
-  if (phase === "scanning") return "If this hangs, approve the Chrome prompt or open the troubleshooting link.";
-  if (phase === "found") return "Profile detected. Existing tabs stay untouched.";
-  if (phase === "creating") return "The controlled tab appears in Chrome with a visible 🟢 marker.";
-  if (phase === "ready") return "Click Continue to pick your AI model.";
-  return "Open chrome://inspect, approve the prompt, then retry the connection test.";
 }
 
 function renderModelStep(): string {
@@ -803,19 +834,13 @@ function renderMainApp(): string {
 
   return `
     <main class="shell">
-      <header class="topbar">
-        <div>
-          <p class="eyebrow">CDP-first social automation prototype</p>
-          <h1>Socai Prototype</h1>
-        </div>
-        <div class="topbar-actions">
-          <button id="reset-onboarding" class="secondary-pill" data-reset-onboarding>Run setup again</button>
-          <button id="refresh-health" class="status-pill ${state.health?.ready ? "ready" : "idle"}">
-            <span class="status-dot"></span>
-            ${state.health?.ready ? "Runtime ready" : "Check runtime"}
-          </button>
-        </div>
-      </header>
+      <div class="app-utility-row" aria-label="Prototype controls">
+        <button id="reset-onboarding" class="secondary-pill" data-reset-onboarding>Run setup again</button>
+        <button id="refresh-health" class="status-pill ${state.health?.ready ? "ready" : "idle"}">
+          <span class="status-dot"></span>
+          ${state.health?.ready ? "Runtime ready" : "Check runtime"}
+        </button>
+      </div>
 
       ${state.starterTask ? `<section class="notice"><strong>Starter task selected:</strong> ${escapeHtml(state.starterTask)}. The task composer is coming next; use the CDP probes below for now.</section>` : ""}
 
@@ -1087,6 +1112,9 @@ async function openChromeInspect() {
   try {
     await invoke<void>("open_chrome_inspect");
     state.onboarding.permissionStatus = "opened";
+    if (state.onboarding.connectionPhase === "idle") {
+      state.onboarding.connectionPhase = "ready_to_test";
+    }
   } catch (error) {
     state.onboarding.permissionStatus = "error";
     state.onboarding.permissionError = formatError(error);
@@ -1095,7 +1123,11 @@ async function openChromeInspect() {
 }
 
 async function startConnectionTest() {
-  if (state.onboarding.connectionPhase === "scanning" || state.onboarding.connectionPhase === "creating") {
+  if (
+    state.onboarding.connectionPhase === "scanning" ||
+    state.onboarding.connectionPhase === "found" ||
+    state.onboarding.connectionPhase === "creating"
+  ) {
     return;
   }
 
@@ -1188,6 +1220,13 @@ function resetOnboarding() {
   localStorage.removeItem(onboardingStorageKey);
   state.viewMode = "onboarding";
   state.onboarding.stepId = "welcome";
+  state.onboarding.permissionStatus = "idle";
+  state.onboarding.permissionError = "";
+  state.onboarding.connectionPhase = "idle";
+  state.onboarding.connectionStarted = false;
+  state.onboarding.connectionError = "";
+  state.onboarding.discoveryResult = null;
+  state.onboarding.controlledTabResult = null;
   render();
 }
 
