@@ -149,10 +149,10 @@ Completed:
 Verification commands run from repo root:
 
 ```bash
-cd app && npm install
-cd app && npm run build
+cd app && pnpm install
+cd app && pnpm run build
 cd app/src-tauri && cargo check
-cd app && npm run tauri build -- --bundles app
+cd app && pnpm exec tauri build --bundles app
 open "app/src-tauri/target/release/bundle/macos/Socai Prototype.app"
 ```
 
@@ -204,7 +204,7 @@ Completed:
 
 Verification:
 
-- `npm --prefix app run build`
+- `pnpm --dir app run build`
 - `cd app/src-tauri && cargo fmt --check && cargo check`
 - `python3 -m py_compile app/prototype/*.py`
 - `uv run --extra dev pytest tests/test_package_layout.py tests/test_desktop_cli.py`
@@ -224,7 +224,29 @@ Verification:
 
 - `python3 scripts/generate_icons.py`
 - `python3 -m py_compile scripts/generate_icons.py`
-- `npm --prefix app run build`
+- `pnpm --dir app run build`
 - `cd app/src-tauri && cargo check`
 - `bash scripts/build_app.sh`
 - Confirmed `/Applications/Socai Prototype.app/Contents/Resources/icon.icns` matches the regenerated app icon.
+
+## 2026-05-01 — Package manager standardization: pnpm
+
+Completed:
+
+- Standardized desktop app package-management commands on pnpm.
+- Replaced active app `package-lock.json` with committed `pnpm-lock.yaml`.
+- Added `packageManager: pnpm@10.28.2` to the active app and archived desktop spike package manifests.
+- Updated Tauri `beforeDevCommand` / `beforeBuildCommand` from npm to pnpm.
+- Updated `scripts/build_app.sh`, `scripts/generate_icons.py`, README, CLAUDE.md, and app README to use pnpm.
+- Removed archived desktop spike `package-lock.json` and added its pnpm lockfile so the repo has no npm lockfiles.
+- Pinned `@tauri-apps/api` and `@tauri-apps/cli` to the 2.10.x minor line (`2.10.1`) to match Rust Tauri `2.10.3` and avoid Tauri's npm/Rust version mismatch check.
+
+Verification:
+
+- `pnpm --dir app install --frozen-lockfile`
+- `pnpm --dir app run build`
+- `cd app/src-tauri && cargo fmt --check && cargo check`
+- `python3 scripts/generate_icons.py`
+- `bash scripts/build_app.sh`
+- `uv run --extra dev pytest tests/test_package_layout.py tests/test_desktop_cli.py`
+- Opened `/Applications/Socai Prototype.app` and confirmed `socai_app` launched.

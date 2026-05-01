@@ -42,7 +42,7 @@ def generate_desktop_frontend_icon(img: Image.Image) -> None:
 
 def generate_tauri_icons() -> None:
     subprocess.run(
-        ["npm", "run", "tauri", "icon", str(APP_SOURCE)],
+        ["pnpm", "exec", "tauri", "icon", str(APP_SOURCE)],
         cwd=ROOT / "app",
         check=True,
     )

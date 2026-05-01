@@ -95,7 +95,7 @@ When a change materially affects architecture, runtime flow, testing entry point
 
 Whenever you modify the Tauri app under `app/`, produce a fresh macOS `.app` bundle and install it in the same working session.
 
-- Do not stop at `cargo check` / `npm run build` alone for Tauri changes.
+- Do not stop at `cargo check` / `pnpm run build` alone for Tauri changes.
 - Run the repo packaging path so the real desktop artifact exists after the change.
 - Prefer `bash scripts/build_app.sh` unless the user explicitly asks for a different packaging flow.
 - `scripts/build_desktop_app.sh` is a deprecated compatibility wrapper around `scripts/build_app.sh`.
@@ -294,8 +294,8 @@ Packaging helper:
 
 `bash scripts/build_app.sh`
 
-- runs `npm install`
-- runs `npm run tauri build -- --bundles app`
+- runs `pnpm install --frozen-lockfile`
+- runs `pnpm exec tauri build --bundles app`
 - copies the finished `.app` into `/Applications/`
 
 ### Local Config

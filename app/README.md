@@ -140,9 +140,9 @@ Build and open the minimal Tauri shell:
 
 ```bash
 cd app
-npm install
-npm run build
-npm run tauri build -- --bundles app
+pnpm install
+pnpm run build
+pnpm exec tauri build --bundles app
 open "src-tauri/target/release/bundle/macos/Socai Prototype.app"
 ```
 

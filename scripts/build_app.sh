@@ -6,10 +6,15 @@ APP_DIR="$ROOT_DIR/app"
 APP_NAME="Socai Prototype.app"
 BUILD_APP_PATH="$APP_DIR/src-tauri/target/release/bundle/macos/$APP_NAME"
 INSTALL_APP_PATH="/Applications/$APP_NAME"
+PNPM_BIN="${PNPM:-pnpm}"
 
-cd "$APP_DIR"
-npm install
-npm run tauri build -- --bundles app
+if ! command -v "$PNPM_BIN" >/dev/null 2>&1; then
+  echo "pnpm is required to build the Socai app. Install it with: corepack enable pnpm" >&2
+  exit 1
+fi
+
+"$PNPM_BIN" --dir "$APP_DIR" install --frozen-lockfile
+"$PNPM_BIN" --dir "$APP_DIR" exec tauri build --bundles app
 
 if [[ ! -d "$BUILD_APP_PATH" ]]; then
   echo "Expected bundle missing: $BUILD_APP_PATH" >&2
