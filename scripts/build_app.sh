@@ -17,6 +17,13 @@ if [[ ! -d "$BUILD_APP_PATH" ]]; then
 fi
 
 rm -rf "$INSTALL_APP_PATH"
+for legacy_path in "/Applications/SocAI Prototype.app" "/Applications/Socai Desktop.app"; do
+  if [[ "$legacy_path" != "$INSTALL_APP_PATH" && -e "$legacy_path" ]]; then
+    rm -rf "$legacy_path"
+    echo "Removed legacy app: $legacy_path"
+  fi
+done
+
 ditto "$BUILD_APP_PATH" "$INSTALL_APP_PATH"
 
 echo "Built app: $BUILD_APP_PATH"
