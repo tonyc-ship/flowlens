@@ -1,4 +1,4 @@
-# Socai Prototype Session Log
+# Socai Desktop App Session Log
 
 ## 2026-04-29 — Session 1: scaffold + Chrome discovery
 
@@ -323,3 +323,23 @@ Verification:
 Visual report:
 
 - `task_runs/xhs_connection_onboarding_20260501_135240/report.html`
+
+## 2026-05-01 — Desktop app runtime sidecar migration
+
+Changes:
+- Renamed user-facing app branding from `Socai Prototype` to `Socai` (`productName`, window title, HTML title, build/install path).
+- Added `socai.desktop_runtime`, a long-lived Python sidecar entry point using newline-delimited JSON-RPC over stdio.
+- Changed Tauri Rust commands to launch/supervise the sidecar and send runtime requests instead of spawning each Python diagnostic script directly from Rust.
+- Kept `open_chrome_inspect` as a native Rust command because opening Chrome settings is an OS/Tauri concern.
+- Updated app copy/docs from prototype wording to desktop runtime / diagnostics terminology.
+
+Validation:
+- `python3 -m py_compile socai/desktop_runtime/*.py app/prototype/*.py`
+- `.venv/bin/python -m py_compile socai/desktop_runtime/*.py app/prototype/*.py`
+- JSON-RPC sidecar `health` and `connect_chrome` smoke tests; `connect_chrome` returned `cdp_available`.
+- `pnpm run build`
+- `cargo check`
+- `bash scripts/build_app.sh` rebuilt and installed `/Applications/Socai.app`.
+- Launched installed app, completed onboarding via macOS UI automation, verified actual desktop screenshot shows `Runtime ready` and backend `Tauri + Socai Python runtime`.
+- Clicked `Connect Chrome` in the installed app and verified the UI returned `connect_chrome — cdp_available`.
+- Visual report: `task_runs/desktop_runtime_branding_20260501_162905/report.html`.

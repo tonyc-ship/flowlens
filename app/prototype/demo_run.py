@@ -1,8 +1,8 @@
 #!/usr/bin/env python3
-"""Run the full Socai prototype demo and save a reproducible artifact bundle.
+"""Run the full Socai desktop diagnostic demo and save a reproducible artifact bundle.
 
-Session 6 scope:
-- Run each prototype step in sequence: discovery → targets → controlled tab → XHS probe
+Diagnostic scope:
+- Run each step in sequence: discovery → targets → controlled tab → XHS probe
 - Save all screenshots, JSON results, timing, and diagnostics to a timestamped run directory
 - Generate a summary report
 

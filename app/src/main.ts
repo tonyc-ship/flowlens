@@ -15,7 +15,7 @@ type ScreenshotArtifact = {
   dataUrl: string;
 };
 
-type PrototypeCommandResult = {
+type RuntimeCommandResult = {
   action: string;
   ok: boolean;
   exitCode: number | null;
@@ -54,8 +54,8 @@ type OnboardingState = {
   connectionPhase: ConnectionPhase;
   connectionStarted: boolean;
   connectionError: string;
-  discoveryResult: PrototypeCommandResult | null;
-  xhsProbeResult: PrototypeCommandResult | null;
+  discoveryResult: RuntimeCommandResult | null;
+  xhsProbeResult: RuntimeCommandResult | null;
   selectedModelId: ModelId;
   authMode: AuthMode;
   oauthStatus: OAuthStatus;
@@ -68,7 +68,7 @@ type State = {
   health: HealthStatus | null;
   healthError: string;
   runningAction: ActionId | null;
-  results: PrototypeCommandResult[];
+  results: RuntimeCommandResult[];
   error: string;
   starterTask: string;
   onboarding: OnboardingState;
@@ -849,7 +849,7 @@ function renderMainApp(): string {
 
   return `
     <main class="shell">
-      <div class="app-utility-row" aria-label="Prototype controls">
+      <div class="app-utility-row" aria-label="Runtime controls">
         <button id="reset-onboarding" class="secondary-pill" data-reset-onboarding>Run setup again</button>
         <button id="refresh-health" class="status-pill ${state.health?.ready ? "ready" : "idle"}">
           <span class="status-dot"></span>
@@ -857,7 +857,7 @@ function renderMainApp(): string {
         </button>
       </div>
 
-      ${state.starterTask ? `<section class="notice"><strong>Starter task selected:</strong> ${escapeHtml(state.starterTask)}. The task composer is coming next; use the CDP probes below for now.</section>` : ""}
+      ${state.starterTask ? `<section class="notice"><strong>Starter task selected:</strong> ${escapeHtml(state.starterTask)}. The task composer is coming next; use the browser diagnostics below for now.</section>` : ""}
 
       <section class="notice">
         <strong>Permission note:</strong>
@@ -931,7 +931,7 @@ function renderEmptyState(): string {
   `;
 }
 
-function renderResultSummary(result: PrototypeCommandResult): string {
+function renderResultSummary(result: RuntimeCommandResult): string {
   const status = getJsonStatus(result.json);
   return `
     <div class="result-summary ${result.ok ? "success" : "failure"}">
@@ -943,7 +943,7 @@ function renderResultSummary(result: PrototypeCommandResult): string {
   `;
 }
 
-function renderArtifacts(result: PrototypeCommandResult): string {
+function renderArtifacts(result: RuntimeCommandResult): string {
   const screenshots = result.screenshots || [];
   const json = result.json;
 
@@ -989,7 +989,7 @@ function renderHistory(): string {
     <section class="panel history-panel">
       <div class="panel-heading">
         <p class="eyebrow">History</p>
-        <h2>Recent prototype actions</h2>
+        <h2>Recent runtime actions</h2>
       </div>
       <div class="history-list">
         ${state.results
@@ -1154,7 +1154,7 @@ async function startConnectionTest() {
   render();
 
   try {
-    const discovery = await invoke<PrototypeCommandResult>("connect_chrome");
+    const discovery = await invoke<RuntimeCommandResult>("connect_chrome");
     state.onboarding.discoveryResult = discovery;
     const discoveryStatus = getJsonStatus(discovery.json);
 
@@ -1173,7 +1173,7 @@ async function startConnectionTest() {
     state.onboarding.connectionPhase = "opening_xhs";
     render();
 
-    const xhsProbe = await invoke<PrototypeCommandResult>("xhs_connection_test");
+    const xhsProbe = await invoke<RuntimeCommandResult>("xhs_connection_test");
     state.onboarding.xhsProbeResult = xhsProbe;
     const xhsStatus = getJsonStatus(xhsProbe.json);
     const xhsDiagnostics = getJsonObjectField(xhsProbe.json, "diagnostics");
@@ -1273,7 +1273,7 @@ async function runAction(action: ActionConfig) {
   render();
 
   try {
-    const result = await invoke<PrototypeCommandResult>(action.command);
+    const result = await invoke<RuntimeCommandResult>(action.command);
     state.results = [result, ...state.results].slice(0, 8);
   } catch (error) {
     state.error = formatError(error);
@@ -1287,7 +1287,7 @@ function selectedModel(): ModelOption {
   return modelOptions.find((model) => model.id === state.onboarding.selectedModelId) || modelOptions[0];
 }
 
-function resultTitle(result: PrototypeCommandResult): string {
+function resultTitle(result: RuntimeCommandResult): string {
   const status = getJsonStatus(result.json);
   return `${result.action}${status ? ` — ${status}` : ""}`;
 }

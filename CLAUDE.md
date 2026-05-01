@@ -11,7 +11,7 @@ Socai is currently maintained as a layered browser automation framework built on
 - The external **MCP server** in `socai.mcp` — `socai-mcp` entry point, low-level `mcp.server.Server`
 - Task workflows in `socai.workflows`
 - A Chrome extension in `chrome_extension/`
-- The active **Socai desktop app prototype** under `app/` for CDP-first social-platform desktop automation experiments
+- The active **Socai desktop app** under `app/` — Tauri/Vite shell with a Rust native layer and long-lived Python `socai.desktop_runtime` sidecar for CDP-first social-platform automation
 
 The old screen-level MCP route has been archived under `archive/legacy_mcp/`. The old top-level `desktop_app/` Tauri spike has been deprecated and moved to `archive/legacy_desktop_app/`.
 
@@ -19,12 +19,13 @@ The old screen-level MCP route has been archived under `archive/legacy_mcp/`. Th
 
 ```
 socai/
-├── app/                              # Active Socai desktop app prototype: Tauri + CDP-first existing-Chrome proof
+├── app/                              # Active Socai desktop app: Tauri + Vite UI + Rust sidecar supervisor
 ├── chrome_extension/                 # MV3 extension: websocket, CDP, DOM extraction, watch mode
 ├── socai/
 │   ├── cli.py                        # Primary CLI entry
 │   ├── __main__.py                   # `python -m socai`
 │   ├── desktop_cli.py                # Desktop shell -> Python task bridge
+│   ├── desktop_runtime/              # Long-lived Python sidecar used by the Tauri app via JSON-RPC over stdio
 │   ├── extension_cli.py              # `python -m socai extension ...`
 │   ├── extension_ops.py              # Generic extension operational reports / commands
 │   ├── server.py                     # Archived-route compatibility stub
@@ -276,19 +277,20 @@ pip install -e ".[dev]"       # dev tooling
 3. Load `chrome_extension/` as an unpacked extension
 4. Open the extension popup and connect it to the local port when running scripts
 
-### Desktop App Prototype
+### Desktop App
 
-`app/` is the active Tauri 2.x desktop app prototype for the CDP-first Socai path. It replaces the old `desktop_app/` spike, which now lives under `archive/legacy_desktop_app/` for reference only.
+`app/` is the active Tauri 2.x desktop app for the CDP-first Socai path. It replaces the old `desktop_app/` spike, which now lives under `archive/legacy_desktop_app/` for reference only.
 
 Current scope:
 
-- Minimal Tauri/Vite shell
+- Tauri/Vite shell for the real Socai desktop app
 - First-run onboarding wizard with a combined Chrome permission + live Xiaohongshu connection/login test step, model choice, and starter tasks
-- Rust commands that launch Python CDP prototype scripts
+- Rust native layer that launches and supervises a long-lived Python `socai.desktop_runtime` sidecar
+- JSON-RPC over stdio between Rust and the Python sidecar in both development and packaged builds
 - Rust command to open Chrome's `chrome://inspect/#remote-debugging` setup page
-- Existing Chrome profile discovery and CDP target listing
+- Existing Chrome profile discovery and CDP target listing through the sidecar
 - Creation of a marked Socai-controlled Chrome tab
-- XHS technical probe with screenshot artifacts
+- XHS connection diagnostic with screenshot artifacts
 
 Packaging helper:
 

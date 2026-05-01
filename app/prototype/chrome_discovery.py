@@ -1,14 +1,13 @@
 #!/usr/bin/env python3
 """Discover whether the user's existing Chrome profile exposes a CDP endpoint.
 
-Session 1 scope only:
+Diagnostic scope:
 - inspect known Google Chrome user-data locations
 - read DevToolsActivePort when present
 - optionally probe common local DevTools ports
 - print either `cdp_available` or `setup_required`
 
-This script does not attach to Chrome, create tabs, or control pages. CDP attach
-starts in the next prototype session.
+This script does not attach to Chrome, create tabs, or control pages.
 """
 from __future__ import annotations
 
@@ -51,9 +50,9 @@ class Candidate:
 
 
 def chrome_user_data_dirs() -> list[Path]:
-    """Return candidate Chrome user-data roots for this prototype.
+    """Return candidate Chrome user-data roots for Socai desktop diagnostics.
 
-    The prototype target is macOS + Google Chrome + existing default profile.
+    The current target is macOS + Google Chrome + existing default profile.
     `SOCAI_CHROME_USER_DATA_DIR` can override/add a custom root for tests or
     local development.
     """
@@ -237,7 +236,7 @@ def result_available(endpoint: Endpoint, candidates: list[Candidate]) -> dict[st
         "endpoint": asdict(endpoint),
         "profile_paths_checked": [str(path) for path in chrome_user_data_dirs()],
         "candidates": [asdict(candidate) for candidate in candidates],
-        "next_step": "Session 2 can connect to this browser WebSocket and call Target.getTargets.",
+        "next_step": "Socai can connect to this browser WebSocket and call Target.getTargets.",
     }
 
 

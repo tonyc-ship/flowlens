@@ -1,14 +1,14 @@
 #!/usr/bin/env python3
 """Create a marked Socai-controlled tab and exercise basic CDP primitives.
 
-Session 3 scope:
-- connect to existing Chrome through the Session 1/2 discovery path
+Diagnostic scope:
+- connect to existing Chrome through the Chrome discovery path
 - create a new page target
 - attach to that target
 - mark its title with `🟢 Socai`
 - exercise navigate/evaluate/screenshot/click/type/key/scroll primitives
 
-This is still a technical prototype. It does not open XHS and does not expose
+This is a desktop runtime diagnostic. It does not open XHS and does not expose
 raw JavaScript execution to any LLM or product-facing agent.
 """
 from __future__ import annotations
@@ -43,7 +43,7 @@ TEST_PAGE_HTML = """<!doctype html>
 </head>
 <body>
   <h1>Socai Primitive Test</h1>
-  <p>This page is created by the Socai CDP prototype.</p>
+  <p>This page is created by the Socai desktop runtime diagnostic.</p>
   <button id="click-target" onclick="document.body.dataset.clicked='yes'; this.textContent='Clicked by Socai';">Click me</button>
   <input id="type-target" placeholder="Type target" />
   <div id="spacer">Scroll target area</div>
@@ -268,7 +268,7 @@ async def run(args: argparse.Namespace) -> dict[str, Any]:
         if "handshake" in lower or "timeout" in lower or "403" in message or "allow" in lower:
             message = (
                 f"{message}\nOpen {INSPECT_URL}, approve Chrome remote-debugging/inspect permission, then retry. "
-                "Chrome may show one Allow dialog per connection attempt during the prototype."
+                "Chrome may show one Allow dialog per connection attempt."
             )
         return {
             "status": "failed",

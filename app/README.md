@@ -1,169 +1,121 @@
-# Socai Prototype
+# Socai Desktop App
 
-Socai is a new desktop-app prototype for social-platform agent tasks. The first vertical is Xiaohongshu/XHS, but the first prototype does **not** implement XHS product functions yet.
+`app/` is the active Socai desktop application. It is a Tauri 2 app with a Vite/TypeScript frontend, a Rust native shell, and a long-lived Python `socai.desktop_runtime` sidecar.
 
-## Prototype decisions
+## Architecture
 
-- App path: `app/`
-- Desktop shell: Tauri v2
-- Browser target: the user's existing Google Chrome profile on macOS
-- Permission path: Chrome inspect / remote-debugging permission flow
-- CDP client: `cdp-use`, starting in Session 2
-- Controlled target: a newly created and clearly marked Socai Chrome tab
-- No fallback browser modes
-- No LLM, MCP, Chrome extension backend, managed profile, or full XHS tools in the first proof
-
-## Session plan
-
-1. **Session 1 — prototype scaffold + Chrome discovery**
-   - Create this prototype folder.
-   - Add a Chrome discovery script.
-   - Verify whether the existing Chrome profile exposes a CDP endpoint or needs setup.
-
-2. **Session 2 — CDP attach + target listing**
-   - Add `cdp-use`.
-   - Connect to Chrome CDP.
-   - Call `Target.getTargets`.
-
-3. **Session 3 — controlled tab + primitives**
-   - Create a new Socai tab.
-   - Mark its title.
-   - Add navigate, evaluate, screenshot, scroll/click/key basics.
-
-4. **Session 4 — XHS technical proof**
-   - Open Xiaohongshu in the controlled tab.
-   - Capture screenshot.
-   - Prove Socai can operate the page.
-
-5. **Session 5 — minimal Tauri shell**
-   - Add the UI after CDP/XHS proof works from scripts.
-
-6. **Session 6 — demo bundle + checklist**
-   - Save screenshots, timing, diagnostics, and manual demo steps.
-
-## Session 1 command
-
-Run from the repository root:
-
-```bash
-python3 app/prototype/chrome_discovery.py
+```text
+Tauri WebView frontend (Vite + TypeScript)
+        ↓ invoke/events
+Rust Tauri shell
+        ↓ newline-delimited JSON-RPC over stdio
+Python socai.desktop_runtime sidecar
+        ↓
+Socai browser automation / CDP diagnostics / task runtime
+        ↓
+User's existing Google Chrome profile
 ```
 
-Machine-readable output:
+The app currently uses Chrome's remote-debugging / Chrome DevTools Protocol path to create a clearly marked `🟢 Socai` Chrome tab. Diagnostic CDP scripts remain under `app/prototype/` while their logic is being migrated into the shared Python runtime, but the Tauri app now talks to the sidecar rather than spawning individual scripts directly from Rust.
+
+## Frontend
+
+- Vite 6
+- TypeScript
+- Plain DOM rendering in `src/main.ts`
+- Styles in `src/styles.css`
+- Tauri API calls via `@tauri-apps/api/core`
+
+## Native shell
+
+- Tauri 2
+- Rust commands in `src-tauri/src/lib.rs`
+- Product name: `Socai`
+- Bundle identifier: `com.tonycship.socai`
+
+Rust owns native desktop concerns: app window lifecycle, opening Chrome's setup page, starting/stopping the Python sidecar, and converting local screenshot artifacts into data URLs for the WebView.
+
+## Python runtime
+
+The desktop runtime entry point is:
 
 ```bash
-python3 app/prototype/chrome_discovery.py --json
+python -m socai.desktop_runtime --transport stdio
 ```
 
-For local tests, `SOCAI_CHROME_USER_DATA_DIR` can point at a custom Chrome user-data root. Set `SOCAI_CHROME_USER_DATA_DIR_ONLY=1` to skip default profile paths.
+The sidecar speaks newline-delimited JSON-RPC over stdio. In development the Tauri shell launches it from the source tree. Packaged builds are prepared to prefer a bundled runtime at `Socai.app/Contents/Resources/socai-runtime/bin/python3` when that runtime exists.
 
-If Chrome CDP is not available, open the inspect permission page:
+Manual sidecar smoke test from the repository root:
 
 ```bash
-python3 app/prototype/chrome_discovery.py --open-inspect
+printf '%s\n' \
+  '{"jsonrpc":"2.0","id":1,"method":"health","params":{}}' \
+  '{"jsonrpc":"2.0","id":2,"method":"shutdown","params":{}}' \
+  | python3 -m socai.desktop_runtime --transport stdio
 ```
 
-Expected result is one of:
+## Chrome connection flow
 
-- `cdp_available` — a local Chrome CDP endpoint was discovered.
-- `setup_required` — Socai needs the user to open/approve Chrome inspect remote debugging and re-run discovery.
+1. Socai opens `chrome://inspect/#remote-debugging` in Google Chrome.
+2. The user approves/enables Chrome remote debugging.
+3. Socai discovers the local CDP endpoint for the existing Chrome profile.
+4. Socai creates a clearly marked `🟢 Socai` tab.
+5. Browser diagnostics and task runs operate in that controlled tab.
 
-The script only discovers the endpoint. It does not attach to Chrome or control pages yet.
+## Development
 
-## Session 2 command
-
-Run from the repository root with the prototype dependency supplied by `uv`:
-
-```bash
-uv run --no-project --with cdp-use==1.4.5 --python 3.11 \
-  python app/prototype/cdp_targets.py
-```
-
-Machine-readable output:
+From `app/`:
 
 ```bash
-uv run --no-project --with cdp-use==1.4.5 --python 3.11 \
-  python app/prototype/cdp_targets.py --json
-```
-
-If Chrome shows an **Allow remote debugging?** dialog, click **Allow** while the command is still running. In the current Chrome permission flow, one dialog can appear per connection attempt during the prototype.
-
-Expected result:
-
-- `connected` — Socai connected to Chrome CDP and called `Target.getTargets`.
-- `setup_required` or `connection_failed` — open/approve `chrome://inspect/#remote-debugging` and retry.
-
-## Session 3 command
-
-Create a marked Socai-controlled tab and exercise the minimal browser primitives:
-
-```bash
-uv run --no-project --with cdp-use==1.4.5 --python 3.11 \
-  python app/prototype/cdp_controlled_tab.py
-```
-
-Machine-readable output:
-
-```bash
-uv run --no-project --with cdp-use==1.4.5 --python 3.11 \
-  python app/prototype/cdp_controlled_tab.py --json
-```
-
-Expected result:
-
-- `controlled_tab_ready` — Socai created a new tab, marked its title with `🟢 Socai`, and verified navigate/evaluate/click/type/key/scroll/screenshot primitives.
-
-## Session 4 command
-
-Open Xiaohongshu in a Socai-controlled tab and prove basic operation:
-
-```bash
-uv run --no-project --with cdp-use==1.4.5 --python 3.11 \
-  python app/prototype/cdp_xhs_probe.py
-```
-
-Machine-readable output:
-
-```bash
-uv run --no-project --with cdp-use==1.4.5 --python 3.11 \
-  python app/prototype/cdp_xhs_probe.py --json
-```
-
-Expected result:
-
-- `xhs_probe_ready` — Socai opened a Xiaohongshu URL in the controlled tab, captured screenshots, scrolled the page, and read basic runtime state.
-- `xhs_probe_inconclusive` — the script ran but could not confirm the landed URL/screenshot diagnostics.
-
-## Session 5 command
-
-Build and open the minimal Tauri shell:
-
-```bash
-cd app
 pnpm install
+pnpm exec tauri dev
+```
+
+The Vite dev server runs on port `1421`, as configured in `vite.config.ts` and `src-tauri/tauri.conf.json`.
+
+Useful runtime environment variables:
+
+```bash
+SOCAI_PYTHON=/path/to/python3              # Python used for source-tree sidecar
+SOCAI_DESKTOP_RUNTIME_PYTHON=/path/python  # Explicit sidecar Python override
+SOCAI_DESKTOP_USE_UV_FOR_CDP=0             # Do not use uv for CDP diagnostic scripts
+SOCAI_REPO_ROOT=/path/to/socai             # Override repository root for sidecar scripts
+```
+
+## Build and install locally
+
+Preferred path from the repository root:
+
+```bash
+bash scripts/build_app.sh
+```
+
+This builds the Tauri `.app` bundle and installs it at:
+
+```text
+/Applications/Socai.app
+```
+
+For manual packaging from `app/`:
+
+```bash
+pnpm install --frozen-lockfile
 pnpm run build
 pnpm exec tauri build --bundles app
-open "src-tauri/target/release/bundle/macos/Socai Prototype.app"
+open "src-tauri/target/release/bundle/macos/Socai.app"
 ```
 
-Smoke-tested UI actions:
+## Production packaging direction
 
-- `Connect Chrome` → expected status `connect_chrome — cdp_available`.
-- `Create Controlled Tab` → expected status `controlled_tab — controlled_tab_ready` and a marked Chrome tab.
+Real-user builds should ship as a signed and notarized macOS app/DMG with no dependency on a cloned repo, user-installed Python, or `uv`.
 
-Current XHS connection behavior:
+Target production shape:
 
-- `Open XHS Probe` runs the Python XHS proof script.
-- First-run onboarding uses the same XHS proof as its connection test, so setup verifies the real target site instead of only opening a generic test page.
-- If Xiaohongshu asks for login, the test waits while the user scans/logs in from the marked 🟢 Socai Chrome tab, then reports whether XHS is ready, login is still required, or security verification appeared.
+```text
+Socai.app
+  Contents/MacOS/Socai                 # Tauri/Rust binary
+  Contents/Resources/frontend          # Built WebView assets
+  Contents/Resources/socai-runtime/    # Bundled Python runtime + Socai package
+```
 
-## Session 6 onboarding UI
-
-The packaged app now opens into a four-step first-run onboarding wizard adapted from the external design prototype:
-
-1. Welcome
-2. Connect Chrome — combined Chrome remote-debugging permission guidance and live Xiaohongshu open/login test
-3. Model selection and placeholder auth choices
-4. Ready / starter task choices
-
-The Connect Chrome step calls the Tauri command `open_chrome_inspect`, which opens `chrome://inspect/#remote-debugging` in Google Chrome, then runs a real `xhs_connection_test` from the same screen. That test opens Xiaohongshu in a marked 🟢 Socai tab and waits briefly for the user to scan/login if XHS asks for it. Completing onboarding stores a local `socaiOnboardingComplete=1` flag in the app WebView local storage; the main prototype screen includes **Run setup again** to revisit the wizard.
+Large optional local models should be downloaded into Application Support rather than bundled into the base app.

@@ -1582,7 +1582,7 @@ button:disabled {
   color: var(--socai-muted);
 }
 
-/* Existing prototype controls -------------------------------------- */
+/* Runtime diagnostic controls -------------------------------------- */
 
 .shell {
   width: min(1160px, calc(100vw - 48px));

@@ -3,7 +3,7 @@ set -euo pipefail
 
 ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 APP_DIR="$ROOT_DIR/app"
-APP_NAME="Socai Prototype.app"
+APP_NAME="Socai.app"
 BUILD_APP_PATH="$APP_DIR/src-tauri/target/release/bundle/macos/$APP_NAME"
 INSTALL_APP_PATH="/Applications/$APP_NAME"
 PNPM_BIN="${PNPM:-pnpm}"
@@ -22,7 +22,7 @@ if [[ ! -d "$BUILD_APP_PATH" ]]; then
 fi
 
 rm -rf "$INSTALL_APP_PATH"
-for legacy_path in "/Applications/SocAI Prototype.app" "/Applications/Socai Desktop.app"; do
+for legacy_path in "/Applications/Socai Prototype.app" "/Applications/SocAI Prototype.app" "/Applications/Socai Desktop.app"; do
   if [[ "$legacy_path" != "$INSTALL_APP_PATH" && -e "$legacy_path" ]]; then
     rm -rf "$legacy_path"
     echo "Removed legacy app: $legacy_path"

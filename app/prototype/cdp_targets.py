@@ -1,8 +1,8 @@
 #!/usr/bin/env python3
 """Connect to existing Chrome over CDP and list page targets.
 
-Session 2 scope only:
-- reuse the Session 1 Chrome discovery result
+Diagnostic scope:
+- reuse Chrome discovery
 - connect to the discovered browser WebSocket with cdp-use
 - call Target.getTargets
 - print current page targets
@@ -41,7 +41,7 @@ def cdp_use_install_help(script: str = "app/prototype/cdp_targets.py") -> str:
             "Missing Python package: cdp-use",
             "Run with uv without changing the project environment:",
             f"  uv run --no-project --with cdp-use==1.4.5 --python 3.11 python {script}",
-            "Or install prototype requirements into a Python 3.11 environment:",
+            "Or install desktop diagnostic requirements into a Python 3.11 environment:",
             "  python3.11 -m pip install -r app/requirements.txt",
         ]
     )

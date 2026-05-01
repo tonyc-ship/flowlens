@@ -1,14 +1,14 @@
 #!/usr/bin/env python3
 """Open Xiaohongshu in a Socai-controlled tab and prove basic operation.
 
-Session 4 scope:
+Diagnostic scope:
 - create a marked Socai-controlled tab in the user's existing Chrome profile
 - navigate to Xiaohongshu
 - capture screenshots
 - scroll the page
 - read URL/title/basic runtime state
 
-This does not implement XHS extraction, product functions, or LLM planning.
+This does not implement full XHS extraction, product functions, or LLM planning.
 """
 from __future__ import annotations
 
@@ -192,7 +192,7 @@ async def run(args: argparse.Namespace) -> dict[str, Any]:
         if "handshake" in lower or "timeout" in lower or "403" in message or "allow" in lower:
             message = (
                 f"{message}\nOpen {INSPECT_URL}, approve Chrome remote-debugging/inspect permission, then retry. "
-                "Chrome may show one Allow dialog per connection attempt during the prototype."
+                "Chrome may show one Allow dialog per connection attempt."
             )
         return {
             "status": "failed",
