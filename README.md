@@ -77,7 +77,7 @@ Socai 也可以作为 MCP server，在你的 MCP 对应的 config json 文件里
 ## 💻 Computer Use Agent
 
 - Python 3.11+
-- Node.js + npm and Rust toolchain, only if you want the desktop app
+- Node.js + pnpm and Rust toolchain, only if you want the desktop app
 - Anthropic API key, or you can use fully local LLMs
 
 Recommended (uv handles the Python 3.11 toolchain for you):
@@ -105,18 +105,25 @@ modelscope download --model mlx-community/Qwen3.5-2B-6bit --local_dir ~/.socai/w
 modelscope download --model mlx-community/Qwen3.5-9B-MLX-4bit --local_dir ~/.socai/weights/Qwen3.5-9B-MLX-4bit
 ```
 
-## Desktop
+## Desktop App
 
-Only needed if you want the Tauri desktop app:
+The active Tauri desktop app lives in `app/`. The old `desktop_app/` spike has been archived under `archive/legacy_desktop_app/`.
 
 ```bash
-# Install Node.js and Rust however you prefer
-npm --version
+# Install Node.js, pnpm, and Rust however you prefer
+corepack enable pnpm
+pnpm --version
 cargo --version
 
-cd desktop_app
-npm install
-PATH="$HOME/.cargo/bin:$PATH" npm run tauri dev
+cd app
+pnpm install
+PATH="$HOME/.cargo/bin:$PATH" pnpm exec tauri dev
+```
+
+To build and install the macOS app bundle:
+
+```bash
+bash scripts/build_app.sh
 ```
 
 macOS permissions you will likely need on first run:

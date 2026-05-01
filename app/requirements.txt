@@ -1,0 +1,3 @@
+# Socai desktop diagnostic Python dependencies
+# Keep this small; production packaging should bundle runtime dependencies.
+cdp-use==1.4.5

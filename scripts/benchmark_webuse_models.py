@@ -110,7 +110,7 @@ def _json_only_prompt(schema_text: str, task_text: str) -> str:
 def build_cases() -> list[BenchCase]:
     xhs_search_img = (
         "/Users/tonychong/Library/Application Support/com.socai.desktop/task_runs/"
-        "desktop_app/task-1775014014696/topic_research_话题研究_qwen_3_5_9b_20260401_112655/"
+        "app/task-1775014014696/topic_research_话题研究_qwen_3_5_9b_20260401_112655/"
         "workflow/screenshots/search_1_qwen 3.5 9b.png"
     )
     chat_typed_img = (
