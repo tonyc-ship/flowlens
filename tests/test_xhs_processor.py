@@ -4,8 +4,8 @@ import tempfile
 import unittest
 from unittest import IsolatedAsyncioTestCase, mock
 
-from socai.platforms.xhs.entities import NoteEntity
-from socai.platforms.xhs.processor import XHSSiteAdapter
+from flowlens.platforms.xhs.entities import NoteEntity
+from flowlens.platforms.xhs.processor import XHSSiteAdapter
 
 
 class XHSSearchTransitionTest(unittest.TestCase):

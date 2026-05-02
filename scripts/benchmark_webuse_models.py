@@ -27,8 +27,8 @@ from typing import Any
 PROJECT_ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(PROJECT_ROOT))
 
-from socai.core.runtime import load_runtime_env
-from socai.perception.media import MediaConfig, MediaProcessor
+from flowlens.core.runtime import load_runtime_env
+from flowlens.perception.media import MediaConfig, MediaProcessor
 
 
 BackendName = str
@@ -109,16 +109,16 @@ def _json_only_prompt(schema_text: str, task_text: str) -> str:
 
 def build_cases() -> list[BenchCase]:
     xhs_search_img = (
-        "/Users/tonychong/Library/Application Support/com.socai.desktop/task_runs/"
+        "/Users/tonychong/Library/Application Support/com.flowlens.desktop/task_runs/"
         "app/task-1775014014696/topic_research_话题研究_qwen_3_5_9b_20260401_112655/"
         "workflow/screenshots/search_1_qwen 3.5 9b.png"
     )
     chat_typed_img = (
-        "/Users/tonychong/Library/Application Support/com.socai.desktop/task_runs/"
+        "/Users/tonychong/Library/Application Support/com.flowlens.desktop/task_runs/"
         "multi_chat/chatbots-1774667863760/chatgpt_02_text_entered.png"
     )
     chat_generating_img = (
-        "/Users/tonychong/Library/Application Support/com.socai.desktop/task_runs/"
+        "/Users/tonychong/Library/Application Support/com.flowlens.desktop/task_runs/"
         "multi_chat/chatbots-1774667863760/chatgpt_03_generating.png"
     )
 

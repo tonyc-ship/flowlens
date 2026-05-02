@@ -1,8 +1,8 @@
 #!/usr/bin/env python3
-"""Create a marked Socai-controlled Chrome tab and verify CDP primitives."""
+"""Create a marked FlowLens-controlled Chrome tab and verify CDP primitives."""
 from __future__ import annotations
 
-from socai.cdp.diagnostics import controlled_tab_main
+from flowlens.cdp.diagnostics import controlled_tab_main
 
 
 if __name__ == "__main__":

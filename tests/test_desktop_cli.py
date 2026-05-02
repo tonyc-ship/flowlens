@@ -8,8 +8,8 @@ import os
 import unittest
 from unittest import mock
 
-from socai.run_cli import infer_run_plan, resolve_llm_backend
-from socai.mcp import server as mcp_server
+from flowlens.run_cli import infer_run_plan, resolve_llm_backend
+from flowlens.mcp import server as mcp_server
 
 
 class UnifiedPlannerTest(unittest.TestCase):
@@ -41,7 +41,7 @@ class UnifiedPlannerTest(unittest.TestCase):
 
 
 class RunCliModelDefaultsTest(unittest.TestCase):
-    @mock.patch("socai.run_cli.preferred_provider", return_value="openai")
+    @mock.patch("flowlens.run_cli.preferred_provider", return_value="openai")
     def test_auto_backend_follows_auth_default_provider(self, _preferred_provider) -> None:
         self.assertEqual(resolve_llm_backend("auto"), "openai")
 
@@ -78,7 +78,7 @@ class McpIdleShutdownTest(unittest.IsolatedAsyncioTestCase):
         mcp_server._tools_by_name = {"dummy": object()}  # type: ignore[dict-item]
         mcp_server._active_tool_calls = 1
 
-        with mock.patch.dict(os.environ, {"SOCAI_MCP_IDLE_TIMEOUT_SECONDS": "0.01"}):
+        with mock.patch.dict(os.environ, {"FLOWLENS_MCP_IDLE_TIMEOUT_SECONDS": "0.01"}):
             await mcp_server._release_runtime_after_call()
             await asyncio.sleep(0.05)
 

@@ -1,4 +1,4 @@
-# Socai Desktop App Session Log
+# FlowLens Desktop App Session Log
 
 ## 2026-04-29 — Session 1: scaffold + Chrome discovery
 
@@ -15,7 +15,7 @@ Verification commands run from repo root:
 python3 -m py_compile app/prototype/chrome_discovery.py
 python3 app/prototype/chrome_discovery.py
 python3 app/prototype/chrome_discovery.py --json
-SOCAI_CHROME_USER_DATA_DIR="$(mktemp -d)" SOCAI_CHROME_USER_DATA_DIR_ONLY=1 \
+FLOWLENS_CHROME_USER_DATA_DIR="$(mktemp -d)" FLOWLENS_CHROME_USER_DATA_DIR_ONLY=1 \
   python3 app/prototype/chrome_discovery.py --json
 ```
 
@@ -56,9 +56,9 @@ Observed result on this machine:
 
 Next session:
 
-- Create a new Socai-controlled tab.
+- Create a new FlowLens-controlled tab.
 - Attach to it.
-- Mark the title with `🟢 Socai`.
+- Mark the title with `🟢 FlowLens`.
 - Add minimal navigation/evaluate/screenshot primitives.
 
 ## 2026-04-30 — Session 3: controlled tab + primitives
@@ -66,7 +66,7 @@ Next session:
 Completed:
 
 - Added `app/prototype/cdp_controlled_tab.py`.
-- Script connects through CDP, creates a new Chrome tab, attaches to it, and marks the title with `🟢 Socai`.
+- Script connects through CDP, creates a new Chrome tab, attaches to it, and marks the title with `🟢 FlowLens`.
 - Added internal prototype primitives:
   - `navigate(url)`
   - `evaluate_js(code)`
@@ -88,9 +88,9 @@ uv run --no-project --with cdp-use==1.4.5 --python 3.11 \
 Observed result on this machine:
 
 - Status: `controlled_tab_ready`.
-- Marked tab title: `🟢 Socai — Socai Primitive Test`.
+- Marked tab title: `🟢 FlowLens — FlowLens Primitive Test`.
 - Primitive checks all returned true: navigate, evaluate_js, click, type_text, press_key, scroll, capture_screenshot.
-- Screenshot saved under the system temp directory, e.g. `/tmp/socai/...` or macOS temp equivalent.
+- Screenshot saved under the system temp directory, e.g. `/tmp/flowlens/...` or macOS temp equivalent.
 
 Next session:
 
@@ -104,7 +104,7 @@ Next session:
 Completed:
 
 - Added `app/prototype/cdp_xhs_probe.py`.
-- Script creates a Socai-controlled tab and navigates to `https://www.xiaohongshu.com/explore` by default.
+- Script creates a FlowLens-controlled tab and navigates to `https://www.xiaohongshu.com/explore` by default.
 - Captures screenshots before and after scroll.
 - Reads basic runtime state: URL, title, ready state, body text length, scroll position, and simple login/security indicators.
 - Does not implement XHS extraction or product functions.
@@ -124,7 +124,7 @@ Observed result on this machine:
 - Captured before/after screenshots showing the Xiaohongshu feed.
 - Scrolled the page to `scrollY=650`.
 - Runtime state was readable from the page.
-- A login-related prompt/toast appeared, but it did not block the technical proof that Socai can open, see, and operate XHS through CDP.
+- A login-related prompt/toast appeared, but it did not block the technical proof that FlowLens can open, see, and operate XHS through CDP.
 
 Next session:
 
@@ -144,7 +144,7 @@ Completed:
   - Open XHS Probe
   - Capture Test Screenshot
 - Rust commands call the prototype Python scripts and return stdout/stderr/JSON/screenshots to the UI.
-- Built a macOS `.app` bundle at `app/src-tauri/target/release/bundle/macos/Socai Prototype.app`.
+- Built a macOS `.app` bundle at `app/src-tauri/target/release/bundle/macos/FlowLens Prototype.app`.
 
 Verification commands run from repo root:
 
@@ -153,12 +153,12 @@ cd app && pnpm install
 cd app && pnpm run build
 cd app/src-tauri && cargo check
 cd app && pnpm exec tauri build --bundles app
-open "app/src-tauri/target/release/bundle/macos/Socai Prototype.app"
+open "app/src-tauri/target/release/bundle/macos/FlowLens Prototype.app"
 ```
 
 Observed result on this machine:
 
-- The packaged Socai app opens successfully.
+- The packaged FlowLens app opens successfully.
 - Health/status UI renders.
 - `Connect Chrome` button returned `connect_chrome — cdp_available`.
 - `Create Controlled Tab` button returned `controlled_tab — controlled_tab_ready` and created a marked Chrome tab.
@@ -175,16 +175,16 @@ Completed:
 
 - Added `app/prototype/cdp_connect.py`: shared CDP connection helper with retry logic (4 attempts, 12s each, 1s pause between).
 - Updated `cdp_targets.py`, `cdp_controlled_tab.py`, `cdp_xhs_probe.py` to use `connect_cdp_with_retry` instead of raw `CDPClient.start()`.
-- Rebuilt the packaged Socai app.
+- Rebuilt the packaged FlowLens app.
 - The `Open XHS Probe` button now works end-to-end from the packaged app UI.
 
 Verification:
 
-- Clicked `Open XHS Probe` in the packaged Socai app.
+- Clicked `Open XHS Probe` in the packaged FlowLens app.
 - Chrome showed one or more Allow dialogs; clicking Allow during the retry window allowed the connection to succeed.
 - App showed `xhs_probe — xhs_probe_ready` with Exit: 0.
 - Screenshots section showed 2 artifacts with XHS feed content.
-- JSON section showed full diagnostics including landed URL, title `🟢 Socai — XHS — 小红书 - 你的生活兴趣社区`, scrollY=650.
+- JSON section showed full diagnostics including landed URL, title `🟢 FlowLens — XHS — 小红书 - 你的生活兴趣社区`, scrollY=650.
 
 All Milestone A, B, and C tasks are now verified.
 
@@ -196,7 +196,7 @@ Next session:
 
 Completed:
 
-- Read the external design prototype at `/Users/goldiemacbookpro/Downloads/Socali/socai/v1-onboarding.jsx` and adapted the five-step flow into the active Tauri app under `app/`.
+- Read the external design prototype at `/Users/goldiemacbookpro/Downloads/Socali/flowlens/v1-onboarding.jsx` and adapted the five-step flow into the active Tauri app under `app/`.
 - Replaced the initial app surface with a first-run onboarding wizard: Welcome, Permission, Connect, Model, Ready.
 - Added `open_chrome_inspect` Tauri command to open `chrome://inspect/#remote-debugging` from the Permission step.
 - Wired the Connect step to the existing real `connect_chrome` and `create_controlled_tab` commands while keeping the user in control via an explicit Start connection test button.
@@ -209,13 +209,13 @@ Verification:
 - `python3 -m py_compile app/prototype/*.py`
 - `uv run --extra dev pytest tests/test_package_layout.py tests/test_desktop_cli.py`
 - `bash scripts/build_app.sh`
-- Opened `/Applications/Socai Prototype.app`, clicked through Welcome → Permission → Connect → Model → Ready → Open Socai, and captured screenshots under `task_runs/onboarding_smoke/`.
+- Opened `/Applications/FlowLens Prototype.app`, clicked through Welcome → Permission → Connect → Model → Ready → Open FlowLens, and captured screenshots under `task_runs/onboarding_smoke/`.
 
 ## 2026-05-01 — App icon refresh
 
 Completed:
 
-- Replaced the packaged desktop app icon with a clean Socai mark based on the design-system `SocaiLogo` motif instead of the pixel-art creature.
+- Replaced the packaged desktop app icon with a clean FlowLens mark based on the design-system `FlowLensLogo` motif instead of the pixel-art creature.
 - Added `branding/app_icon_source.png` as the app-specific icon source.
 - Updated `scripts/generate_icons.py` so Chrome extension icons still use `branding/icon_source.png`, while the Tauri desktop app uses `branding/app_icon_source.png`.
 - Regenerated `app/src-tauri/icons/*` and added `app/src/app-icon.png` for future frontend use.
@@ -227,7 +227,7 @@ Verification:
 - `pnpm --dir app run build`
 - `cd app/src-tauri && cargo check`
 - `bash scripts/build_app.sh`
-- Confirmed `/Applications/Socai Prototype.app/Contents/Resources/icon.icns` matches the regenerated app icon.
+- Confirmed `/Applications/FlowLens Prototype.app/Contents/Resources/icon.icns` matches the regenerated app icon.
 
 ## 2026-05-01 — Package manager standardization: pnpm
 
@@ -249,13 +249,13 @@ Verification:
 - `python3 scripts/generate_icons.py`
 - `bash scripts/build_app.sh`
 - `uv run --extra dev pytest tests/test_package_layout.py tests/test_desktop_cli.py`
-- Opened `/Applications/Socai Prototype.app` and confirmed `socai_app` launched.
+- Opened `/Applications/FlowLens Prototype.app` and confirmed `flowlens_app` launched.
 
 ## 2026-05-01 — Combined Chrome permission + connection onboarding
 
 Completed:
 
-- Read the updated external design prototype at `/Users/goldiemacbookpro/Downloads/Socali (1)/socai/v1-onboarding.jsx`.
+- Read the updated external design prototype at `/Users/goldiemacbookpro/Downloads/Socali (1)/flowlens/v1-onboarding.jsx`.
 - Updated the packaged Tauri onboarding flow from five steps to four steps:
   1. Welcome
   2. Connect Chrome — combined permission guidance and live connection test
@@ -268,8 +268,8 @@ Completed:
   - ready-to-test state after settings open
   - real `connect_chrome` + `create_controlled_tab` test action
   - needs-attention/error state when Chrome permission is not approved
-- Removed the large post-onboarding in-app header that said `Socai Prototype`; the main screen now starts with compact utility controls only.
-- Set Tauri `hiddenTitle: true` for the main window so the macOS titlebar does not show the centered `Socai Prototype` title.
+- Removed the large post-onboarding in-app header that said `FlowLens Prototype`; the main screen now starts with compact utility controls only.
+- Set Tauri `hiddenTitle: true` for the main window so the macOS titlebar does not show the centered `FlowLens Prototype` title.
 
 Verification:
 
@@ -278,7 +278,7 @@ Verification:
 - `bash scripts/build_app.sh`
 - `uv run --extra dev pytest tests/test_package_layout.py tests/test_desktop_cli.py`
 - `git diff --check`
-- Opened `/Applications/Socai Prototype.app` and smoke-tested:
+- Opened `/Applications/FlowLens Prototype.app` and smoke-tested:
   - main app has no large header
   - onboarding Welcome shows 4 steps
   - Connect Chrome combines permission guidance and connection test
@@ -300,7 +300,7 @@ Completed:
 - Updated the Connect Chrome onboarding copy and state machine:
   - idle: `Test with Xiaohongshu`
   - ready-to-test: `Open XHS and test`
-  - running: opening Xiaohongshu in a marked 🟢 Socai tab
+  - running: opening Xiaohongshu in a marked 🟢 FlowLens tab
   - login required: prompts the user to scan/login in Chrome and re-test
   - ready: XHS is reachable and setup can continue
 - Extended the XHS probe with `--login-wait` / `--login-poll-interval` so setup can wait while a user scans/logs in if XHS asks for it.
@@ -327,87 +327,87 @@ Visual report:
 ## 2026-05-01 — Desktop app runtime sidecar migration
 
 Changes:
-- Renamed user-facing app branding from `Socai Prototype` to `Socai` (`productName`, window title, HTML title, build/install path).
-- Added `socai.runtime`, a long-lived Python sidecar entry point using newline-delimited JSON-RPC over stdio.
+- Renamed user-facing app branding from `FlowLens Prototype` to `FlowLens` (`productName`, window title, HTML title, build/install path).
+- Added `flowlens.runtime`, a long-lived Python sidecar entry point using newline-delimited JSON-RPC over stdio.
 - Changed Tauri Rust commands to launch/supervise the sidecar and send runtime requests instead of spawning each Python diagnostic script directly from Rust.
 - Kept `open_chrome_inspect` as a native Rust command because opening Chrome settings is an OS/Tauri concern.
 - Updated app copy/docs from prototype wording to desktop runtime / diagnostics terminology.
 
 Validation:
-- `python3 -m py_compile socai/runtime/*.py app/prototype/*.py`
-- `.venv/bin/python -m py_compile socai/runtime/*.py app/prototype/*.py`
+- `python3 -m py_compile flowlens/runtime/*.py app/prototype/*.py`
+- `.venv/bin/python -m py_compile flowlens/runtime/*.py app/prototype/*.py`
 - JSON-RPC sidecar `health` and `connect_chrome` smoke tests; `connect_chrome` returned `cdp_available`.
 - `pnpm run build`
 - `cargo check`
-- `bash scripts/build_app.sh` rebuilt and installed `/Applications/Socai.app`.
-- Launched installed app, completed onboarding via macOS UI automation, verified actual desktop screenshot shows `Runtime ready` and backend `Tauri + Socai Python runtime`.
+- `bash scripts/build_app.sh` rebuilt and installed `/Applications/FlowLens.app`.
+- Launched installed app, completed onboarding via macOS UI automation, verified actual desktop screenshot shows `Runtime ready` and backend `Tauri + FlowLens Python runtime`.
 - Clicked `Connect Chrome` in the installed app and verified the UI returned `connect_chrome — cdp_available`.
 - Visual report: `task_runs/desktop_runtime_branding_20260501_162905/report.html`.
 
 ## 2026-05-01 — Runtime package rename + typed protocol boundary
 
 Changes:
-- Renamed the Python sidecar package from `socai.desktop_runtime` to `socai.runtime`.
-- Updated the Tauri Rust sidecar launcher to run `python -m socai.runtime --transport stdio`.
-- Split the runtime entry point into `socai/runtime/server.py` and `socai/runtime/protocol.py`.
+- Renamed the Python sidecar package from `flowlens.desktop_runtime` to `flowlens.runtime`.
+- Updated the Tauri Rust sidecar launcher to run `python -m flowlens.runtime --transport stdio`.
+- Split the runtime entry point into `flowlens/runtime/server.py` and `flowlens/runtime/protocol.py`.
 - Added Pydantic v2 as a direct dependency and introduced typed JSON-RPC request/response/error/event protocol models at the Rust↔Python boundary.
 - Added `docs/runtime-refactor-plan.md` for the CDP/runtime code migration out of `app/prototype/`.
 
 Validation:
-- `.venv/bin/python -m py_compile socai/runtime/*.py app/prototype/*.py`
-- `.venv/bin/python -m ruff check socai/runtime`
-- JSON-RPC sidecar smoke test through `.venv/bin/python -m socai.runtime --transport stdio`; `health` returned ready and `connect_chrome` returned `cdp_available`.
+- `.venv/bin/python -m py_compile flowlens/runtime/*.py app/prototype/*.py`
+- `.venv/bin/python -m ruff check flowlens/runtime`
+- JSON-RPC sidecar smoke test through `.venv/bin/python -m flowlens.runtime --transport stdio`; `health` returned ready and `connect_chrome` returned `cdp_available`.
 - `pnpm --dir app run build`
 - `cargo check --manifest-path app/src-tauri/Cargo.toml`
 - `cargo fmt`
-- `bash scripts/build_app.sh` rebuilt and installed `/Applications/Socai.app`.
-- Launched installed app and clicked `Connect Chrome`; UI showed `connect_chrome — cdp_available` with backend `Tauri + Socai Python runtime`.
+- `bash scripts/build_app.sh` rebuilt and installed `/Applications/FlowLens.app`.
+- Launched installed app and clicked `Connect Chrome`; UI showed `connect_chrome — cdp_available` with backend `Tauri + FlowLens Python runtime`.
 - Invalid-protocol smoke test returned JSON-RPC parse error `-32700` and invalid params `-32602` as expected.
-- Screenshot: `/tmp/socai_runtime_pydantic_connect.png`.
+- Screenshot: `/tmp/flowlens_runtime_pydantic_connect.png`.
 
 ## 2026-05-01 — CDP phase 1 extraction and cleanup
 
 Changes:
-- Added top-level `socai.cdp` package for generic Chrome DevTools Protocol code.
+- Added top-level `flowlens.cdp` package for generic Chrome DevTools Protocol code.
 - Moved/cleaned Chrome CDP discovery, CDP connect/retry, and target-listing behavior into:
-  - `socai/cdp/discovery.py`
-  - `socai/cdp/client.py`
-  - `socai/cdp/targets.py`
-  - `socai/cdp/errors.py`
+  - `flowlens/cdp/discovery.py`
+  - `flowlens/cdp/client.py`
+  - `flowlens/cdp/targets.py`
+  - `flowlens/cdp/errors.py`
 - Added developer/support diagnostic wrappers:
   - `scripts/diagnostics/chrome_cdp_discovery.py`
   - `scripts/diagnostics/chrome_cdp_targets.py`
-- Converted old `app/prototype/chrome_discovery.py`, `cdp_connect.py`, and `cdp_targets.py` into compatibility wrappers around `socai.cdp`.
-- Updated `socai.runtime.service` so `connect_chrome` and `list_chrome_targets` call importable Python functions directly instead of spawning app-local scripts.
+- Converted old `app/prototype/chrome_discovery.py`, `cdp_connect.py`, and `cdp_targets.py` into compatibility wrappers around `flowlens.cdp`.
+- Updated `flowlens.runtime.service` so `connect_chrome` and `list_chrome_targets` call importable Python functions directly instead of spawning app-local scripts.
 - Promoted `cdp-use==1.4.5` into root `pyproject.toml`; `app/requirements.txt` is now a legacy diagnostic note.
-- Updated architecture docs/plan to treat `socai.cdp` as a top-level CDP backend and to require cleanup during migration.
+- Updated architecture docs/plan to treat `flowlens.cdp` as a top-level CDP backend and to require cleanup during migration.
 
 Validation:
 - `uv lock && uv sync --extra dev`
-- `.venv/bin/python -m py_compile socai/runtime/*.py socai/cdp/*.py app/prototype/*.py scripts/diagnostics/*.py`
-- `.venv/bin/python -m ruff check socai/runtime socai/cdp scripts/diagnostics app/prototype/chrome_discovery.py app/prototype/cdp_connect.py app/prototype/cdp_targets.py`
+- `.venv/bin/python -m py_compile flowlens/runtime/*.py flowlens/cdp/*.py app/prototype/*.py scripts/diagnostics/*.py`
+- `.venv/bin/python -m ruff check flowlens/runtime flowlens/cdp scripts/diagnostics app/prototype/chrome_discovery.py app/prototype/cdp_connect.py app/prototype/cdp_targets.py`
 - `.venv/bin/python scripts/diagnostics/chrome_cdp_discovery.py --json` returned `cdp_available`.
 - `.venv/bin/python scripts/diagnostics/chrome_cdp_targets.py --json` returned `connected` with live target counts.
 - Legacy wrappers `app/prototype/chrome_discovery.py --json` and `app/prototype/cdp_targets.py --json` returned `cdp_available` / `connected`.
-- JSON-RPC sidecar smoke test for `connect_chrome`, `list_chrome_targets`, and `shutdown` succeeded through `.venv/bin/python -m socai.runtime --transport stdio`.
+- JSON-RPC sidecar smoke test for `connect_chrome`, `list_chrome_targets`, and `shutdown` succeeded through `.venv/bin/python -m flowlens.runtime --transport stdio`.
 - `pnpm --dir app run build`
 - `cargo check --manifest-path app/src-tauri/Cargo.toml`
 - `.venv/bin/python -m pytest tests/test_package_layout.py tests/test_desktop_cli.py tests/test_agent_loop_helpers.py` → 7 passed.
-- `bash scripts/build_app.sh` rebuilt and installed `/Applications/Socai.app`.
-- Installed app smoke: clicked `List Targets`; after re-activating Socai, UI showed `list_targets — connected` with backend `Tauri + Socai Python runtime`.
-- Screenshot: `/tmp/socai_after_list_activate.png`.
+- `bash scripts/build_app.sh` rebuilt and installed `/Applications/FlowLens.app`.
+- Installed app smoke: clicked `List Targets`; after re-activating FlowLens, UI showed `list_targets — connected` with backend `Tauri + FlowLens Python runtime`.
+- Screenshot: `/tmp/flowlens_after_list_activate.png`.
 
 ## 2026-05-02 — CDP/runtime reorganization completion
 
 Changes:
 - Completed the CDP/runtime code migration out of `app/prototype/`.
 - Added generic CDP modules:
-  - `socai/cdp/page.py` for page/session-scoped CDP primitives.
-  - `socai/cdp/session.py` for existing-Chrome discovery/connect helper flow.
-  - `socai/cdp/diagnostics.py` for the controlled-tab diagnostic.
+  - `flowlens/cdp/page.py` for page/session-scoped CDP primitives.
+  - `flowlens/cdp/session.py` for existing-Chrome discovery/connect helper flow.
+  - `flowlens/cdp/diagnostics.py` for the controlled-tab diagnostic.
 - Added site-specific XHS CDP diagnostics:
-  - `socai/platforms/xhs/cdp_diagnostics.py`.
-- Updated `socai/runtime/service.py` so all current app-facing actions call importable modules directly:
+  - `flowlens/platforms/xhs/cdp_diagnostics.py`.
+- Updated `flowlens/runtime/service.py` so all current app-facing actions call importable modules directly:
   - `connect_chrome`
   - `list_chrome_targets`
   - `create_controlled_tab`
@@ -419,11 +419,11 @@ Changes:
   - `xhs_cdp_probe.py`
   - `desktop_cdp_demo.py`
 - Replaced old `app/prototype/*.py` implementation/wrapper scripts with `app/prototype/README.md` pointing to maintained diagnostics.
-- Updated docs to reflect `socai.runtime`, top-level `socai.cdp`, XHS-specific CDP diagnostics under `socai.platforms.xhs`, and `app/prototype/` deprecation.
+- Updated docs to reflect `flowlens.runtime`, top-level `flowlens.cdp`, XHS-specific CDP diagnostics under `flowlens.platforms.xhs`, and `app/prototype/` deprecation.
 
 Validation:
-- `.venv/bin/python -m py_compile socai/runtime/*.py socai/cdp/*.py socai/platforms/xhs/cdp_diagnostics.py scripts/diagnostics/*.py`
-- `.venv/bin/python -m ruff check socai/runtime socai/cdp socai/platforms/xhs/cdp_diagnostics.py scripts/diagnostics`
+- `.venv/bin/python -m py_compile flowlens/runtime/*.py flowlens/cdp/*.py flowlens/platforms/xhs/cdp_diagnostics.py scripts/diagnostics/*.py`
+- `.venv/bin/python -m ruff check flowlens/runtime flowlens/cdp flowlens/platforms/xhs/cdp_diagnostics.py scripts/diagnostics`
 - `.venv/bin/python scripts/diagnostics/chrome_cdp_discovery.py --json` returned `cdp_available`.
 - `.venv/bin/python scripts/diagnostics/chrome_cdp_targets.py --json --timeout 30` returned `connected` after Chrome remote-debugging permission was approved.
 - `.venv/bin/python scripts/diagnostics/chrome_cdp_controlled_tab.py --json --timeout 30` returned `controlled_tab_ready` and all primitive checks passed.
@@ -433,7 +433,7 @@ Validation:
 - `.venv/bin/python -m pytest tests/test_package_layout.py tests/test_desktop_cli.py tests/test_agent_loop_helpers.py` → 7 passed.
 - `pnpm --dir app run build`
 - `cargo check --manifest-path app/src-tauri/Cargo.toml`
-- `bash scripts/build_app.sh` rebuilt and installed `/Applications/Socai.app`.
+- `bash scripts/build_app.sh` rebuilt and installed `/Applications/FlowLens.app`.
 
 Note:
 - Chrome's `Allow remote debugging?` prompt can still recur because the current implementation opens fresh CDP WebSocket connections per action/test. A future `ChromeSessionManager` should keep one approved connection alive across runtime actions.

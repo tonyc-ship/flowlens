@@ -4,7 +4,7 @@ import os
 import tempfile
 from unittest import IsolatedAsyncioTestCase, mock
 
-from socai.core.bridge import BridgeAlreadyRunningError, ExtensionBridge
+from flowlens.core.bridge import BridgeAlreadyRunningError, ExtensionBridge
 
 
 class TabBridgeTest(IsolatedAsyncioTestCase):
@@ -25,7 +25,7 @@ class BridgeSingleInstanceTest(IsolatedAsyncioTestCase):
     async def test_second_bridge_on_same_port_raises_clear_error(self) -> None:
         with tempfile.TemporaryDirectory() as tmp, mock.patch.dict(
             os.environ,
-            {"SOCAI_APP_DATA_DIR": tmp},
+            {"FLOWLENS_APP_DATA_DIR": tmp},
             clear=False,
         ):
             first = ExtensionBridge(port=9877)

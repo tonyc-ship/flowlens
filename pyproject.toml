@@ -1,5 +1,5 @@
 [project]
-name = "socai"
+name = "flowlens"
 version = "0.1.0"
 description = "Xiaohongshu research agent with Chrome extension browser automation and media enrichment"
 license = "MIT"
@@ -20,9 +20,9 @@ dependencies = [
 ]
 
 [project.urls]
-Homepage = "https://github.com/tonyc-ship/socai"
-Repository = "https://github.com/tonyc-ship/socai"
-Issues = "https://github.com/tonyc-ship/socai/issues"
+Homepage = "https://github.com/tonyc-ship/flowlens"
+Repository = "https://github.com/tonyc-ship/flowlens"
+Issues = "https://github.com/tonyc-ship/flowlens/issues"
 
 [project.optional-dependencies]
 local = [
@@ -40,7 +40,7 @@ vision = [
     "opencv-python>=4.9.0",
 ]
 all = [
-    "socai[local,vision]",
+    "flowlens[local,vision]",
 ]
 dev = [
     "pytest>=8.0",
@@ -48,8 +48,8 @@ dev = [
 ]
 
 [project.scripts]
-socai = "socai.cli:main"
-socai-mcp = "socai.mcp.server:main"
+flowlens = "flowlens.cli:main"
+flowlens-mcp = "flowlens.mcp.server:main"
 
 [build-system]
 requires = ["hatchling"]

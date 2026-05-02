@@ -7,11 +7,11 @@ import json
 import sys
 from typing import Any
 
-from socai.cdp.discovery import INSPECT_URL, discover_chrome_cdp, open_inspect_page
+from flowlens.cdp.discovery import INSPECT_URL, discover_chrome_cdp, open_inspect_page
 
 
 def print_human(result: dict[str, Any]) -> None:
-    print(f"Socai Chrome discovery status: {result['status']}")
+    print(f"FlowLens Chrome discovery status: {result['status']}")
     print(f"Reason: {result.get('reason')}")
 
     if result["status"] == "cdp_available":

@@ -8,12 +8,12 @@ import json
 import sys
 from typing import Any
 
-from socai.cdp.discovery import INSPECT_URL
-from socai.cdp.targets import TargetListConfig, list_chrome_targets
+from flowlens.cdp.discovery import INSPECT_URL
+from flowlens.cdp.targets import TargetListConfig, list_chrome_targets
 
 
 def print_human(result: dict[str, Any]) -> None:
-    print(f"Socai CDP target listing status: {result['status']}")
+    print(f"FlowLens CDP target listing status: {result['status']}")
     print(f"Reason: {result.get('reason')}")
 
     if result["status"] == "setup_required":

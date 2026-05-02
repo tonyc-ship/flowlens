@@ -1,3 +1,3 @@
 fn main() {
-    socai_app_lib::run()
+    flowlens_app_lib::run()
 }

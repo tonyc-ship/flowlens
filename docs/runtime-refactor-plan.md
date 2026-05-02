@@ -1,16 +1,16 @@
-# Socai Runtime + CDP Refactor Plan
+# FlowLens Runtime + CDP Refactor Plan
 
 Status: active refactor plan — Phases 1-5 mostly implemented  
 Created: 2026-05-01  
 Branch: `desktop-runtime-refactor`  
-Scope: restructure Socai runtime and CDP code so the desktop app can grow from CDP diagnostics into the full agent product without keeping Python browser logic inside `app/prototype/`.
+Scope: restructure FlowLens runtime and CDP code so the desktop app can grow from CDP diagnostics into the full agent product without keeping Python browser logic inside `app/prototype/`.
 
 Progress so far:
 
-- `socai.runtime` is the renamed Python sidecar package.
-- Runtime JSON-RPC request/response/error models are typed with Pydantic in `socai.runtime.protocol`.
-- Generic CDP discovery, connect/retry, target-listing, page/session, and controlled-tab diagnostic code now lives under top-level `socai.cdp`.
-- XHS CDP probe logic now lives under `socai.platforms.xhs.cdp_diagnostics`.
+- `flowlens.runtime` is the renamed Python sidecar package.
+- Runtime JSON-RPC request/response/error models are typed with Pydantic in `flowlens.runtime.protocol`.
+- Generic CDP discovery, connect/retry, target-listing, page/session, and controlled-tab diagnostic code now lives under top-level `flowlens.cdp`.
+- XHS CDP probe logic now lives under `flowlens.platforms.xhs.cdp_diagnostics`.
 - Current app runtime actions call importable Python functions directly through the sidecar.
 - `app/prototype/` has been reduced to a deprecation README pointing to `scripts/diagnostics/`.
 
@@ -21,13 +21,13 @@ The current desktop app has the right top-level process shape:
 ```text
 Tauri WebView UI
   -> Rust/Tauri native shell
-  -> Python socai.runtime sidecar
+  -> Python flowlens.runtime sidecar
   -> Chrome CDP
 ```
 
 The original CDP browser-control logic lived in `app/prototype/*.py` and was invoked through subprocesses from the sidecar. That was useful while proving the CDP path, but the runtime now calls importable package modules directly and the app-local prototype files have been replaced by maintained diagnostic wrappers under `scripts/diagnostics/`.
 
-This refactor should move implementation code into importable Socai Python modules, keep `app/` focused on the desktop shell/UI, and turn the sidecar into the single app-facing Python runtime that can later run full Socai agent tasks.
+This refactor should move implementation code into importable FlowLens Python modules, keep `app/` focused on the desktop shell/UI, and turn the sidecar into the single app-facing Python runtime that can later run full FlowLens agent tasks.
 
 ## 2. Goals
 
@@ -37,10 +37,10 @@ This refactor should move implementation code into importable Socai Python modul
   - Tauri/Rust native shell
   - sidecar process supervision
   - app packaging
-- Move generic CDP functionality into top-level `socai.cdp`.
-- Move Xiaohongshu-specific CDP diagnostics into `socai.platforms.xhs`.
+- Move generic CDP functionality into top-level `flowlens.cdp`.
+- Move Xiaohongshu-specific CDP diagnostics into `flowlens.platforms.xhs`.
 - Clean up migrated code as it moves: reduce duplicate CLI/runtime paths, tighten names/types, remove obsolete session/prototype wording, and separate implementation from wrappers.
-- Make `socai.runtime` call Python functions directly, not subprocess scripts.
+- Make `flowlens.runtime` call Python functions directly, not subprocess scripts.
 - Keep manual developer/support diagnostics as thin wrappers under `scripts/diagnostics/`.
 - Preserve all currently working desktop app flows:
   - app health
@@ -50,13 +50,13 @@ This refactor should move implementation code into importable Socai Python modul
   - Open XHS Probe
   - Capture Test Screenshot
   - onboarding XHS connection test
-- Prepare the sidecar for future agent task execution through `socai.agent`, `socai.tools`, and `socai.platforms`.
+- Prepare the sidecar for future agent task execution through `flowlens.agent`, `flowlens.tools`, and `flowlens.platforms`.
 
 ## 3. Non-goals for this refactor
 
 - Do not implement the full research-agent UI yet.
 - Do not package a bundled Python runtime yet.
-- Do not rewrite the existing `socai.agent` loop.
+- Do not rewrite the existing `flowlens.agent` loop.
 - Do not switch to FastAPI or a localhost HTTP server.
 - Do not remove the Chrome extension architecture from the broader repo.
 - Do not change the user-facing Chrome permission/onboarding flow unless needed for this migration.
@@ -66,19 +66,19 @@ This refactor should move implementation code into importable Socai Python modul
 ### 4.1 Process architecture
 
 ```text
-Socai.app
+FlowLens.app
   -> Rust/Tauri process (`app/src-tauri/src/lib.rs`)
-    -> Python sidecar (`python -m socai.runtime --transport stdio`)
-      -> importable Socai Python modules (`socai.cdp`, `socai.platforms.xhs`)
+    -> Python sidecar (`python -m flowlens.runtime --transport stdio`)
+      -> importable FlowLens Python modules (`flowlens.cdp`, `flowlens.platforms.xhs`)
         -> Chrome CDP WebSocket
 ```
 
 The sidecar exists and now calls importable modules directly for every current app action:
 
 ```text
-socai.runtime.service.run_action(...)
-  -> socai.cdp.discovery / socai.cdp.targets / socai.cdp.diagnostics
-  -> socai.platforms.xhs.cdp_diagnostics
+flowlens.runtime.service.run_action(...)
+  -> flowlens.cdp.discovery / flowlens.cdp.targets / flowlens.cdp.diagnostics
+  -> flowlens.platforms.xhs.cdp_diagnostics
 ```
 
 `app/prototype/*.py` files are no longer runtime implementation dependencies.
@@ -110,7 +110,7 @@ app/
   src/                              # Vite/TypeScript UI
   src-tauri/                        # Rust/Tauri native shell
 
-socai/
+flowlens/
   runtime/                          # App-facing Python sidecar
     __main__.py
     server.py                       # JSON-RPC stdio loop
@@ -141,10 +141,10 @@ socai/
 
 scripts/
   diagnostics/
-    chrome_cdp_discovery.py         # thin wrapper around socai.cdp.discovery
-    chrome_cdp_targets.py           # thin wrapper around socai.cdp.targets
-    chrome_cdp_controlled_tab.py    # thin wrapper around socai.cdp.diagnostics
-    xhs_cdp_probe.py                # thin wrapper around socai.platforms.xhs.cdp_diagnostics
+    chrome_cdp_discovery.py         # thin wrapper around flowlens.cdp.discovery
+    chrome_cdp_targets.py           # thin wrapper around flowlens.cdp.targets
+    chrome_cdp_controlled_tab.py    # thin wrapper around flowlens.cdp.diagnostics
+    xhs_cdp_probe.py                # thin wrapper around flowlens.platforms.xhs.cdp_diagnostics
 ```
 
 ## 6. Ownership rules
@@ -165,11 +165,11 @@ scripts/
 
 - generic CDP control logic
 - XHS page-state detection
-- Socai agent execution
+- FlowLens agent execution
 - LLM calls
 - platform-specific extraction logic
 
-### 6.2 `socai.runtime`
+### 6.2 `flowlens.runtime`
 
 `runtime` is the app-facing Python sidecar package. It owns:
 
@@ -183,13 +183,13 @@ scripts/
 
 It should delegate implementation to:
 
-- `socai.cdp` for browser/CDP primitives
-- `socai.platforms.xhs` for XHS-specific behavior
-- `socai.agent` / `socai.tools` for future full agent tasks
+- `flowlens.cdp` for browser/CDP primitives
+- `flowlens.platforms.xhs` for XHS-specific behavior
+- `flowlens.agent` / `flowlens.tools` for future full agent tasks
 
-### 6.3 `socai.cdp`
+### 6.3 `flowlens.cdp`
 
-`socai.cdp` owns generic browser-control primitives:
+`flowlens.cdp` owns generic browser-control primitives:
 
 - Chrome CDP discovery
 - WebSocket connect/retry
@@ -204,7 +204,7 @@ It should delegate implementation to:
 
 It must not contain XHS-specific strings/selectors/states.
 
-### 6.4 `socai.platforms.xhs`
+### 6.4 `flowlens.platforms.xhs`
 
 XHS owns:
 
@@ -216,7 +216,7 @@ XHS owns:
 
 ### 6.5 `scripts/diagnostics`
 
-Diagnostic scripts are developer/support entry points only. They should be thin wrappers around Socai package functions, not implementation homes.
+Diagnostic scripts are developer/support entry points only. They should be thin wrappers around FlowLens package functions, not implementation homes.
 
 ### 6.6 Cleanup rules during migration
 
@@ -226,11 +226,11 @@ Required cleanup:
 
 - Remove obsolete `prototype`, `Session N`, and demo-session wording from moved modules.
 - Replace script-style globals/argparse coupling with importable config objects and functions.
-- Keep CLI wrappers thin; parsing/printing belongs in wrappers, browser behavior belongs in `socai.cdp` or platform modules.
+- Keep CLI wrappers thin; parsing/printing belongs in wrappers, browser behavior belongs in `flowlens.cdp` or platform modules.
 - Use typed return/config models at boundaries where useful, but avoid a repo-wide dataclass-to-Pydantic conversion.
-- Keep stdout protocol-only in `socai.runtime`; logs go to stderr or log files.
+- Keep stdout protocol-only in `flowlens.runtime`; logs go to stderr or log files.
 - Avoid subprocess calls between Python modules once code is importable.
-- Keep platform-specific strings/selectors out of `socai.cdp`.
+- Keep platform-specific strings/selectors out of `flowlens.cdp`.
 - Keep Rust/Tauri unaware of CDP/XHS implementation details beyond runtime method names and artifact paths.
 - Delete dead compatibility code after each phase once a replacement path is verified.
 
@@ -238,7 +238,7 @@ Do not do cleanup that changes product behavior without a testable reason. If be
 
 ## 7. Migration phases
 
-### Phase 1 — Create `socai.cdp` and move generic discovery/connect code
+### Phase 1 — Create `flowlens.cdp` and move generic discovery/connect code
 
 Move/import logic from:
 
@@ -251,10 +251,10 @@ app/prototype/cdp_targets.py
 Into:
 
 ```text
-socai/cdp/discovery.py
-socai/cdp/client.py
-socai/cdp/targets.py
-socai/cdp/errors.py
+flowlens/cdp/discovery.py
+flowlens/cdp/client.py
+flowlens/cdp/targets.py
+flowlens/cdp/errors.py
 ```
 
 Expected public functions/classes:
@@ -274,14 +274,14 @@ Compatibility:
 Validation:
 
 ```bash
-python -m py_compile socai/cdp/*.py
+python -m py_compile flowlens/cdp/*.py
 python scripts/diagnostics/chrome_cdp_discovery.py --json
 python scripts/diagnostics/chrome_cdp_targets.py --json
 ```
 
-### Phase 2 — Move controlled-tab primitives into `socai.cdp`
+### Phase 2 — Move controlled-tab primitives into `flowlens.cdp`
 
-Move `SocaiCDPPage` and helper logic from:
+Move `FlowLensCDPPage` and helper logic from:
 
 ```text
 app/prototype/cdp_controlled_tab.py
@@ -290,8 +290,8 @@ app/prototype/cdp_controlled_tab.py
 Into:
 
 ```text
-socai/cdp/page.py
-socai/cdp/session.py
+flowlens/cdp/page.py
+flowlens/cdp/session.py
 ```
 
 Expected public shape:
@@ -326,7 +326,7 @@ Expected status:
 controlled_tab_ready
 ```
 
-### Phase 3 — Move XHS probe into `socai.platforms.xhs`
+### Phase 3 — Move XHS probe into `flowlens.platforms.xhs`
 
 Move XHS-specific logic from:
 
@@ -337,7 +337,7 @@ app/prototype/cdp_xhs_probe.py
 Into:
 
 ```text
-socai/platforms/xhs/cdp_diagnostics.py
+flowlens/platforms/xhs/cdp_diagnostics.py
 ```
 
 Expected public function:
@@ -368,7 +368,7 @@ setup_required
 Replace subprocess delegation in:
 
 ```text
-socai/runtime/service.py
+flowlens/runtime/service.py
 ```
 
 Current:
@@ -380,10 +380,10 @@ subprocess.run([... app/prototype/*.py --json ...])
 Target:
 
 ```python
-from socai.cdp.discovery import discover_chrome_cdp
-from socai.cdp.targets import list_chrome_targets
-from socai.cdp.diagnostics import run_controlled_tab_diagnostic
-from socai.platforms.xhs.cdp_diagnostics import run_xhs_cdp_probe
+from flowlens.cdp.discovery import discover_chrome_cdp
+from flowlens.cdp.targets import list_chrome_targets
+from flowlens.cdp.diagnostics import run_controlled_tab_diagnostic
+from flowlens.platforms.xhs.cdp_diagnostics import run_xhs_cdp_probe
 ```
 
 This phase removes the app dependency on `app/prototype/` for runtime behavior.
@@ -395,7 +395,7 @@ printf '%s\n' \
   '{"jsonrpc":"2.0","id":1,"method":"health","params":{}}' \
   '{"jsonrpc":"2.0","id":2,"method":"connect_chrome","params":{}}' \
   '{"jsonrpc":"2.0","id":3,"method":"shutdown","params":{}}' \
-  | .venv/bin/python -m socai.runtime --transport stdio
+  | .venv/bin/python -m flowlens.runtime --transport stdio
 ```
 
 Then validate through installed app:
@@ -428,10 +428,10 @@ No implementation code should remain there.
 Before wiring the full agent, add runtime infrastructure:
 
 ```text
-socai/runtime/task_manager.py
-socai/runtime/events.py
-socai/runtime/artifacts.py
-socai/runtime/protocol.py
+flowlens/runtime/task_manager.py
+flowlens/runtime/events.py
+flowlens/runtime/artifacts.py
+flowlens/runtime/protocol.py
 ```
 
 Required methods:
@@ -468,20 +468,20 @@ Initial rule:
 Only one active browser task at a time.
 ```
 
-Then wire `run_task` to existing Socai systems:
+Then wire `run_task` to existing FlowLens systems:
 
 ```python
-socai.agent.loop.run_agent
-socai.tools.registry.build_tools
-socai.knowledge.loader
-socai.platforms.xhs
+flowlens.agent.loop.run_agent
+flowlens.tools.registry.build_tools
+flowlens.knowledge.loader
+flowlens.platforms.xhs
 ```
 
 ## 8. Dependency changes
 
-`pydantic>=2.7` should be a direct core dependency because `socai.runtime.protocol` validates the JSON-RPC boundary between Rust/Tauri and Python. This keeps runtime request/response/event payloads typed without forcing the whole codebase to migrate away from dataclasses.
+`pydantic>=2.7` should be a direct core dependency because `flowlens.runtime.protocol` validates the JSON-RPC boundary between Rust/Tauri and Python. This keeps runtime request/response/event payloads typed without forcing the whole codebase to migrate away from dataclasses.
 
-`cdp-use==1.4.5` is now a direct root dependency because `socai.cdp` is part of the active desktop runtime path. `app/requirements.txt` is retained only as a legacy note for old app-local diagnostics.
+`cdp-use==1.4.5` is now a direct root dependency because `flowlens.cdp` is part of the active desktop runtime path. `app/requirements.txt` is retained only as a legacy note for old app-local diagnostics.
 
 Development command:
 
@@ -500,7 +500,7 @@ app/requirements.txt
 ### Unit/static checks
 
 ```bash
-python -m py_compile socai/cdp/*.py socai/runtime/*.py socai/platforms/xhs/*.py
+python -m py_compile flowlens/cdp/*.py flowlens/runtime/*.py flowlens/platforms/xhs/*.py
 pnpm --dir app run build
 cargo check --manifest-path app/src-tauri/Cargo.toml
 ```
@@ -512,7 +512,7 @@ printf '%s\n' \
   '{"jsonrpc":"2.0","id":1,"method":"health","params":{}}' \
   '{"jsonrpc":"2.0","id":2,"method":"connect_chrome","params":{}}' \
   '{"jsonrpc":"2.0","id":3,"method":"shutdown","params":{}}' \
-  | .venv/bin/python -m socai.runtime --transport stdio
+  | .venv/bin/python -m flowlens.runtime --transport stdio
 ```
 
 ### Live browser diagnostics
@@ -532,16 +532,16 @@ After Tauri changes:
 
 ```bash
 bash scripts/build_app.sh
-open /Applications/Socai.app
+open /Applications/FlowLens.app
 ```
 
 Verify in installed app:
 
-- app launches as `Socai`
+- app launches as `FlowLens`
 - `Runtime ready` appears
-- backend shows `Tauri + Socai Python runtime`
+- backend shows `Tauri + FlowLens Python runtime`
 - `Connect Chrome` returns `cdp_available` or a clear `setup_required`
-- `Create Controlled Tab` creates a marked `🟢 Socai` tab
+- `Create Controlled Tab` creates a marked `🟢 FlowLens` tab
 - `Open XHS Probe` returns a valid XHS diagnostic status and displays screenshots when available
 
 Because this touches `app/`, every completed implementation phase must rebuild and reinstall the desktop app with:
@@ -555,12 +555,12 @@ bash scripts/build_app.sh
 This refactor is complete when:
 
 - `app/prototype/` no longer contains runtime implementation code.
-- `socai.runtime` does not call `subprocess.run(... app/prototype/*.py ...)` for current app actions.
-- Generic CDP code is importable from `socai.cdp`.
-- XHS-specific diagnostic code is importable from `socai.platforms.xhs.cdp_diagnostics`.
+- `flowlens.runtime` does not call `subprocess.run(... app/prototype/*.py ...)` for current app actions.
+- Generic CDP code is importable from `flowlens.cdp`.
+- XHS-specific diagnostic code is importable from `flowlens.platforms.xhs.cdp_diagnostics`.
 - Manual diagnostics live under `scripts/diagnostics/` and are thin wrappers.
 - Existing desktop UI buttons still work.
-- Installed `/Applications/Socai.app` is rebuilt and smoke-tested.
+- Installed `/Applications/FlowLens.app` is rebuilt and smoke-tested.
 - Documentation reflects the new code layout.
 
 ## 11. Open decisions
@@ -580,10 +580,10 @@ This refactor is complete when:
 
 Implemented in this branch so far:
 
-1. Added `socai/cdp/`.
+1. Added `flowlens/cdp/`.
 2. Moved Chrome discovery, CDP connect helpers, target listing, page/session primitives, and controlled-tab diagnostics there.
-3. Moved XHS CDP probe diagnostics to `socai.platforms.xhs.cdp_diagnostics`.
+3. Moved XHS CDP probe diagnostics to `flowlens.platforms.xhs.cdp_diagnostics`.
 4. Added `scripts/diagnostics/chrome_cdp_discovery.py`, `chrome_cdp_targets.py`, `chrome_cdp_controlled_tab.py`, `xhs_cdp_probe.py`, and `desktop_cdp_demo.py` wrappers.
-5. Updated `socai.runtime.service` so all current app actions call package functions directly.
+5. Updated `flowlens.runtime.service` so all current app actions call package functions directly.
 6. Replaced `app/prototype/*.py` with `app/prototype/README.md` pointing to the maintained diagnostics.
 7. Ran sidecar, diagnostic, and installed-app smoke tests.

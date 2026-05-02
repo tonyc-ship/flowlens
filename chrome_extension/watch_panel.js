@@ -1,5 +1,5 @@
 /**
- * Socai Watch Mode — Real-time Agent Activity Sidebar
+ * FlowLens Watch Mode — Real-time Agent Activity Sidebar
  *
  * Injected into the page by background.js when watch mode is enabled.
  * Uses Shadow DOM for complete isolation from the host page.
@@ -16,7 +16,7 @@
   'use strict';
 
   // Prevent double injection, but make a previously hidden panel visible again.
-  const existingRoot = document.getElementById('socai-watch-root');
+  const existingRoot = document.getElementById('flowlens-watch-root');
   if (existingRoot) {
     existingRoot.style.display = '';
     try {
@@ -60,8 +60,8 @@
   // ── Create Host Element ────────────────────────────────────────
 
   const host = document.createElement('div');
-  host.id = 'socai-watch-root';
-  host.dataset.socai = 'watch-panel';
+  host.id = 'flowlens-watch-root';
+  host.dataset.flowlens = 'watch-panel';
   host.style.cssText = [
     'position: fixed',
     'top: 0',
@@ -638,7 +638,7 @@
 
   function showClickHighlight(x, y) {
     const marker = document.createElement('div');
-    marker.className = 'socai-click-marker';
+    marker.className = 'flowlens-click-marker';
     marker.style.cssText = [
       'position: fixed',
       `left: ${x}px`,
@@ -663,7 +663,7 @@
 
     // Also show a small persistent ring
     const ring = document.createElement('div');
-    ring.className = 'socai-click-ring';
+    ring.className = 'flowlens-click-ring';
     ring.style.cssText = [
       'position: fixed',
       `left: ${x}px`,
@@ -706,7 +706,7 @@
     const rect = el.getBoundingClientRect();
 
     const overlay = document.createElement('div');
-    overlay.className = 'socai-element-highlight';
+    overlay.className = 'flowlens-element-highlight';
     overlay.style.cssText = [
       'position: fixed',
       `left: ${rect.left - 3}px`,
@@ -763,7 +763,7 @@
       } else if (msg.mode === 'element_rect') {
         // Direct rect-based highlight
         const overlay = document.createElement('div');
-        overlay.className = 'socai-element-highlight';
+        overlay.className = 'flowlens-element-highlight';
         overlay.style.cssText = [
           'position: fixed',
           `left: ${(msg.rect?.left || 0) - 3}px`,

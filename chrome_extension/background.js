@@ -1,7 +1,7 @@
 /**
- * Socai Agent — Background Service Worker
+ * FlowLens Agent — Background Service Worker
  *
- * WebSocket client connecting to the local Socai agent runtime.
+ * WebSocket client connecting to the local FlowLens agent runtime.
  * Routes commands between the agent and content scripts.
  *
  * Handles directly:
@@ -126,24 +126,24 @@ async function withTabDebugger(tabId, work, timeoutMs = 5000) {
 async function setCaptureOverlayHidden(tabId, hidden) {
   if (!tabId) return;
   try {
-    await chrome.tabs.sendMessage(tabId, { type: 'socai_capture_overlay', hidden });
+    await chrome.tabs.sendMessage(tabId, { type: 'flowlens_capture_overlay', hidden });
   } catch {}
   try {
     await chrome.scripting.executeScript({
       target: { tabId },
       func: (shouldHide) => {
-        const ids = ['socai-watch-overlay', 'socai-watch-root'];
+        const ids = ['flowlens-watch-overlay', 'flowlens-watch-root'];
         ids.forEach((id) => {
           const el = document.getElementById(id);
           if (!el) return;
           if (shouldHide) {
-            if (el.dataset.socaiCaptureDisplay === undefined) {
-              el.dataset.socaiCaptureDisplay = el.style.display || '';
+            if (el.dataset.flowlensCaptureDisplay === undefined) {
+              el.dataset.flowlensCaptureDisplay = el.style.display || '';
             }
             el.style.display = 'none';
-          } else if (el.dataset.socaiCaptureDisplay !== undefined) {
-            el.style.display = el.dataset.socaiCaptureDisplay;
-            delete el.dataset.socaiCaptureDisplay;
+          } else if (el.dataset.flowlensCaptureDisplay !== undefined) {
+            el.style.display = el.dataset.flowlensCaptureDisplay;
+            delete el.dataset.flowlensCaptureDisplay;
           } else {
             el.style.display = '';
           }

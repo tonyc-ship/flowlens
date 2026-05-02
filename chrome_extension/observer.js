@@ -1,5 +1,5 @@
 /**
- * Socai — Passive Site Observer
+ * FlowLens — Passive Site Observer
  *
  * Silently monitors user behavior on matched websites to learn:
  *   - Navigation patterns (how users move between pages)
@@ -153,7 +153,7 @@
     if (!target || !target.tagName) return;
 
     // Skip extension-injected elements
-    if (target.closest?.('[data-socai]')) return;
+    if (target.closest?.('[data-flowlens]')) return;
 
     const desc = describeElement(target);
     if (!desc) return;

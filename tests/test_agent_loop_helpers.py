@@ -9,7 +9,7 @@ from __future__ import annotations
 
 import unittest
 
-from socai.platforms.xhs.agent_profile import append_note_screenshot_index
+from flowlens.platforms.xhs.agent_profile import append_note_screenshot_index
 
 
 class AppendNoteScreenshotIndexTest(unittest.TestCase):

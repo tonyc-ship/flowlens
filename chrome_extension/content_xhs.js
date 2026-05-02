@@ -1,5 +1,5 @@
 /**
- * Socai XHS Platform Adapter
+ * FlowLens XHS Platform Adapter
  *
  * Site-specific DOM extraction and actions for xiaohongshu.com. The generic
  * content script owns the extension bridge and calls this adapter by method.
@@ -10,9 +10,9 @@
     return;
   }
 
-  const common = window.SocaiCommon;
+  const common = window.FlowLensCommon;
   if (!common) {
-    console.warn('[Socai XHS] Common content helpers are unavailable');
+    console.warn('[FlowLens XHS] Common content helpers are unavailable');
     return;
   }
 
@@ -1434,15 +1434,15 @@ async function scrollInNote(pixels = 400) {
       };
     }
     const note = await waitForNoteContent(params.timeout || 8000) || extractNoteContent();
-    const prev = window.__socaiLastNoteId || '';
+    const prev = window.__flowlensLastNoteId || '';
     if (note.note_id && prev && note.note_id === prev) {
       note._stale_warning = `This looks like the same note as the previous extract (note_id=${note.note_id}). The note modal may not have closed between clicks — use extract_page_data command=close_note, verify the modal is gone, then re-open the target card.`;
     }
-    if (note.note_id) window.__socaiLastNoteId = note.note_id;
+    if (note.note_id) window.__flowlensLastNoteId = note.note_id;
     return { note };
   }
 
-  window.SocaiXhs = {
+  window.FlowLensXhs = {
     detectAntiBotState,
     detectState,
     detectNoteType,
@@ -1469,5 +1469,5 @@ async function scrollInNote(pixels = 400) {
     } catch {}
   }, 0);
 
-  console.log('[Socai XHS] Adapter loaded:', window.location.href);
+  console.log('[FlowLens XHS] Adapter loaded:', window.location.href);
 })();

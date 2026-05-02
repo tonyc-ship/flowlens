@@ -12,7 +12,7 @@ from unittest import mock
 
 from PIL import Image, ImageDraw
 
-from socai.observer import (
+from flowlens.observer import (
     ObserverCaptureService,
     ObserverConfig,
     ObserverPaths,
@@ -130,7 +130,7 @@ class ObserverCaptureDiffTest(unittest.TestCase):
             )
 
             with mock.patch(
-                "socai.observer.service.system_resource_snapshot",
+                "flowlens.observer.service.system_resource_snapshot",
                 side_effect=[snapshot(1024.0, 1500.0), snapshot(1025.0, 1505.0),
                              snapshot(1025.0, 1505.0), snapshot(1027.0, 1512.0)],
             ):

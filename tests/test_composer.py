@@ -4,7 +4,7 @@ import unittest
 from types import SimpleNamespace
 from unittest import IsolatedAsyncioTestCase, mock
 
-from socai.core.composer import ComposerSpec, submit_with_dom_verification
+from flowlens.core.composer import ComposerSpec, submit_with_dom_verification
 
 
 class ComposerSubmitTest(IsolatedAsyncioTestCase):

@@ -7,8 +7,8 @@ import tempfile
 import unittest
 from pathlib import Path
 
-from socai.agent.tool import ToolContext
-from socai.platforms.wechat.tools import WeChatReadHistoryArtifactTool
+from flowlens.agent.tool import ToolContext
+from flowlens.platforms.wechat.tools import WeChatReadHistoryArtifactTool
 
 
 class WeChatHistoryArtifactToolTest(unittest.IsolatedAsyncioTestCase):

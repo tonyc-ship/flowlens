@@ -14,7 +14,7 @@ python scripts/diagnostics/desktop_cdp_demo.py
 
 Implementation modules now live in:
 
-- `socai.cdp` for generic Chrome DevTools Protocol discovery, sessions, targets, pages, and controlled-tab diagnostics.
-- `socai.platforms.xhs.cdp_diagnostics` for Xiaohongshu-specific CDP reachability/login/security diagnostics.
+- `flowlens.cdp` for generic Chrome DevTools Protocol discovery, sessions, targets, pages, and controlled-tab diagnostics.
+- `flowlens.platforms.xhs.cdp_diagnostics` for Xiaohongshu-specific CDP reachability/login/security diagnostics.
 
-The Tauri app calls `socai.runtime` over JSON-RPC; `socai.runtime.service` calls those importable modules directly and does not spawn app-local prototype scripts.
+The Tauri app calls `flowlens.runtime` over JSON-RPC; `flowlens.runtime.service` calls those importable modules directly and does not spawn app-local prototype scripts.

@@ -1,8 +1,8 @@
 {
   "$schema": "https://schema.tauri.app/config/2",
-  "productName": "Socai",
+  "productName": "FlowLens",
   "version": "0.1.0",
-  "identifier": "com.tonycship.socai",
+  "identifier": "com.tonycship.flowlens",
   "build": {
     "beforeDevCommand": "pnpm run dev",
     "devUrl": "http://localhost:1421",
@@ -13,7 +13,7 @@
     "withGlobalTauri": true,
     "windows": [
       {
-        "title": "Socai",
+        "title": "FlowLens",
         "hiddenTitle": true,
         "width": 1180,
         "height": 860,

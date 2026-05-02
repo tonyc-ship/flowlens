@@ -84,7 +84,7 @@ type ModelOption = {
   brand: string;
 };
 
-const onboardingStorageKey = "socaiOnboardingComplete";
+const onboardingStorageKey = "flowlensOnboardingComplete";
 const obSteps: { id: OnboardingStepId; label: string }[] = [
   { id: "welcome", label: "Welcome" },
   { id: "connect", label: "Connect Chrome" },
@@ -109,7 +109,7 @@ const actions: ActionConfig[] = [
     id: "createControlledTab",
     label: "Create Controlled Tab",
     command: "create_controlled_tab",
-    description: "Create a new tab, mark it with 🟢 Socai, and verify primitives.",
+    description: "Create a new tab, mark it with 🟢 FlowLens, and verify primitives.",
   },
   {
     id: "openXhsProbe",
@@ -250,7 +250,7 @@ function renderOnboarding(): string {
   const stepIdx = currentStepIndex();
   return `
     <main class="onboarding-shell">
-      <section class="onboarding-window" aria-label="Socai setup wizard">
+      <section class="onboarding-window" aria-label="FlowLens setup wizard">
         ${renderOnboardingHeader(stepIdx)}
         <div class="onboarding-body sa-scroll">
           ${renderCurrentOnboardingStep()}
@@ -266,7 +266,7 @@ function renderOnboardingHeader(stepIdx: number): string {
     <header class="ob-header">
       <div class="brand-lockup">
         ${renderLogo(22)}
-        <span>Socai</span>
+        <span>FlowLens</span>
       </div>
       <div class="ob-stepper" aria-label="Setup progress">
         ${obSteps
@@ -307,7 +307,7 @@ function renderOnboardingFooter(stepIdx: number): string {
       <button class="ob-footer-link" data-ob-back ${stepIdx === 0 ? "disabled" : ""}>← Back</button>
       <div class="ob-step-count">Step ${stepIdx + 1} of ${obSteps.length}</div>
       <button class="ob-btn primary" ${isLast ? "data-complete-onboarding" : "data-ob-next"}>
-        ${isLast ? "Open Socai" : "Continue"} →
+        ${isLast ? "Open FlowLens" : "Continue"} →
       </button>
     </footer>
   `;
@@ -316,17 +316,17 @@ function renderOnboardingFooter(stepIdx: number): string {
 function renderWelcomeStep(): string {
   const bullets = [
     "Uses your existing Chrome — no separate browser, no extra social login",
-    "Works in a clearly marked 🟢 Socai tab — not your other tabs",
+    "Works in a clearly marked 🟢 FlowLens tab — not your other tabs",
     "Keeps screenshots, reasoning, and reports together for review",
   ];
 
   return `
     <section class="ob-grid welcome-grid">
       <div class="ob-copy">
-        <p class="ob-eyebrow">Welcome to Socai</p>
+        <p class="ob-eyebrow">Welcome to FlowLens</p>
         <h1>An agent that browses <span>social platforms</span> for you.</h1>
         <p class="ob-lede">
-          Give Socai a research task. It opens a controlled tab in your existing Chrome,
+          Give FlowLens a research task. It opens a controlled tab in your existing Chrome,
           reads through Xiaohongshu, WeChat, or other platforms, and writes you a report —
           using your real login, so it sees what you'd see.
         </p>
@@ -391,13 +391,13 @@ function renderInspectMock(): string {
       </div>
       <div class="inspect-content">
         <strong>Remote debugging</strong>
-        <small>Chrome will show the one row Socai needs.</small>
+        <small>Chrome will show the one row FlowLens needs.</small>
         <div class="inspect-toggle">
           <b>CHECK THIS ✓</b>
           <div class="inspect-checkbox">✓</div>
           <div>
             <strong>Allow remote debugging for this browser instance</strong>
-            <small>Lets Socai connect to localhost:9222 while the app is open.</small>
+            <small>Lets FlowLens connect to localhost:9222 while the app is open.</small>
           </div>
         </div>
         <pre>localhost:9222 <span>✓ allowed</span></pre>
@@ -413,8 +413,8 @@ function renderConnectStep(): string {
   const steps = [
     { id: "scanning", label: "Looking for Chrome on port 9222", detail: "Probing localhost:9222 …" },
     { id: "found", label: "Chrome detected", detail: "Default profile · existing tabs untouched" },
-    { id: "opening_xhs", label: "Opening Xiaohongshu", detail: "Opening xiaohongshu.com in a clearly marked 🟢 Socai tab" },
-    { id: "ready", label: "Xiaohongshu ready", detail: "XHS opened and Socai can continue with the first task" },
+    { id: "opening_xhs", label: "Opening Xiaohongshu", detail: "Opening xiaohongshu.com in a clearly marked 🟢 FlowLens tab" },
+    { id: "ready", label: "Xiaohongshu ready", detail: "XHS opened and FlowLens can continue with the first task" },
   ];
   const phaseIdx = phase === "login_required"
     ? 2
@@ -429,17 +429,17 @@ function renderConnectStep(): string {
     <section class="ob-grid connect-grid combined-connect-grid">
       <article class="ob-card connect-permission-card">
         <p class="ob-eyebrow">Connect Chrome</p>
-        <h2>Let Socai talk to your Chrome.</h2>
+        <h2>Let FlowLens talk to your Chrome.</h2>
         <p class="ob-muted">
-          Socai uses Chrome's built-in <strong>remote debugging</strong> interface —
+          FlowLens uses Chrome's built-in <strong>remote debugging</strong> interface —
           the same protocol DevTools uses. Check the box once, then we'll create a
-          dedicated <strong>🟢 Socai</strong> tab and open Xiaohongshu as the real connection test.
+          dedicated <strong>🟢 FlowLens</strong> tab and open Xiaohongshu as the real connection test.
         </p>
 
         <div class="capability-callout">
           <div>
             <p class="ob-eyebrow can-do">Can do</p>
-            ${["Read the 🟢 Socai tab", "Click, scroll, type in it", "Open tabs it created"]
+            ${["Read the 🟢 FlowLens tab", "Click, scroll, type in it", "Open tabs it created"]
               .map(
                 (text) => `
                   <div class="permission-row allowed"><span>✓</span><p>${escapeHtml(text)}</p></div>
@@ -449,7 +449,7 @@ function renderConnectStep(): string {
           </div>
           <div>
             <p class="ob-eyebrow cant-do">Can't do</p>
-            ${["Touch your other tabs", "Read profile / passwords", "Run when Socai is closed"]
+            ${["Touch your other tabs", "Read profile / passwords", "Run when FlowLens is closed"]
               .map(
                 (text) => `
                   <div class="permission-row blocked"><span>✕</span><p>${escapeHtml(text)}</p></div>
@@ -565,7 +565,7 @@ function renderConnectStatus(): string {
     return `
       <div class="phase-hint">
         <strong>Step 2.</strong>
-        <p>Once you've checked the box in Chrome, click <strong>Open XHS and test</strong> above. If Xiaohongshu asks you to log in, scan the QR code in the Socai tab.</p>
+        <p>Once you've checked the box in Chrome, click <strong>Open XHS and test</strong> above. If Xiaohongshu asks you to log in, scan the QR code in the FlowLens tab.</p>
       </div>
     `;
   }
@@ -581,7 +581,7 @@ function renderConnectStatus(): string {
     return `
       <div class="phase-hint active">
         <strong>Found it.</strong>
-        <p>Chrome profile detected. Existing tabs stay untouched; Socai opens Xiaohongshu in its own tab next.</p>
+        <p>Chrome profile detected. Existing tabs stay untouched; FlowLens opens Xiaohongshu in its own tab next.</p>
       </div>
     `;
   }
@@ -589,20 +589,20 @@ function renderConnectStatus(): string {
     return `
       <div class="phase-hint active">
         <strong>Opening Xiaohongshu…</strong>
-        <p>If a login QR appears in Chrome, scan it while this test is running. Socai waits up to 90 seconds.</p>
+        <p>If a login QR appears in Chrome, scan it while this test is running. FlowLens waits up to 90 seconds.</p>
       </div>
     `;
   }
   return `
     <div class="phase-hint warning">
       <strong>Xiaohongshu needs login.</strong>
-      <p>${escapeHtml(state.onboarding.connectionError || "Scan the QR code in the 🟢 Socai Chrome tab, then click “I've logged in · re-test”.")}</p>
+      <p>${escapeHtml(state.onboarding.connectionError || "Scan the QR code in the 🟢 FlowLens Chrome tab, then click “I've logged in · re-test”.")}</p>
     </div>
   `;
 }
 
 function renderChromeTabMock(phaseIdx: number, phase: ConnectionPhase): string {
-  const showSocaiTab = phaseIdx >= 2 || phase === "ready" || phase === "login_required";
+  const showFlowLensTab = phaseIdx >= 2 || phase === "ready" || phase === "login_required";
   return `
     <div class="chrome-mock">
       <div class="fake-browser-bar compact"><i></i><i></i><i></i></div>
@@ -610,12 +610,12 @@ function renderChromeTabMock(phaseIdx: number, phase: ConnectionPhase): string {
         <span>Inbox – Gmail</span>
         <span>Linear · Sprint 24</span>
         <span>小红书</span>
-        <span class="socai-tab ${showSocaiTab ? "visible" : ""} ${phase === "ready" ? "ready" : ""} ${phase === "login_required" ? "warning" : ""}">
-          <i></i>🟢 Socai
+        <span class="flowlens-tab ${showFlowLensTab ? "visible" : ""} ${phase === "ready" ? "ready" : ""} ${phase === "login_required" ? "warning" : ""}">
+          <i></i>🟢 FlowLens
         </span>
       </div>
       <div class="fake-page-state">
-        ${phase === "ready" ? "xiaohongshu.com ready · awaiting first task" : phase === "login_required" ? "xiaohongshu.com login needed · scan QR in Chrome" : showSocaiTab ? "opening xiaohongshu.com…" : phase === "ready_to_test" ? "settings opened · click XHS test" : phase === "idle" ? "open Chrome settings to begin" : "(no controlled tab yet)"}
+        ${phase === "ready" ? "xiaohongshu.com ready · awaiting first task" : phase === "login_required" ? "xiaohongshu.com login needed · scan QR in Chrome" : showFlowLensTab ? "opening xiaohongshu.com…" : phase === "ready_to_test" ? "settings opened · click XHS test" : phase === "idle" ? "open Chrome settings to begin" : "(no controlled tab yet)"}
       </div>
     </div>
   `;
@@ -716,7 +716,7 @@ function renderOAuthPanel(model: ModelOption, oauth: { name: string; tagline: st
     </div>
     <div class="auth-note">
       <strong>What happens when you sign in</strong>
-      We open ${escapeHtml(model.name.split(" ")[0])}'s login page in a separate tab, you authorize Socai, and we receive a token scoped to model access only. ${escapeHtml(oauth.note)}
+      We open ${escapeHtml(model.name.split(" ")[0])}'s login page in a separate tab, you authorize FlowLens, and we receive a token scoped to model access only. ${escapeHtml(oauth.note)}
     </div>
   `;
 }
@@ -756,14 +756,14 @@ function renderReadyStep(): string {
   const setupRows = [
     ["Browser", setupBrowserSummary()],
     ["Model", `${selectedModel().name} · ${selectedModel().kind === "local" ? "local" : state.onboarding.authMode === "oauth" ? "account sign-in" : "API key"}`],
-    ["Storage", "~/Library/Application Support/Socai/"],
+    ["Storage", "~/Library/Application Support/FlowLens/"],
   ];
   return `
     <section class="ob-grid ready-grid">
       <div class="ob-copy">
         <p class="ob-eyebrow">You're all set</p>
         <h1>Ready when you are. <span>Try a first task.</span></h1>
-        <p class="ob-lede">Pick one of the suggestions on the right, or write your own from the New task screen. Socai will narrate what it does so you can stop or correct it any time.</p>
+        <p class="ob-lede">Pick one of the suggestions on the right, or write your own from the New task screen. FlowLens will narrate what it does so you can stop or correct it any time.</p>
         <div class="setup-summary">
           <p class="ob-eyebrow">Your setup</p>
           ${setupRows
@@ -774,7 +774,7 @@ function renderReadyStep(): string {
             )
             .join("")}
         </div>
-        <div class="ob-actions"><button class="ob-btn primary" data-complete-onboarding>Open Socai →</button><button class="ob-btn">Take a tour first</button></div>
+        <div class="ob-actions"><button class="ob-btn primary" data-complete-onboarding>Open FlowLens →</button><button class="ob-btn">Take a tour first</button></div>
       </div>
       <div class="starter-panel">
         <p class="ob-eyebrow">Try a starter task</p>
@@ -789,7 +789,7 @@ function renderReadyStep(): string {
             `,
           )
           .join("")}
-        <div class="did-you-know"><strong>Did you know?</strong><p>Socai also runs as an MCP server, so you can call it from Claude Desktop or any MCP client.</p></div>
+        <div class="did-you-know"><strong>Did you know?</strong><p>FlowLens also runs as an MCP server, so you can call it from Claude Desktop or any MCP client.</p></div>
       </div>
     </section>
   `;
@@ -840,7 +840,7 @@ function renderXhsMock(phase: "feed" | "note" | "search"): string {
 }
 
 function renderXhsChrome(url: string): string {
-  return `<div class="xhs-chrome"><i></i><i></i><i></i><span>🟢 Socai · ${escapeHtml(url)}</span></div>`;
+  return `<div class="xhs-chrome"><i></i><i></i><i></i><span>🟢 FlowLens · ${escapeHtml(url)}</span></div>`;
 }
 
 function renderMainApp(): string {
@@ -861,7 +861,7 @@ function renderMainApp(): string {
 
       <section class="notice">
         <strong>Permission note:</strong>
-        Socai connects only after Chrome remote-debugging permission is enabled. If Chrome shows
+        FlowLens connects only after Chrome remote-debugging permission is enabled. If Chrome shows
         <em>Allow remote debugging?</em>, click <strong>Allow</strong> while the current action is running.
       </section>
 
@@ -1180,7 +1180,7 @@ async function startConnectionTest() {
 
     if (xhsStatus === "xhs_login_required" || xhsDiagnostics?.possibleLoginPrompt === true) {
       state.onboarding.connectionPhase = "login_required";
-      state.onboarding.connectionError = "Xiaohongshu opened in the 🟢 Socai tab, but it needs login. Scan the QR code in Chrome, then re-test.";
+      state.onboarding.connectionError = "Xiaohongshu opened in the 🟢 FlowLens tab, but it needs login. Scan the QR code in Chrome, then re-test.";
       render();
       return;
     }
@@ -1312,7 +1312,7 @@ function formatError(error: unknown): string {
 
 function renderLogo(size = 22): string {
   return `
-    <svg class="socai-logo" width="${size}" height="${size}" viewBox="0 0 24 24" fill="none" aria-hidden="true">
+    <svg class="flowlens-logo" width="${size}" height="${size}" viewBox="0 0 24 24" fill="none" aria-hidden="true">
       <circle cx="12" cy="12" r="10" stroke="#ff3a5c" stroke-width="2"></circle>
       <circle cx="12" cy="12" r="3.5" fill="#ff3a5c"></circle>
       <circle cx="18.5" cy="5.5" r="2.2" fill="#10b981" stroke="#fff" stroke-width="1.2"></circle>

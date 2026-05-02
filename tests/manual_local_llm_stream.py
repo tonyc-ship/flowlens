@@ -17,7 +17,7 @@ from mlx_lm import load, stream_generate
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
-from socai.perception.local_llm import DEFAULT_LOCAL_MODEL, WEIGHTS_DIR
+from flowlens.perception.local_llm import DEFAULT_LOCAL_MODEL, WEIGHTS_DIR
 
 
 def resolve_model_path(model_name: str) -> str:

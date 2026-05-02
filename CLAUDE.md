@@ -1,33 +1,33 @@
-# Socai
+# FlowLens
 
-Socai is currently maintained as a layered browser automation framework built on:
+FlowLens is currently maintained as a layered browser automation framework built on:
 
-- Core browser/runtime primitives in `socai.core`
-- Chrome DevTools Protocol browser backend in `socai.cdp`
-- Background desktop observation in `socai.observer`
-- Perception utilities in `socai.perception`
-- Task understanding and knowledge in `socai.reasoning`
-- Platform adapters in `socai.platforms`
-- A **unified tool registry** in `socai.tools` — single source of truth shared by the internal agent loop and the external MCP server
-- The external **MCP server** in `socai.mcp` — `socai-mcp` entry point, low-level `mcp.server.Server`
-- Task workflows in `socai.workflows`
+- Core browser/runtime primitives in `flowlens.core`
+- Chrome DevTools Protocol browser backend in `flowlens.cdp`
+- Background desktop observation in `flowlens.observer`
+- Perception utilities in `flowlens.perception`
+- Task understanding and knowledge in `flowlens.reasoning`
+- Platform adapters in `flowlens.platforms`
+- A **unified tool registry** in `flowlens.tools` — single source of truth shared by the internal agent loop and the external MCP server
+- The external **MCP server** in `flowlens.mcp` — `flowlens-mcp` entry point, low-level `mcp.server.Server`
+- Task workflows in `flowlens.workflows`
 - A Chrome extension in `chrome_extension/`
-- The active **Socai desktop app** under `app/` — Tauri/Vite shell with a Rust native layer and long-lived Python `socai.runtime` sidecar for CDP-first social-platform automation
+- The active **FlowLens desktop app** under `app/` — Tauri/Vite shell with a Rust native layer and long-lived Python `flowlens.runtime` sidecar for CDP-first social-platform automation
 
 The old screen-level MCP route has been archived under `archive/legacy_mcp/`. The old top-level `desktop_app/` Tauri spike has been deprecated and moved to `archive/legacy_desktop_app/`.
 
 ## Current Architecture
 
 ```
-socai/
-├── app/                              # Active Socai desktop app: Tauri + Vite UI + Rust sidecar supervisor
+flowlens/
+├── app/                              # Active FlowLens desktop app: Tauri + Vite UI + Rust sidecar supervisor
 ├── chrome_extension/                 # MV3 extension: websocket, CDP, DOM extraction, watch mode
-├── socai/
+├── flowlens/
 │   ├── cli.py                        # Primary CLI entry
-│   ├── __main__.py                   # `python -m socai`
+│   ├── __main__.py                   # `python -m flowlens`
 │   ├── desktop_cli.py                # Desktop shell -> Python task bridge
 │   ├── runtime/                      # Long-lived Python sidecar used by the Tauri app via Pydantic-typed JSON-RPC over stdio
-│   ├── extension_cli.py              # `python -m socai extension ...`
+│   ├── extension_cli.py              # `python -m flowlens extension ...`
 │   ├── extension_ops.py              # Generic extension operational reports / commands
 │   ├── server.py                     # Archived-route compatibility stub
 │   ├── cdp/                          # Generic Chrome DevTools Protocol discovery / connection / target helpers
@@ -41,9 +41,9 @@ socai/
 │   ├── tools/                        # UNIFIED TOOL REGISTRY
 │   │   └── registry.py               # build_tools() → flat Tool list shared by agent loop + MCP
 │   ├── mcp/                          # EXTERNAL MCP SERVER
-│   │   └── server.py                 # `socai-mcp` entry; low-level mcp.server.Server over stdio
+│   │   └── server.py                 # `flowlens-mcp` entry; low-level mcp.server.Server over stdio
 │   ├── observer/
-│   │   ├── cli.py                    # `python -m socai observer ...`
+│   │   ├── cli.py                    # `python -m flowlens observer ...`
 │   │   ├── paths.py                  # Observer data root / logs / screenshot paths
 │   │   ├── store.py                  # SQLite storage for captures + project memory
 │   │   ├── service.py                # Capture loop, screenshots, diffing, launchd
@@ -103,7 +103,7 @@ Whenever you modify the Tauri app under `app/`, produce a fresh macOS `.app` bun
 - Prefer `bash scripts/build_app.sh` unless the user explicitly asks for a different packaging flow.
 - `scripts/build_desktop_app.sh` is a deprecated compatibility wrapper around `scripts/build_app.sh`.
 
-After changes that affect the installed app + Chrome extension workflow together (for example `app/`, `chrome_extension/`, `socai/core/bridge.py`, or `socai/agent/`), rebuild the packaged app and smoke-test it manually.
+After changes that affect the installed app + Chrome extension workflow together (for example `app/`, `chrome_extension/`, `flowlens/core/bridge.py`, or `flowlens/agent/`), rebuild the packaged app and smoke-test it manually.
 
 > Note: the previous `scripts/verify_packaged_xhs_overlay.py` regression script targeted the legacy hardcoded XHS workflow and was removed when the workflow was deleted. A new agent-loop verification script needs to be written before this can be reinstated as an automated regression check.
 
@@ -140,13 +140,13 @@ Every task run must produce:
 
 ### Self-unblock with Accessibility tools
 
-When blocked by something that needs manual browser/UI interaction (reload Chrome extension, click dialogs, navigate chrome:// pages, approve permissions), use macOS Accessibility APIs (screen.py, pyautogui, AppleScript) to do it instead of asking the user. This also serves as self-hosting validation of Socai's own capabilities.
+When blocked by something that needs manual browser/UI interaction (reload Chrome extension, click dialogs, navigate chrome:// pages, approve permissions), use macOS Accessibility APIs (screen.py, pyautogui, AppleScript) to do it instead of asking the user. This also serves as self-hosting validation of FlowLens's own capabilities.
 
 For extension reload specifically:
-- Prefer the built-in runtime path first: `bridge.reload_extension()` or `python -m socai extension reload`
+- Prefer the built-in runtime path first: `bridge.reload_extension()` or `python -m flowlens extension reload`
 - If the extension is too broken or disconnected to reload itself, then fall back to macOS Accessibility on `chrome://extensions/`
 - Any code change under `chrome_extension/` must also bump `chrome_extension/manifest.json` `version`.
-  Socai auto-reload compares the connected extension version against the source-tree manifest version, so
+  FlowLens auto-reload compares the connected extension version against the source-tree manifest version, so
   extension code changes without a version bump may silently keep using stale code.
 
 ### Autonomous long-horizon work
@@ -181,48 +181,48 @@ Prefer semantic understanding over pixel math. Don't use pixel-level heuristics 
 ### Strategic architecture
 
 The project's goal is **robust agentic browser automation plus local desktop observation**, not a single-site scraper. Architecture is layered:
-1. **Core layer** (`socai.core`) — extension bridge, tab/window control, DOM-first composer helpers, verification, recording, shared reports, runtime.
-2. **CDP layer** (`socai.cdp`) — Chrome CDP endpoint discovery, WebSocket connection/retry helpers, target listing, and controlled-tab primitives for the desktop path.
-3. **Observer layer** (`socai.observer`) — background desktop capture, SQLite storage, screenshot archival, diff-based OCR / vision, journals, and recall.
-4. **Perception layer** (`socai.perception`) — hosted/local vision, OCR, grounding, transcription, image preprocessing.
-5. **Reasoning layer** (`socai.reasoning`) — structured tasks, planning, evaluation, and reusable knowledge extraction.
-6. **Platform layer** (`socai.platforms`) — site-specific DOM extraction, navigation patterns, entity models, capability catalogs.
-7. **Workflow layer** (`socai.workflows`) — concrete task orchestration such as XHS research and WeChat summaries.
+1. **Core layer** (`flowlens.core`) — extension bridge, tab/window control, DOM-first composer helpers, verification, recording, shared reports, runtime.
+2. **CDP layer** (`flowlens.cdp`) — Chrome CDP endpoint discovery, WebSocket connection/retry helpers, target listing, and controlled-tab primitives for the desktop path.
+3. **Observer layer** (`flowlens.observer`) — background desktop capture, SQLite storage, screenshot archival, diff-based OCR / vision, journals, and recall.
+4. **Perception layer** (`flowlens.perception`) — hosted/local vision, OCR, grounding, transcription, image preprocessing.
+5. **Reasoning layer** (`flowlens.reasoning`) — structured tasks, planning, evaluation, and reusable knowledge extraction.
+6. **Platform layer** (`flowlens.platforms`) — site-specific DOM extraction, navigation patterns, entity models, capability catalogs.
+7. **Workflow layer** (`flowlens.workflows`) — concrete task orchestration such as XHS research and WeChat summaries.
 
 New generic capabilities (background windows, dedup, session recording) belong in the generic layer. Site-specific DOM selectors and navigation belong in site skill modules.
 
 ## Runtime Flow
 
-Socai has **two LLM consumers** that share a single tool surface:
+FlowLens has **two LLM consumers** that share a single tool surface:
 
-- **Internal agent** (`socai.agent.loop.run_agent`) — Socai provides the LLM (Anthropic / OpenAI / Kimi / Qwen / local MLX) and drives the full plan→act→report loop itself.
-- **External MCP host** (`socai-mcp`) — the host's LLM (Claude Desktop / Cursor / Claude Code) plans, Socai only executes tool calls.
+- **Internal agent** (`flowlens.agent.loop.run_agent`) — FlowLens provides the LLM (Anthropic / OpenAI / Kimi / Qwen / local MLX) and drives the full plan→act→report loop itself.
+- **External MCP host** (`flowlens-mcp`) — the host's LLM (Claude Desktop / Cursor / Claude Code) plans, FlowLens only executes tool calls.
 
-Both consumers enumerate the same list from `socai.tools.build_tools(...)`:
+Both consumers enumerate the same list from `flowlens.tools.build_tools(...)`:
 25 tool classes = 11 generic browser + 3 state + 2 vision + 9 Xiaohongshu (site).
 
 ### Internal agent flow
 
 1. Python starts a local WebSocket server.
 2. The Chrome extension connects from the logged-in browser profile.
-3. `run_agent` builds the tool list via `socai.tools.build_tools(...)` plus per-site knowledge from `socai/knowledge/sites/*.yaml`, and composes a system prompt.
+3. `run_agent` builds the tool list via `flowlens.tools.build_tools(...)` plus per-site knowledge from `flowlens/knowledge/sites/*.yaml`, and composes a system prompt.
 4. The agent loop drives an LLM through a `tool_use → execute → feed back result` cycle until the LLM returns a final text report.
-5. Tool calls go through `socai.core.bridge` (CDP + extension messaging) and the extension's content scripts.
+5. Tool calls go through `flowlens.core.bridge` (CDP + extension messaging) and the extension's content scripts.
    - Low-level site helpers live behind `extract_page_data`.
-   - Site-specific macros and extractors live as individual Tool classes in `socai/platforms/xhs/tools.py` (`xhs_topic_scan`, `xhs_read_note`, `xhs_search_notes`, `xhs_open_note`, `xhs_close_note`, `xhs_extract_note`, `xhs_extract_search_cards`, `xhs_extract_author_profile`, `xhs_open_search_tab`).
+   - Site-specific macros and extractors live as individual Tool classes in `flowlens/platforms/xhs/tools.py` (`xhs_topic_scan`, `xhs_read_note`, `xhs_search_notes`, `xhs_open_note`, `xhs_close_note`, `xhs_extract_note`, `xhs_extract_search_cards`, `xhs_extract_author_profile`, `xhs_open_search_tab`).
 6. The agent writes screenshots, `report.md`, `agent_log.json`, `reasoning_log.jsonl`, and `resource_log.jsonl` into `task_runs/agent_<timestamp>_<slug>/`.
 
 ### External MCP flow
 
-1. Claude Desktop / Cursor spawns `socai-mcp` via stdio.
-2. On the first tool call, `socai.mcp.server` lazily starts the bridge and waits for the extension to connect (same bridge as CLI — so they cannot run simultaneously on the same port).
+1. Claude Desktop / Cursor spawns `flowlens-mcp` via stdio.
+2. On the first tool call, `flowlens.mcp.server` lazily starts the bridge and waits for the extension to connect (same bridge as CLI — so they cannot run simultaneously on the same port).
 3. `list_tools` returns the full tool catalog straight from each Tool's `.name / .description / .parameters` — no re-definition, no schema drift.
 4. `call_tool` invokes `Tool.execute(params, ctx)` and returns the result as MCP `TextContent`.
-5. Artifacts and screenshots land in a session run dir under the system tmpdir (`socai_mcp_<timestamp>/`).
+5. Artifacts and screenshots land in a session run dir under the system tmpdir (`flowlens_mcp_<timestamp>/`).
 
 Observer runtime flow:
 
-1. `python -m socai observer capture-loop` resolves an observer data root.
+1. `python -m flowlens observer capture-loop` resolves an observer data root.
 2. `ObserverCaptureService` polls the frontmost macOS app/window and browser URL.
 3. Screenshots are captured across all active displays, concatenated horizontally, and archived by date.
 4. The current screenshot is diffed against the previous cached frame. When the changed area ratio stays under the configured threshold, OCR and local vision operate on the diff crop instead of the full frame.
@@ -234,9 +234,9 @@ Observer runtime flow:
 
 Generic extension operational commands live outside the XHS task layer.
 
-- `python -m socai extension reload`
+- `python -m flowlens extension reload`
 
-This path exercises the real Socai bridge:
+This path exercises the real FlowLens bridge:
 1. Python starts a local bridge server.
 2. The running extension connects back.
 3. Python sends `reload_extension`.
@@ -278,18 +278,18 @@ pip install -e ".[dev]"       # dev tooling
 
 ### Desktop App
 
-`app/` is the active Tauri 2.x desktop app for the CDP-first Socai path. It replaces the old `desktop_app/` spike, which now lives under `archive/legacy_desktop_app/` for reference only.
+`app/` is the active Tauri 2.x desktop app for the CDP-first FlowLens path. It replaces the old `desktop_app/` spike, which now lives under `archive/legacy_desktop_app/` for reference only.
 
 Current scope:
 
-- Tauri/Vite shell for the real Socai desktop app
+- Tauri/Vite shell for the real FlowLens desktop app
 - First-run onboarding wizard with a combined Chrome permission + live Xiaohongshu connection/login test step, model choice, and starter tasks
-- Rust native layer that launches and supervises a long-lived Python `socai.runtime` sidecar
+- Rust native layer that launches and supervises a long-lived Python `flowlens.runtime` sidecar
 - Pydantic-typed JSON-RPC over stdio between Rust and the Python sidecar in both development and packaged builds
 - Rust command to open Chrome's `chrome://inspect/#remote-debugging` setup page
-- Existing Chrome profile discovery, CDP target listing, and controlled-tab diagnostics through `socai.cdp` and the sidecar
-- Creation of a marked Socai-controlled Chrome tab
-- XHS connection diagnostic through `socai.platforms.xhs.cdp_diagnostics` with screenshot artifacts
+- Existing Chrome profile discovery, CDP target listing, and controlled-tab diagnostics through `flowlens.cdp` and the sidecar
+- Creation of a marked FlowLens-controlled Chrome tab
+- XHS connection diagnostic through `flowlens.platforms.xhs.cdp_diagnostics` with screenshot artifacts
 
 Packaging helper:
 
@@ -301,7 +301,7 @@ Packaging helper:
 
 ### Local Config
 
-Socai loads runtime settings in this order:
+FlowLens loads runtime settings in this order:
 
 1. Process env
 2. `.env.local`
@@ -321,37 +321,37 @@ ANTHROPIC_API_KEY=...
 OPENAI_API_KEY=...
 MOONSHOT_API_KEY=...               # Kimi / Moonshot AI (api.moonshot.cn)
 DASHSCOPE_API_KEY=...              # Qwen API key
-SOCAI_LLM_BACKEND=...           # "sonnet" (default), "openai", "kimi", "qwen", or "qwen-local"
-SOCAI_KIMI_MODEL=...            # e.g. kimi-k2-0905-preview, moonshot-v1-128k
-SOCAI_QWEN_MODEL=...            # e.g. qwen3.6-plus
-SOCAI_WHISPER_CLI=...
-SOCAI_WHISPER_MODELS_DIR=...
-SOCAI_APP_DATA_DIR=...
-SOCAI_OBSERVER_ROOT=...
-SOCAI_OBSERVER_CHECK_INTERVAL=...
-SOCAI_OBSERVER_FORCE_CAPTURE_INTERVAL=...
-SOCAI_OBSERVER_SCREENSHOT_STRATEGY=...
-SOCAI_OBSERVER_DIFF_THRESHOLD=...   # default 0.30
-SOCAI_OBSERVER_CAPTURE_ALL_DISPLAYS=...
-SOCAI_OBSERVER_VISION_ENABLED=...
-SOCAI_OBSERVER_VISION_MODEL=...
+FLOWLENS_LLM_BACKEND=...           # "sonnet" (default), "openai", "kimi", "qwen", or "qwen-local"
+FLOWLENS_KIMI_MODEL=...            # e.g. kimi-k2-0905-preview, moonshot-v1-128k
+FLOWLENS_QWEN_MODEL=...            # e.g. qwen3.6-plus
+FLOWLENS_WHISPER_CLI=...
+FLOWLENS_WHISPER_MODELS_DIR=...
+FLOWLENS_APP_DATA_DIR=...
+FLOWLENS_OBSERVER_ROOT=...
+FLOWLENS_OBSERVER_CHECK_INTERVAL=...
+FLOWLENS_OBSERVER_FORCE_CAPTURE_INTERVAL=...
+FLOWLENS_OBSERVER_SCREENSHOT_STRATEGY=...
+FLOWLENS_OBSERVER_DIFF_THRESHOLD=...   # default 0.30
+FLOWLENS_OBSERVER_CAPTURE_ALL_DISPLAYS=...
+FLOWLENS_OBSERVER_VISION_ENABLED=...
+FLOWLENS_OBSERVER_VISION_MODEL=...
 ```
 
 ### Local LLM (optional)
 
-Socai supports local inference via MLX as an alternative to the Anthropic API:
+FlowLens supports local inference via MLX as an alternative to the Anthropic API:
 
 ```bash
 # Download the default lightweight observer model
 modelscope download --model mlx-community/Qwen3.5-2B-6bit \
-  --local_dir ~/.socai/weights/Qwen3.5-2B-6bit
+  --local_dir ~/.flowlens/weights/Qwen3.5-2B-6bit
 
 # Optional larger model for heavier local reasoning / vision
 modelscope download --model mlx-community/Qwen3.5-9B-MLX-4bit \
-  --local_dir ~/.socai/weights/Qwen3.5-9B-MLX-4bit
+  --local_dir ~/.flowlens/weights/Qwen3.5-9B-MLX-4bit
 
 # Switch to local backend
-export SOCAI_LLM_BACKEND=qwen-local
+export FLOWLENS_LLM_BACKEND=qwen-local
 ```
 
 The local backend uses Qwen MLX models via `mlx-vlm`, which are natively
@@ -365,17 +365,17 @@ Backend can also be set per-instance via `MediaConfig(backend="qwen-local")` or
 
 ## Running
 
-### Internal agent (Socai is the LLM consumer)
+### Internal agent (FlowLens is the LLM consumer)
 
 ```bash
-socai "在小红书上调研露营装备"
-socai agent "在小红书上调研露营装备" --backend qwen-local
-socai xhs search "露营装备"
-socai xhs note "https://www.xiaohongshu.com/explore/..."
-socai extension reload
+flowlens "在小红书上调研露营装备"
+flowlens agent "在小红书上调研露营装备" --backend qwen-local
+flowlens xhs search "露营装备"
+flowlens xhs note "https://www.xiaohongshu.com/explore/..."
+flowlens extension reload
 ```
 
-Module form also works: `python -m socai ...`, `python -m socai observer status`, etc.
+Module form also works: `python -m flowlens ...`, `python -m flowlens observer status`, etc.
 
 ### External MCP server (host LLM is the consumer)
 
@@ -384,8 +384,8 @@ Launched as a subprocess by an MCP host (Claude Desktop / Cursor / Claude Code):
 ```json
 {
   "mcpServers": {
-    "socai": {
-      "command": "socai-mcp"
+    "flowlens": {
+      "command": "flowlens-mcp"
     }
   }
 }
@@ -394,7 +394,7 @@ Launched as a subprocess by an MCP host (Claude Desktop / Cursor / Claude Code):
 Override the bridge port if 8765 is in use:
 
 ```bash
-SOCAI_MCP_PORT=8766 socai-mcp
+FLOWLENS_MCP_PORT=8766 flowlens-mcp
 ```
 
 The MCP server and the internal CLI cannot run at the same time on the same port — they share the bridge.
@@ -402,7 +402,7 @@ The MCP server and the internal CLI cannot run at the same time on the same port
 Watch-mode live debugging:
 
 ```bash
-python -m socai extension watch
+python -m flowlens extension watch
 ```
 
 ## Manual Integration Scripts
@@ -433,7 +433,7 @@ Runtime implications:
 
 The active product path is still DOM-first browser automation with vision/perception as verification and fallback.
 
-The shared perception layer in `socai.perception` currently supports:
+The shared perception layer in `flowlens.perception` currently supports:
 
 - Apple OCR on downloaded note images
 - Apple OCR on observer screenshots and diff crops
@@ -444,14 +444,14 @@ The shared perception layer in `socai.perception` currently supports:
 
 ## Observer Status
 
-`socai.observer` is now the active desktop-observation subsystem. Current behavior:
+`flowlens.observer` is now the active desktop-observation subsystem. Current behavior:
 
 - SQLite-backed durable storage in `observer_data/observer.db` by default
 - Screenshot archival plus per-capture timing metrics in `observer_data/logs/capture.log`
 - 5-second context polling with a 300-second forced capture fallback
 - Multi-display screenshots concatenated horizontally
 - Diff-aware OCR and visual understanding when the changed area ratio stays under the configured threshold
-- `launchd` install/uninstall helpers via `python -m socai observer install-agent`
+- `launchd` install/uninstall helpers via `python -m flowlens observer install-agent`
 
 ## Archive
 

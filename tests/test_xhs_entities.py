@@ -2,7 +2,7 @@
 
 import unittest
 
-from socai.platforms.xhs.entities import (
+from flowlens.platforms.xhs.entities import (
     Comment,
     ImageInfo,
     NoteEntity,

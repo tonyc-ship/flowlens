@@ -13,7 +13,7 @@ import os
 import unittest
 from unittest import mock
 
-from socai.agent.backends import KimiBackend, QwenBackend, create_backend
+from flowlens.agent.backends import KimiBackend, QwenBackend, create_backend
 
 
 STUB_ENV = {
@@ -35,7 +35,7 @@ class BackendFactoryTest(unittest.TestCase):
 
     def test_missing_api_key_raises_with_env_var_hint(self) -> None:
         with mock.patch.dict(os.environ, {}, clear=True), \
-             mock.patch("socai.agent.backends.resolve_provider_auth", return_value=None):
+             mock.patch("flowlens.agent.backends.resolve_provider_auth", return_value=None):
             with self.assertRaises(RuntimeError) as ctx:
                 create_backend("kimi-k2-0905-preview")
         self.assertIn("Kimi", str(ctx.exception))

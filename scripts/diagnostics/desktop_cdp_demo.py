@@ -11,10 +11,10 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Awaitable, Callable
 
-from socai.cdp.diagnostics import ControlledTabConfig, run_controlled_tab_diagnostic
-from socai.cdp.discovery import discover_chrome_cdp
-from socai.cdp.targets import TargetListConfig, list_chrome_targets
-from socai.platforms.xhs.cdp_diagnostics import XHSCdpProbeConfig, run_xhs_cdp_probe
+from flowlens.cdp.diagnostics import ControlledTabConfig, run_controlled_tab_diagnostic
+from flowlens.cdp.discovery import discover_chrome_cdp
+from flowlens.cdp.targets import TargetListConfig, list_chrome_targets
+from flowlens.platforms.xhs.cdp_diagnostics import XHSCdpProbeConfig, run_xhs_cdp_probe
 
 
 @dataclass(frozen=True)
@@ -128,7 +128,7 @@ def default_run_dir() -> str:
 
 
 def print_human(result: dict[str, Any]) -> None:
-    print(f"Socai desktop CDP demo: {result['overall']}")
+    print(f"FlowLens desktop CDP demo: {result['overall']}")
     print(f"Run dir: {result['run_dir']}")
     print()
     for step in result.get("steps", []):

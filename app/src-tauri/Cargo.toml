@@ -1,12 +1,12 @@
 [package]
-name = "socai_app"
+name = "flowlens_app"
 version = "0.1.0"
-description = "Socai desktop app"
+description = "FlowLens desktop app"
 authors = ["Tony Chong"]
 edition = "2021"
 
 [lib]
-name = "socai_app_lib"
+name = "flowlens_app_lib"
 crate-type = ["staticlib", "cdylib", "rlib"]
 
 [build-dependencies]

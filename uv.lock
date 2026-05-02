@@ -3900,7 +3900,7 @@ wheels = [
 ]
 
 [[package]]
-name = "socai"
+name = "flowlens"
 version = "0.1.0"
 source = { editable = "." }
 dependencies = [
@@ -3970,7 +3970,7 @@ requires-dist = [
     { name = "pytest", marker = "extra == 'dev'", specifier = ">=8.0" },
     { name = "pyyaml", specifier = ">=6.0" },
     { name = "ruff", marker = "extra == 'dev'", specifier = ">=0.4.0" },
-    { name = "socai", extras = ["local", "vision"], marker = "extra == 'all'" },
+    { name = "flowlens", extras = ["local", "vision"], marker = "extra == 'all'" },
     { name = "torch", marker = "extra == 'vision'", specifier = ">=2.2.0" },
     { name = "transformers", marker = "extra == 'vision'", specifier = ">=4.40.0" },
     { name = "ultralytics", marker = "extra == 'vision'", specifier = ">=8.2.0" },

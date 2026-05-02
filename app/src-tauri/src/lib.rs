@@ -164,7 +164,7 @@ fn send_runtime_request(
     let mut guard = state
         .client
         .lock()
-        .map_err(|_| "Socai runtime state lock was poisoned".to_string())?;
+        .map_err(|_| "FlowLens runtime state lock was poisoned".to_string())?;
 
     if guard.is_none() {
         *guard = Some(RuntimeClient::start(app)?);
@@ -230,7 +230,7 @@ impl RuntimeClient {
 
         let mut child = command.spawn().map_err(|err| {
             format!(
-                "Failed to start Socai Python runtime sidecar ({}): {err}",
+                "Failed to start FlowLens Python runtime sidecar ({}): {err}",
                 launch.program.display()
             )
         })?;
@@ -239,7 +239,7 @@ impl RuntimeClient {
             thread::spawn(move || {
                 let reader = BufReader::new(stderr);
                 for line in reader.lines().map_while(Result::ok) {
-                    eprintln!("[socai-runtime] {line}");
+                    eprintln!("[flowlens-runtime] {line}");
                 }
             });
         }
@@ -247,11 +247,11 @@ impl RuntimeClient {
         let stdin = child
             .stdin
             .take()
-            .ok_or_else(|| "Failed to open Socai runtime stdin".to_string())?;
+            .ok_or_else(|| "Failed to open FlowLens runtime stdin".to_string())?;
         let stdout = child
             .stdout
             .take()
-            .ok_or_else(|| "Failed to open Socai runtime stdout".to_string())?;
+            .ok_or_else(|| "Failed to open FlowLens runtime stdout".to_string())?;
 
         Ok(Self {
             child,
@@ -273,7 +273,7 @@ impl RuntimeClient {
         });
         writeln!(self.stdin, "{request}")
             .and_then(|_| self.stdin.flush())
-            .map_err(|err| format!("Failed to write to Socai runtime: {err}"))?;
+            .map_err(|err| format!("Failed to write to FlowLens runtime: {err}"))?;
 
         let mut line = String::new();
         loop {
@@ -281,18 +281,18 @@ impl RuntimeClient {
             let bytes = self
                 .stdout
                 .read_line(&mut line)
-                .map_err(|err| format!("Failed to read from Socai runtime: {err}"))?;
+                .map_err(|err| format!("Failed to read from FlowLens runtime: {err}"))?;
             if bytes == 0 {
-                return Err("Socai runtime exited before responding".to_string());
+                return Err("FlowLens runtime exited before responding".to_string());
             }
 
             let message: Value = serde_json::from_str(line.trim()).map_err(|err| {
-                format!("Socai runtime returned invalid JSON-RPC: {err}; line={line:?}")
+                format!("FlowLens runtime returned invalid JSON-RPC: {err}; line={line:?}")
             })?;
 
             if message.get("id").and_then(Value::as_u64) != Some(id) {
                 if let Some(method) = message.get("method").and_then(Value::as_str) {
-                    eprintln!("[socai-runtime-event] {method}: {message}");
+                    eprintln!("[flowlens-runtime-event] {method}: {message}");
                 }
                 continue;
             }
@@ -301,7 +301,7 @@ impl RuntimeClient {
                 let message = error
                     .get("message")
                     .and_then(Value::as_str)
-                    .unwrap_or("Socai runtime request failed");
+                    .unwrap_or("FlowLens runtime request failed");
                 return Err(message.to_string());
             }
 
@@ -316,36 +316,36 @@ impl RuntimeClient {
 }
 
 fn resolve_sidecar_launch(app: &tauri::AppHandle) -> Result<SidecarLaunch, String> {
-    if let Ok(python) = env::var("SOCAI_DESKTOP_RUNTIME_PYTHON") {
+    if let Ok(python) = env::var("FLOWLENS_DESKTOP_RUNTIME_PYTHON") {
         return source_sidecar_launch(PathBuf::from(python));
     }
 
     if let Ok(resource_dir) = app.path().resource_dir() {
         let bundled_python = resource_dir
-            .join("socai-runtime")
+            .join("flowlens-runtime")
             .join("bin")
             .join("python3");
         if bundled_python.exists() {
             let current_dir = app
                 .path()
                 .app_data_dir()
-                .unwrap_or_else(|_| env::temp_dir().join("socai"));
+                .unwrap_or_else(|_| env::temp_dir().join("flowlens"));
             let _ = std::fs::create_dir_all(&current_dir);
             return Ok(SidecarLaunch {
                 program: bundled_python,
                 args: vec![
                     "-m".to_string(),
-                    "socai.runtime".to_string(),
+                    "flowlens.runtime".to_string(),
                     "--transport".to_string(),
                     "stdio".to_string(),
                 ],
                 current_dir,
-                envs: vec![("SOCAI_DESKTOP_BUNDLED_RUNTIME".to_string(), "1".to_string())],
+                envs: vec![("FLOWLENS_DESKTOP_BUNDLED_RUNTIME".to_string(), "1".to_string())],
             });
         }
     }
 
-    let python = match env::var("SOCAI_PYTHON") {
+    let python = match env::var("FLOWLENS_PYTHON") {
         Ok(path) => PathBuf::from(path),
         Err(_) => {
             let root = repo_root()?;
@@ -371,14 +371,14 @@ fn source_sidecar_launch(python: PathBuf) -> Result<SidecarLaunch, String> {
         program: python,
         args: vec![
             "-m".to_string(),
-            "socai.runtime".to_string(),
+            "flowlens.runtime".to_string(),
             "--transport".to_string(),
             "stdio".to_string(),
         ],
         current_dir: root.clone(),
         envs: vec![
             ("PYTHONPATH".to_string(), python_path),
-            ("SOCAI_REPO_ROOT".to_string(), root.display().to_string()),
+            ("FLOWLENS_REPO_ROOT".to_string(), root.display().to_string()),
         ],
     })
 }
@@ -387,7 +387,7 @@ fn repo_root() -> Result<PathBuf, String> {
     Path::new(env!("CARGO_MANIFEST_DIR"))
         .join("../..")
         .canonicalize()
-        .map_err(|err| format!("Failed to resolve Socai repository root: {err}"))
+        .map_err(|err| format!("Failed to resolve FlowLens repository root: {err}"))
 }
 
 fn collect_screenshot_artifacts(value: &Value) -> Result<Vec<ScreenshotArtifact>, String> {
@@ -432,5 +432,5 @@ pub fn run() {
             open_chrome_inspect
         ])
         .run(tauri::generate_context!())
-        .expect("error while running Socai");
+        .expect("error while running FlowLens");
 }

@@ -1,4 +1,4 @@
-# Legacy Socai Desktop Spike
+# Legacy FlowLens Desktop Spike
 
 This Tauri app is archived for reference only. It used to live at the top-level `desktop_app/` path.
 
