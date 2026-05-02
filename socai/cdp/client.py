@@ -1,18 +1,11 @@
-"""Shared CDP connection helper with retry logic for the Chrome Allow dialog.
-
-Chrome shows one "Allow remote debugging?" dialog per WebSocket connection
-attempt. Each attempt has a ~10s handshake timeout inside cdp-use/websockets.
-If the user doesn't click Allow fast enough, the attempt times out and a new
-one must be made (which shows the dialog again).
-
-This module wraps that into a retry loop so the user has multiple chances to
-click Allow before the overall operation gives up.
-"""
+"""CDP client connection helpers."""
 from __future__ import annotations
 
 import asyncio
 import sys
 from typing import Any
+
+from .errors import CDPDependencyError, cdp_use_install_help
 
 
 async def connect_cdp_with_retry(
@@ -21,13 +14,16 @@ async def connect_cdp_with_retry(
     per_attempt_timeout: float = 12.0,
     pause_between: float = 1.0,
 ) -> Any:
-    """Connect to Chrome CDP with retries for the Allow dialog.
+    """Connect to Chrome CDP with retries for Chrome's Allow dialog.
 
-    Returns a started CDPClient. Caller must stop() it when done.
-
-    Raises RuntimeError with a diagnostic message if all attempts fail.
+    Returns a started ``cdp_use.client.CDPClient``. Caller must stop it when the
+    operation is done.
     """
-    from cdp_use.client import CDPClient
+
+    try:
+        from cdp_use.client import CDPClient
+    except ModuleNotFoundError as exc:
+        raise CDPDependencyError(cdp_use_install_help()) from exc
 
     last_error: Exception | None = None
 
@@ -36,14 +32,13 @@ async def connect_cdp_with_retry(
         try:
             await asyncio.wait_for(client.start(), timeout=per_attempt_timeout)
             return client
-        except Exception as exc:
+        except Exception as exc:  # noqa: BLE001 - convert to diagnostic after retries
             last_error = exc
             message = str(exc).strip() or exc.__class__.__name__
             print(
                 f"[socai] CDP connect attempt {attempt}/{max_attempts} failed: {message}",
                 file=sys.stderr,
             )
-            # Clean up the failed client before retrying.
             try:
                 await asyncio.wait_for(client.stop(), timeout=2)
             except Exception:

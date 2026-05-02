@@ -3,6 +3,7 @@
 Socai is currently maintained as a layered browser automation framework built on:
 
 - Core browser/runtime primitives in `socai.core`
+- Chrome DevTools Protocol browser backend in `socai.cdp`
 - Background desktop observation in `socai.observer`
 - Perception utilities in `socai.perception`
 - Task understanding and knowledge in `socai.reasoning`
@@ -11,7 +12,7 @@ Socai is currently maintained as a layered browser automation framework built on
 - The external **MCP server** in `socai.mcp` — `socai-mcp` entry point, low-level `mcp.server.Server`
 - Task workflows in `socai.workflows`
 - A Chrome extension in `chrome_extension/`
-- The active **Socai desktop app** under `app/` — Tauri/Vite shell with a Rust native layer and long-lived Python `socai.desktop_runtime` sidecar for CDP-first social-platform automation
+- The active **Socai desktop app** under `app/` — Tauri/Vite shell with a Rust native layer and long-lived Python `socai.runtime` sidecar for CDP-first social-platform automation
 
 The old screen-level MCP route has been archived under `archive/legacy_mcp/`. The old top-level `desktop_app/` Tauri spike has been deprecated and moved to `archive/legacy_desktop_app/`.
 
@@ -25,10 +26,11 @@ socai/
 │   ├── cli.py                        # Primary CLI entry
 │   ├── __main__.py                   # `python -m socai`
 │   ├── desktop_cli.py                # Desktop shell -> Python task bridge
-│   ├── desktop_runtime/              # Long-lived Python sidecar used by the Tauri app via JSON-RPC over stdio
+│   ├── runtime/                      # Long-lived Python sidecar used by the Tauri app via Pydantic-typed JSON-RPC over stdio
 │   ├── extension_cli.py              # `python -m socai extension ...`
 │   ├── extension_ops.py              # Generic extension operational reports / commands
 │   ├── server.py                     # Archived-route compatibility stub
+│   ├── cdp/                          # Generic Chrome DevTools Protocol discovery / connection / target helpers
 │   ├── core/
 │   │   ├── bridge.py                 # WebSocket bridge to the extension + tab routing
 │   │   ├── composer.py               # DOM-first composer interaction helpers
@@ -162,19 +164,15 @@ When running live browser tests, create and use a **new background Chrome window
 Exception:
 - The WeChat desktop workflow is explicitly foreground and visible because it reads the real macOS app window rather than a background browser tab.
 
-### Use Claude Vision to verify screenshots
+### Screenshot minimization and verification
 
-During testing, use Claude Vision to inspect screenshots and verify correctness, not just check for non-empty data.
+Prefer semantic/DOM/CDP artifacts over full-desktop screenshots. Do not repeatedly capture the user's whole laptop as routine validation.
 
-For UI / UX / window-management debugging, also verify that the screenshot itself is faithful to the intended target:
-- Confirm the dominant app/window in the image is actually the one you meant to capture.
-- Reject captures where another window is covering the target or where the image looks stitched across multiple Spaces/displays.
+- Use CDP tab screenshots or app-specific artifact screenshots when possible.
+- Only take full-desktop screenshots when explicitly requested or when a desktop/window-manager issue cannot be diagnosed another way.
+- When a desktop screenshot is necessary, keep it minimal, ensure the target app/window is foreground, and avoid capturing the user's unrelated workspace.
+- Verify that any screenshot used as evidence faithfully shows the intended target and is not occluded or cross-Space corrupted.
 - Do not use an unverified screenshot as evidence for page state, selector bugs, or interaction bugs.
-
-For packaged-app verification:
-- capture screenshots from the actual desktop, not just CDP tab screenshots
-- confirm the browser opened on-screen and the in-page XHS watch overlay is visible
-- confirm the Tauri app state advances out of `RUNNING` when the task completes
 
 ### No pixel-heuristic CV
 
@@ -183,12 +181,13 @@ Prefer semantic understanding over pixel math. Don't use pixel-level heuristics 
 ### Strategic architecture
 
 The project's goal is **robust agentic browser automation plus local desktop observation**, not a single-site scraper. Architecture is layered:
-1. **Core layer** (`socai.core`) — bridge, tab/window control, DOM-first composer helpers, verification, recording, shared reports, runtime.
-2. **Observer layer** (`socai.observer`) — background desktop capture, SQLite storage, screenshot archival, diff-based OCR / vision, journals, and recall.
-3. **Perception layer** (`socai.perception`) — hosted/local vision, OCR, grounding, transcription, image preprocessing.
-4. **Reasoning layer** (`socai.reasoning`) — structured tasks, planning, evaluation, and reusable knowledge extraction.
-5. **Platform layer** (`socai.platforms`) — site-specific DOM extraction, navigation patterns, entity models, capability catalogs.
-6. **Workflow layer** (`socai.workflows`) — concrete task orchestration such as XHS research and WeChat summaries.
+1. **Core layer** (`socai.core`) — extension bridge, tab/window control, DOM-first composer helpers, verification, recording, shared reports, runtime.
+2. **CDP layer** (`socai.cdp`) — Chrome CDP endpoint discovery, WebSocket connection/retry helpers, target listing, and controlled-tab primitives for the desktop path.
+3. **Observer layer** (`socai.observer`) — background desktop capture, SQLite storage, screenshot archival, diff-based OCR / vision, journals, and recall.
+4. **Perception layer** (`socai.perception`) — hosted/local vision, OCR, grounding, transcription, image preprocessing.
+5. **Reasoning layer** (`socai.reasoning`) — structured tasks, planning, evaluation, and reusable knowledge extraction.
+6. **Platform layer** (`socai.platforms`) — site-specific DOM extraction, navigation patterns, entity models, capability catalogs.
+7. **Workflow layer** (`socai.workflows`) — concrete task orchestration such as XHS research and WeChat summaries.
 
 New generic capabilities (background windows, dedup, session recording) belong in the generic layer. Site-specific DOM selectors and navigation belong in site skill modules.
 
@@ -285,12 +284,12 @@ Current scope:
 
 - Tauri/Vite shell for the real Socai desktop app
 - First-run onboarding wizard with a combined Chrome permission + live Xiaohongshu connection/login test step, model choice, and starter tasks
-- Rust native layer that launches and supervises a long-lived Python `socai.desktop_runtime` sidecar
-- JSON-RPC over stdio between Rust and the Python sidecar in both development and packaged builds
+- Rust native layer that launches and supervises a long-lived Python `socai.runtime` sidecar
+- Pydantic-typed JSON-RPC over stdio between Rust and the Python sidecar in both development and packaged builds
 - Rust command to open Chrome's `chrome://inspect/#remote-debugging` setup page
-- Existing Chrome profile discovery and CDP target listing through the sidecar
+- Existing Chrome profile discovery, CDP target listing, and controlled-tab diagnostics through `socai.cdp` and the sidecar
 - Creation of a marked Socai-controlled Chrome tab
-- XHS connection diagnostic with screenshot artifacts
+- XHS connection diagnostic through `socai.platforms.xhs.cdp_diagnostics` with screenshot artifacts
 
 Packaging helper:
 
@@ -413,17 +412,6 @@ python tests/manual_local_llm.py --local-only
 ```
 
 These are manual scripts for live-browser validation, not stable unit tests.
-
-## Debugging Rule
-
-When implementation or tests hit a page-state bug and the DOM behavior is unclear:
-
-1. Capture a screenshot first.
-2. Inspect the screenshot with the available LLM vision capability.
-3. First confirm that the screenshot faithfully shows the intended app/window and is not occluded or cross-Space corrupted.
-4. Then use that visual diagnosis to confirm what the page is actually showing before changing selectors, state detection, or action logic.
-
-Do not guess page state from code alone when a screenshot can disambiguate the issue quickly.
 
 ## XHS Anti-Bot Prior
 
