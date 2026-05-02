@@ -328,14 +328,14 @@ Visual report:
 
 Changes:
 - Renamed user-facing app branding from `Socai Prototype` to `Socai` (`productName`, window title, HTML title, build/install path).
-- Added `socai.desktop_runtime`, a long-lived Python sidecar entry point using newline-delimited JSON-RPC over stdio.
+- Added `socai.runtime`, a long-lived Python sidecar entry point using newline-delimited JSON-RPC over stdio.
 - Changed Tauri Rust commands to launch/supervise the sidecar and send runtime requests instead of spawning each Python diagnostic script directly from Rust.
 - Kept `open_chrome_inspect` as a native Rust command because opening Chrome settings is an OS/Tauri concern.
 - Updated app copy/docs from prototype wording to desktop runtime / diagnostics terminology.
 
 Validation:
-- `python3 -m py_compile socai/desktop_runtime/*.py app/prototype/*.py`
-- `.venv/bin/python -m py_compile socai/desktop_runtime/*.py app/prototype/*.py`
+- `python3 -m py_compile socai/runtime/*.py app/prototype/*.py`
+- `.venv/bin/python -m py_compile socai/runtime/*.py app/prototype/*.py`
 - JSON-RPC sidecar `health` and `connect_chrome` smoke tests; `connect_chrome` returned `cdp_available`.
 - `pnpm run build`
 - `cargo check`
@@ -343,3 +343,97 @@ Validation:
 - Launched installed app, completed onboarding via macOS UI automation, verified actual desktop screenshot shows `Runtime ready` and backend `Tauri + Socai Python runtime`.
 - Clicked `Connect Chrome` in the installed app and verified the UI returned `connect_chrome — cdp_available`.
 - Visual report: `task_runs/desktop_runtime_branding_20260501_162905/report.html`.
+
+## 2026-05-01 — Runtime package rename + typed protocol boundary
+
+Changes:
+- Renamed the Python sidecar package from `socai.desktop_runtime` to `socai.runtime`.
+- Updated the Tauri Rust sidecar launcher to run `python -m socai.runtime --transport stdio`.
+- Split the runtime entry point into `socai/runtime/server.py` and `socai/runtime/protocol.py`.
+- Added Pydantic v2 as a direct dependency and introduced typed JSON-RPC request/response/error/event protocol models at the Rust↔Python boundary.
+- Added `docs/runtime-refactor-plan.md` for the CDP/runtime code migration out of `app/prototype/`.
+
+Validation:
+- `.venv/bin/python -m py_compile socai/runtime/*.py app/prototype/*.py`
+- `.venv/bin/python -m ruff check socai/runtime`
+- JSON-RPC sidecar smoke test through `.venv/bin/python -m socai.runtime --transport stdio`; `health` returned ready and `connect_chrome` returned `cdp_available`.
+- `pnpm --dir app run build`
+- `cargo check --manifest-path app/src-tauri/Cargo.toml`
+- `cargo fmt`
+- `bash scripts/build_app.sh` rebuilt and installed `/Applications/Socai.app`.
+- Launched installed app and clicked `Connect Chrome`; UI showed `connect_chrome — cdp_available` with backend `Tauri + Socai Python runtime`.
+- Invalid-protocol smoke test returned JSON-RPC parse error `-32700` and invalid params `-32602` as expected.
+- Screenshot: `/tmp/socai_runtime_pydantic_connect.png`.
+
+## 2026-05-01 — CDP phase 1 extraction and cleanup
+
+Changes:
+- Added top-level `socai.cdp` package for generic Chrome DevTools Protocol code.
+- Moved/cleaned Chrome CDP discovery, CDP connect/retry, and target-listing behavior into:
+  - `socai/cdp/discovery.py`
+  - `socai/cdp/client.py`
+  - `socai/cdp/targets.py`
+  - `socai/cdp/errors.py`
+- Added developer/support diagnostic wrappers:
+  - `scripts/diagnostics/chrome_cdp_discovery.py`
+  - `scripts/diagnostics/chrome_cdp_targets.py`
+- Converted old `app/prototype/chrome_discovery.py`, `cdp_connect.py`, and `cdp_targets.py` into compatibility wrappers around `socai.cdp`.
+- Updated `socai.runtime.service` so `connect_chrome` and `list_chrome_targets` call importable Python functions directly instead of spawning app-local scripts.
+- Promoted `cdp-use==1.4.5` into root `pyproject.toml`; `app/requirements.txt` is now a legacy diagnostic note.
+- Updated architecture docs/plan to treat `socai.cdp` as a top-level CDP backend and to require cleanup during migration.
+
+Validation:
+- `uv lock && uv sync --extra dev`
+- `.venv/bin/python -m py_compile socai/runtime/*.py socai/cdp/*.py app/prototype/*.py scripts/diagnostics/*.py`
+- `.venv/bin/python -m ruff check socai/runtime socai/cdp scripts/diagnostics app/prototype/chrome_discovery.py app/prototype/cdp_connect.py app/prototype/cdp_targets.py`
+- `.venv/bin/python scripts/diagnostics/chrome_cdp_discovery.py --json` returned `cdp_available`.
+- `.venv/bin/python scripts/diagnostics/chrome_cdp_targets.py --json` returned `connected` with live target counts.
+- Legacy wrappers `app/prototype/chrome_discovery.py --json` and `app/prototype/cdp_targets.py --json` returned `cdp_available` / `connected`.
+- JSON-RPC sidecar smoke test for `connect_chrome`, `list_chrome_targets`, and `shutdown` succeeded through `.venv/bin/python -m socai.runtime --transport stdio`.
+- `pnpm --dir app run build`
+- `cargo check --manifest-path app/src-tauri/Cargo.toml`
+- `.venv/bin/python -m pytest tests/test_package_layout.py tests/test_desktop_cli.py tests/test_agent_loop_helpers.py` → 7 passed.
+- `bash scripts/build_app.sh` rebuilt and installed `/Applications/Socai.app`.
+- Installed app smoke: clicked `List Targets`; after re-activating Socai, UI showed `list_targets — connected` with backend `Tauri + Socai Python runtime`.
+- Screenshot: `/tmp/socai_after_list_activate.png`.
+
+## 2026-05-02 — CDP/runtime reorganization completion
+
+Changes:
+- Completed the CDP/runtime code migration out of `app/prototype/`.
+- Added generic CDP modules:
+  - `socai/cdp/page.py` for page/session-scoped CDP primitives.
+  - `socai/cdp/session.py` for existing-Chrome discovery/connect helper flow.
+  - `socai/cdp/diagnostics.py` for the controlled-tab diagnostic.
+- Added site-specific XHS CDP diagnostics:
+  - `socai/platforms/xhs/cdp_diagnostics.py`.
+- Updated `socai/runtime/service.py` so all current app-facing actions call importable modules directly:
+  - `connect_chrome`
+  - `list_chrome_targets`
+  - `create_controlled_tab`
+  - `capture_test_screenshot`
+  - `open_xhs_probe`
+  - `xhs_connection_test`
+- Added maintained diagnostic wrappers under `scripts/diagnostics/`:
+  - `chrome_cdp_controlled_tab.py`
+  - `xhs_cdp_probe.py`
+  - `desktop_cdp_demo.py`
+- Replaced old `app/prototype/*.py` implementation/wrapper scripts with `app/prototype/README.md` pointing to maintained diagnostics.
+- Updated docs to reflect `socai.runtime`, top-level `socai.cdp`, XHS-specific CDP diagnostics under `socai.platforms.xhs`, and `app/prototype/` deprecation.
+
+Validation:
+- `.venv/bin/python -m py_compile socai/runtime/*.py socai/cdp/*.py socai/platforms/xhs/cdp_diagnostics.py scripts/diagnostics/*.py`
+- `.venv/bin/python -m ruff check socai/runtime socai/cdp socai/platforms/xhs/cdp_diagnostics.py scripts/diagnostics`
+- `.venv/bin/python scripts/diagnostics/chrome_cdp_discovery.py --json` returned `cdp_available`.
+- `.venv/bin/python scripts/diagnostics/chrome_cdp_targets.py --json --timeout 30` returned `connected` after Chrome remote-debugging permission was approved.
+- `.venv/bin/python scripts/diagnostics/chrome_cdp_controlled_tab.py --json --timeout 30` returned `controlled_tab_ready` and all primitive checks passed.
+- `.venv/bin/python scripts/diagnostics/xhs_cdp_probe.py --json --timeout 30 --load-wait 4` returned `xhs_probe_ready`.
+- `.venv/bin/python scripts/diagnostics/desktop_cdp_demo.py --json --timeout 30` returned overall `pass` with discovery, targets, controlled-tab, and XHS probe steps.
+- JSON-RPC sidecar smoke verified `health`, `connect_chrome`, `list_chrome_targets`, `create_controlled_tab`, `open_xhs_probe`, and `shutdown`.
+- `.venv/bin/python -m pytest tests/test_package_layout.py tests/test_desktop_cli.py tests/test_agent_loop_helpers.py` → 7 passed.
+- `pnpm --dir app run build`
+- `cargo check --manifest-path app/src-tauri/Cargo.toml`
+- `bash scripts/build_app.sh` rebuilt and installed `/Applications/Socai.app`.
+
+Note:
+- Chrome's `Allow remote debugging?` prompt can still recur because the current implementation opens fresh CDP WebSocket connections per action/test. A future `ChromeSessionManager` should keep one approved connection alive across runtime actions.

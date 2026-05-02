@@ -1,23 +1,16 @@
-#!/usr/bin/env python3
-"""Discover whether the user's existing Chrome profile exposes a CDP endpoint.
+"""Chrome CDP endpoint discovery.
 
-Diagnostic scope:
-- inspect known Google Chrome user-data locations
-- read DevToolsActivePort when present
-- optionally probe common local DevTools ports
-- print either `cdp_available` or `setup_required`
-
-This script does not attach to Chrome, create tabs, or control pages.
+The desktop app uses the user's existing Chrome profile. This module finds a
+local Chrome DevTools Protocol endpoint by checking explicit environment
+overrides, Chrome's ``DevToolsActivePort`` marker, and common local debug ports.
 """
 from __future__ import annotations
 
-import argparse
 import json
 import os
 import platform
 import socket
 import subprocess
-import sys
 import urllib.error
 import urllib.request
 from dataclasses import asdict, dataclass
@@ -50,11 +43,11 @@ class Candidate:
 
 
 def chrome_user_data_dirs() -> list[Path]:
-    """Return candidate Chrome user-data roots for Socai desktop diagnostics.
+    """Return candidate Chrome user-data roots.
 
-    The current target is macOS + Google Chrome + existing default profile.
-    `SOCAI_CHROME_USER_DATA_DIR` can override/add a custom root for tests or
-    local development.
+    ``SOCAI_CHROME_USER_DATA_DIR`` can override/add a custom root for tests or
+    local development. Set ``SOCAI_CHROME_USER_DATA_DIR_ONLY=1`` to skip default
+    profile paths.
     """
 
     candidates: list[Path] = []
@@ -72,14 +65,8 @@ def chrome_user_data_dirs() -> list[Path]:
         if local_app_data:
             candidates.append(Path(local_app_data) / "Google/Chrome/User Data")
     else:
-        candidates.extend(
-            [
-                home / ".config/google-chrome",
-                home / ".config/chromium",
-            ]
-        )
+        candidates.extend([home / ".config/google-chrome", home / ".config/chromium"])
 
-    # Preserve order while removing duplicates.
     seen: set[str] = set()
     unique: list[Path] = []
     for path in candidates:
@@ -91,6 +78,8 @@ def chrome_user_data_dirs() -> list[Path]:
 
 
 def read_devtools_active_port(user_data_dir: Path) -> Candidate:
+    """Read Chrome's DevToolsActivePort marker for a user-data root."""
+
     marker = user_data_dir / "DevToolsActivePort"
     candidate = Candidate(
         source="devtools_active_port",
@@ -149,9 +138,11 @@ def endpoint_from_http_port(port: int, source: str) -> Endpoint | None:
         version = fetch_json(version_url)
     except (OSError, urllib.error.URLError, json.JSONDecodeError, TimeoutError):
         return None
+
     browser_ws_url = version.get("webSocketDebuggerUrl")
     if not browser_ws_url:
         return None
+
     return Endpoint(
         source=source,
         port=port,
@@ -166,17 +157,16 @@ def endpoint_from_http_port(port: int, source: str) -> Endpoint | None:
 
 
 def discover_chrome_cdp() -> dict[str, Any]:
+    """Discover a live Chrome CDP endpoint and return diagnostic metadata."""
+
     candidates: list[Candidate] = []
 
-    # Explicit HTTP endpoint is useful for tests and local development, but the
-    # product default remains the user's existing Chrome profile.
     if explicit_url := os.environ.get("SOCAI_CDP_URL"):
         version_url = explicit_url.rstrip("/") + "/json/version"
         try:
             version = fetch_json(version_url)
             endpoint = Endpoint(
                 source="SOCAI_CDP_URL",
-                port=None,
                 browser_ws_url=version.get("webSocketDebuggerUrl"),
                 http_version_url=version_url,
                 version={
@@ -191,8 +181,7 @@ def discover_chrome_cdp() -> dict[str, Any]:
             candidates.append(Candidate(source="SOCAI_CDP_URL", error=str(exc)))
 
     if explicit_ws := os.environ.get("SOCAI_CDP_WS"):
-        endpoint = Endpoint(source="SOCAI_CDP_WS", browser_ws_url=explicit_ws)
-        return result_available(endpoint, candidates)
+        return result_available(Endpoint(source="SOCAI_CDP_WS", browser_ws_url=explicit_ws), candidates)
 
     for user_data_dir in chrome_user_data_dirs():
         candidate = read_devtools_active_port(user_data_dir)
@@ -206,9 +195,7 @@ def discover_chrome_cdp() -> dict[str, Any]:
                     source="devtools_active_port",
                     port=candidate.port,
                     browser_ws_url=candidate.browser_ws_url,
-                    http_version_url=(
-                        f"http://127.0.0.1:{candidate.port}/json/version" if candidate.port else None
-                    ),
+                    http_version_url=f"http://127.0.0.1:{candidate.port}/json/version" if candidate.port else None,
                     user_data_dir=candidate.user_data_dir,
                 )
             return result_available(endpoint, candidates)
@@ -242,88 +229,20 @@ def result_available(endpoint: Endpoint, candidates: list[Candidate]) -> dict[st
 
 def setup_instructions() -> list[str]:
     return [
-        "Open Google Chrome using the profile that is already logged in to Xiaohongshu.",
+        "Open Google Chrome using the profile that is already logged in to the target site.",
         f"Open {INSPECT_URL} in Chrome.",
         "If Chrome shows a remote-debugging permission prompt, approve it. Tick the checkbox if Chrome offers one.",
-        "Re-run: python3 app/prototype/chrome_discovery.py",
+        "Re-run the Socai Chrome CDP diagnostic.",
     ]
 
 
 def open_inspect_page() -> None:
+    """Open Chrome's remote-debugging setup page."""
+
     if platform.system() == "Darwin":
         subprocess.run(["open", "-a", "Google Chrome", INSPECT_URL], check=False)
         return
 
-    # Fallback for non-macOS development machines.
     import webbrowser
 
     webbrowser.open(INSPECT_URL, new=2)
-
-
-def print_human(result: dict[str, Any]) -> None:
-    print(f"Socai Chrome discovery status: {result['status']}")
-    print(f"Reason: {result.get('reason')}")
-
-    if result["status"] == "cdp_available":
-        endpoint = result["endpoint"]
-        print(f"Source: {endpoint.get('source')}")
-        if endpoint.get("port"):
-            print(f"Port: {endpoint['port']}")
-        if endpoint.get("user_data_dir"):
-            print(f"User data dir: {endpoint['user_data_dir']}")
-        print(f"Browser WebSocket: {endpoint.get('browser_ws_url')}")
-        if endpoint.get("version"):
-            print(f"Chrome version: {endpoint['version'].get('Browser')}")
-        print(f"Next: {result.get('next_step')}")
-        return
-
-    print("\nSetup instructions:")
-    for index, instruction in enumerate(result.get("instructions", []), start=1):
-        print(f"{index}. {instruction}")
-
-    checked = result.get("profile_paths_checked") or []
-    if checked:
-        print("\nProfile paths checked:")
-        for path in checked:
-            print(f"- {path}")
-
-    candidates = result.get("candidates") or []
-    if candidates:
-        print("\nDiagnostics:")
-        for candidate in candidates:
-            print(f"- {candidate.get('source')}: {candidate.get('error') or 'not live'}")
-
-
-def parse_args(argv: list[str]) -> argparse.Namespace:
-    parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("--json", action="store_true", help="Print machine-readable JSON only")
-    parser.add_argument(
-        "--open-inspect",
-        action="store_true",
-        help=f"Open {INSPECT_URL} in Google Chrome if setup is required",
-    )
-    return parser.parse_args(argv)
-
-
-def main(argv: list[str] | None = None) -> int:
-    args = parse_args(argv or sys.argv[1:])
-    result = discover_chrome_cdp()
-
-    if args.open_inspect and result["status"] != "cdp_available":
-        open_inspect_page()
-        result["opened_inspect_url"] = True
-    else:
-        result["opened_inspect_url"] = False
-
-    if args.json:
-        print(json.dumps(result, ensure_ascii=False, indent=2))
-    else:
-        print_human(result)
-        if result["opened_inspect_url"]:
-            print("\nOpened Chrome inspect permission page.")
-
-    return 0 if result["status"] in {"cdp_available", "setup_required"} else 1
-
-
-if __name__ == "__main__":
-    raise SystemExit(main())

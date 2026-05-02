@@ -1,6 +1,6 @@
 # Socai Desktop App
 
-`app/` is the active Socai desktop application. It is a Tauri 2 app with a Vite/TypeScript frontend, a Rust native shell, and a long-lived Python `socai.desktop_runtime` sidecar.
+`app/` is the active Socai desktop application. It is a Tauri 2 app with a Vite/TypeScript frontend, a Rust native shell, and a long-lived Python `socai.runtime` sidecar.
 
 ## Architecture
 
@@ -9,14 +9,14 @@ Tauri WebView frontend (Vite + TypeScript)
         ↓ invoke/events
 Rust Tauri shell
         ↓ newline-delimited JSON-RPC over stdio
-Python socai.desktop_runtime sidecar
+Python socai.runtime sidecar
         ↓
-Socai browser automation / CDP diagnostics / task runtime
+socai.cdp browser backend / task runtime
         ↓
 User's existing Google Chrome profile
 ```
 
-The app currently uses Chrome's remote-debugging / Chrome DevTools Protocol path to create a clearly marked `🟢 Socai` Chrome tab. Diagnostic CDP scripts remain under `app/prototype/` while their logic is being migrated into the shared Python runtime, but the Tauri app now talks to the sidecar rather than spawning individual scripts directly from Rust.
+The app currently uses Chrome's remote-debugging / Chrome DevTools Protocol path to create a clearly marked `🟢 Socai` Chrome tab. Generic CDP discovery, target-listing, controlled-tab, and page primitives live in `socai.cdp`; Xiaohongshu CDP probe logic lives in `socai.platforms.xhs.cdp_diagnostics`. `app/prototype/` is deprecated and points to maintained wrappers under `scripts/diagnostics/`.
 
 ## Frontend
 
@@ -40,10 +40,10 @@ Rust owns native desktop concerns: app window lifecycle, opening Chrome's setup 
 The desktop runtime entry point is:
 
 ```bash
-python -m socai.desktop_runtime --transport stdio
+python -m socai.runtime --transport stdio
 ```
 
-The sidecar speaks newline-delimited JSON-RPC over stdio. In development the Tauri shell launches it from the source tree. Packaged builds are prepared to prefer a bundled runtime at `Socai.app/Contents/Resources/socai-runtime/bin/python3` when that runtime exists.
+The sidecar speaks newline-delimited JSON-RPC over stdio, with Pydantic models validating the Python runtime protocol boundary. In development the Tauri shell launches it from the source tree. Packaged builds are prepared to prefer a bundled runtime at `Socai.app/Contents/Resources/socai-runtime/bin/python3` when that runtime exists.
 
 Manual sidecar smoke test from the repository root:
 
@@ -51,7 +51,7 @@ Manual sidecar smoke test from the repository root:
 printf '%s\n' \
   '{"jsonrpc":"2.0","id":1,"method":"health","params":{}}' \
   '{"jsonrpc":"2.0","id":2,"method":"shutdown","params":{}}' \
-  | python3 -m socai.desktop_runtime --transport stdio
+  | .venv/bin/python -m socai.runtime --transport stdio
 ```
 
 ## Chrome connection flow

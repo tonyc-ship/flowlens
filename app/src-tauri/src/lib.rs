@@ -335,7 +335,7 @@ fn resolve_sidecar_launch(app: &tauri::AppHandle) -> Result<SidecarLaunch, Strin
                 program: bundled_python,
                 args: vec![
                     "-m".to_string(),
-                    "socai.desktop_runtime".to_string(),
+                    "socai.runtime".to_string(),
                     "--transport".to_string(),
                     "stdio".to_string(),
                 ],
@@ -371,7 +371,7 @@ fn source_sidecar_launch(python: PathBuf) -> Result<SidecarLaunch, String> {
         program: python,
         args: vec![
             "-m".to_string(),
-            "socai.desktop_runtime".to_string(),
+            "socai.runtime".to_string(),
             "--transport".to_string(),
             "stdio".to_string(),
         ],
